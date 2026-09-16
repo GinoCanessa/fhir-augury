@@ -32,6 +32,17 @@ public static class PreparedTicketPublicationRefreshFailureCodes
         "missing-project-provenance";
     public const string PeoplePolicyNotCurrent =
         "people-policy-not-current";
+    public const string InvalidSourceSnapshot = "invalid-source-snapshot";
+    public const string OriginalOutputChanged = "original-output-changed";
+    public const string OriginalGroupingChanged = "original-grouping-changed";
+    public const string FrozenProtectionDrift = "frozen-protection-drift";
+    public const string InvalidAcceptedGraph = "invalid-accepted-graph";
+    public const string InvalidProtectionCatalog = "invalid-protection-catalog";
+    public const string UnclassifiedProtectionColumn = "unclassified-protection-column";
+    public const string InvalidRecipe = "invalid-publication-recipe";
+    public const string UnsupportedRecipe = "unsupported-publication-recipe";
+    public const string InvalidEnrichmentBatch = "invalid-enrichment-batch";
+    public const string UnsupportedSnapshotSchema = "unsupported-publication-snapshot-schema";
 }
 
 /// <summary>

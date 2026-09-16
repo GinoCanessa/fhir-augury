@@ -109,11 +109,7 @@ builder.Services.AddHttpClient(
                 : !string.IsNullOrWhiteSpace(
                     jiraOptions.OrchestratorAddress)
                     ? jiraOptions.OrchestratorAddress
-                    : jiraOptions.JiraSourceAddress;
-        if (string.IsNullOrWhiteSpace(address))
-        {
-            address = "http://localhost";
-        }
+                    : "http://localhost:5150";
         client.BaseAddress = new Uri(
             address.EndsWith('/') ? address : address + "/");
     });
@@ -167,6 +163,8 @@ builder.Services.AddSingleton<AuthoringRunSchedulerWakeSignal>();
 builder.Services.AddSingleton<
     IPreparedTicketPublicationRefreshInterruptionHook,
     NoOpPreparedTicketPublicationRefreshInterruptionHook>();
+builder.Services.AddSingleton<PreparedTicketPublicationBaselineReader>();
+builder.Services.AddSingleton<PreparedTicketPublicationEnricher>();
 builder.Services.AddSingleton<PreparedTicketPublicationRefreshService>();
 builder.Services.AddSingleton<PreparedTicketSnapshotMaterializer>();
 builder.Services.AddSingleton<PreparedTicketRunPostProcessor>();

@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Text;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Hydration;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
@@ -86,6 +87,9 @@ public sealed class PreparedTicketHydratorTests
         Assert.Equal(
             "2026-09-13T09:30:00.0000000-05:00",
             result.ObservedSourceRevision);
+        Assert.Equal(updatedAt, result.UpdatedAt);
+        Assert.NotEqual(hydratedAt, result.UpdatedAt);
+        Assert.NotEqual(refreshAt, result.UpdatedAt);
         Assert.Equal("Ada Example", result.Reporter);
         Assert.Null(result.Assignee);
         Assert.Equal(["Zoë Example"], result.InPersonRequesters);
@@ -99,6 +103,43 @@ public sealed class PreparedTicketHydratorTests
         Assert.Equal(
             ["/api/v1/jira/items/FHIR-901"],
             handler.RequestedPathsAndQueries);
+    }
+
+    [Fact]
+    public async Task FetchPublicationMetadata_MissingDateReturnsHashWithoutInventingTimestamp()
+    {
+        FakeHandler handler = new();
+        DateTimeOffset hydratedAt = new(2026, 9, 15, 12, 0, 0, TimeSpan.Zero);
+        handler.AddJsonResponse("/api/v1/jira/items/FHIR-905", JsonSerializer.Serialize(new
+        {
+            id = "FHIR-905",
+            title = "Undated source ticket",
+            updatedAt = (DateTimeOffset?)null,
+            metadata = new Dictionary<string, string>
+            {
+                ["status"] = "Triaged", ["type"] = "Change Request",
+                ["work_group"] = "FHIR-I", ["specification"] = "FHIR",
+            },
+            people = PeoplePayload("present", PublicDisplayNamePolicy.CurrentVersion),
+            provenance = new
+            {
+                source = "jira", contentRevision = 92, isStable = true,
+                projectLastSuccessfulRefreshAt = new Dictionary<string, DateTimeOffset?> { ["FHIR"] = hydratedAt.AddDays(-1) },
+            },
+        }, JsonOptions));
+        OrchestratorHydrationFetcher fetcher = new(
+            new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") }, NullLogger.Instance);
+
+        PublicationMetadataFetchResult result =
+            await fetcher.FetchPublicationMetadataAsync("FHIR-905", hydratedAt, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Null(result.UpdatedAt);
+        Assert.Equal(hydratedAt, result.HydratedAt);
+        Assert.Equal(
+            JiraSourceRevision.Compute(null, "FHIR-905", "Undated source ticket", "Triaged", "FHIR-I", "Change Request", "FHIR"),
+            result.ObservedSourceRevision);
+        Assert.Equal(64, result.ObservedSourceRevision!.Length);
     }
 
     [Fact]

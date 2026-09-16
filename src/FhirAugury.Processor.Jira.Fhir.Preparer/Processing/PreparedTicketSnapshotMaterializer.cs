@@ -6,7 +6,9 @@ using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database.Records;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
@@ -29,6 +31,19 @@ public sealed class PreparedTicketSnapshotMaterializer(
     {
         ArgumentNullException.ThrowIfNull(run);
         ArgumentNullException.ThrowIfNull(snapshotSchema);
+        PreparedTicketPublicationEnrichmentInput? enrichmentInput =
+            run.Purpose == AuthoringRunPurposeValues.PublicationRefresh
+                ? PreparerDatabase.ReadPublicationEnrichmentInput(run) : null;
+        if (enrichmentInput is not null)
+        {
+            if (publicationProof is null)
+            {
+                throw new PreparedTicketPublicationProtectionException(
+                    PreparedTicketPublicationRefreshFailureCodes.InvalidRecipe,
+                    "Publication enrichment materialization requires its durable Jira proof.");
+            }
+            await database.ValidatePublicationEnrichmentAsync(run.Id, enrichmentInput, ct);
+        }
         ValidatePublicationContext(
             run,
             snapshotSchema,
@@ -40,6 +55,7 @@ public sealed class PreparedTicketSnapshotMaterializer(
                 run,
                 publicationProof,
                 groupingCertifications!,
+                enrichmentInput,
                 ct);
         }
 
@@ -76,13 +92,31 @@ public sealed class PreparedTicketSnapshotMaterializer(
                         AuthoringStatusValues.Items.Superseded),
                 receiptCount,
                 counts,
-                new PreparedTicketSnapshotSanitizer(
-                    run.Id,
-                    snapshotSchema,
-                    publicationProof?.SourceRunId,
-                    groupingCertifications),
+                enrichmentInput is null
+                    ? new PreparedTicketSnapshotSanitizer(
+                        run.Id, snapshotSchema, publicationProof?.SourceRunId, groupingCertifications)
+                    : new ProtectedPublicationSnapshotSanitizer(
+                        run.Id, snapshotSchema, enrichmentInput, groupingCertifications),
                 publicationProof),
             ct);
+    }
+
+    private sealed class ProtectedPublicationSnapshotSanitizer(
+        string runId,
+        AuthoringSnapshotSchemaCatalog catalog,
+        PreparedTicketPublicationEnrichmentInput input,
+        IReadOnlyList<PreparedTicketGroupingCertificationEvidence>? certifications)
+        : AuthoringSnapshotSanitizer(catalog)
+    {
+        private readonly PreparedTicketSnapshotSanitizer _sanitizer =
+            new(runId, catalog, input.Source.RunId, certifications);
+
+        public override async Task SanitizeAsync(SqliteConnection connection, CancellationToken ct = default)
+        {
+            // Validate the actual backup too, closing the gap between live preflight and SQLite backup.
+            await PreparerDatabase.ValidatePublicationEnrichmentAsync(connection, runId, input, ct);
+            await _sanitizer.SanitizeAsync(connection, ct);
+        }
     }
 
     private async Task<AuthoringSnapshotDescriptor?>
@@ -226,8 +260,34 @@ public sealed class PreparedTicketSnapshotMaterializer(
         AuthoringSnapshotPublicationProof publicationProof,
         IReadOnlyList<PreparedTicketGroupingCertificationEvidence>
             groupingCertifications,
+        PreparedTicketPublicationEnrichmentInput? enrichmentInput,
         CancellationToken ct)
     {
+        if (enrichmentInput is not null)
+        {
+            string fingerprint = PreparedTicketPublicationEnrichmentContract.ComputeInputFingerprint(enrichmentInput);
+            AuthoringRunStageRecord[] metadataStages = (await authoringStore.GetRunStagesAsync(run.Id, ct))
+                .Where(stage => stage.StageName == PreparedTicketPublicationEnrichmentContract.StageName &&
+                    stage.PartitionKey == string.Empty && stage.InputFingerprint == fingerprint &&
+                    stage.Status == AuthoringStatusValues.Stages.Complete).ToArray();
+            if (metadataStages.Length != 1)
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.StageFingerprintMismatch,
+                    "Publication enrichment has no unique completed stage for its frozen recipe.");
+            }
+            PreparedTicketPublicationRefreshReceiptRecord? receipt =
+                await database.GetMatchingPublicationRefreshReceiptAsync(
+                    run.Id, metadataStages[0].Id, fingerprint, enrichmentInput.CorpusFingerprint, ct);
+            if (receipt is null || receipt.SourceContentRevision != publicationProof.SourceContentRevision ||
+                receipt.PublicDisplayNamePolicyVersion != publicationProof.PublicDisplayNamePolicyVersion ||
+                receipt.SourceLastSuccessfulRefreshAt.ToUniversalTime() != publicationProof.SourceLastSuccessfulRefreshAt)
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.StageFingerprintMismatch,
+                    "The publication proof does not match the durable enrichment receipt.");
+            }
+        }
         PreparedTicketPublicationRefreshInventory inventory =
             await database.GetPublicationRefreshInventoryAsync(ct);
         if (!string.Equals(

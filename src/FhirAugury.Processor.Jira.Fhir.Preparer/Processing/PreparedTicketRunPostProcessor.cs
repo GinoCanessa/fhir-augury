@@ -45,9 +45,54 @@ public sealed class PreparedTicketRunPostProcessor(
     {
         AuthoringRunRecord run = await authoringStore.GetRunAsync(runId, ct)
             ?? throw new KeyNotFoundException($"Authoring run '{runId}' was not found.");
-        AuthoringSnapshotSchemaCatalog snapshotSchema =
-            PreparedTicketSnapshotSchemaResolver.Resolve(
-                _options.SnapshotSchemaVersion);
+        bool publicationRefresh = run.Purpose == AuthoringRunPurposeValues.PublicationRefresh;
+        if (publicationRefresh && run.Status == AuthoringStatusValues.Runs.Completed)
+        {
+            return run.SnapshotId is null ? null :
+                await authoringStore.GetSnapshotDescriptorAsync(run.SnapshotId, ct);
+        }
+        if (publicationRefresh && run.Status == AuthoringStatusValues.Runs.Superseded)
+        {
+            return null;
+        }
+        try
+        {
+            return await FinalizeRunCoreAsync(run, ct);
+        }
+        catch (PreparedTicketPublicationProtectionException ex) when (publicationRefresh)
+        {
+            return await RefusePublicationRefreshAsync(runId, $"{ex.FailureCode}: {ex.Message}");
+        }
+        catch (AuthoringConflictException ex)
+            when (publicationRefresh && ex.Code is
+                AuthoringConflictCode.SourceRevisionMismatch or AuthoringConflictCode.StageFingerprintMismatch)
+        {
+            return await RefusePublicationRefreshAsync(runId, ex.Message);
+        }
+    }
+
+    private async Task<AuthoringSnapshotDescriptor?> RefusePublicationRefreshAsync(
+        string runId,
+        string reason)
+    {
+        AuthoringRunRecord run = await authoringStore.GetRunAsync(runId, CancellationToken.None)
+            ?? throw new KeyNotFoundException($"Authoring run '{runId}' was not found.");
+        if (run.Status == AuthoringStatusValues.Runs.Finalizing)
+        {
+            await authoringStore.MarkRunErrorAsync(runId, reason, ct: CancellationToken.None);
+        }
+        await authoringStore.SupersedeRunAsync(
+            runId,
+            $"{reason} Retain the existing publication and inspect the conflict; publication repair does not re-author or regroup tickets.",
+            ct: CancellationToken.None);
+        return null;
+    }
+
+    private async Task<AuthoringSnapshotDescriptor?> FinalizeRunCoreAsync(
+        AuthoringRunRecord run,
+        CancellationToken ct)
+    {
+        string runId = run.Id;
         bool initialRevalidation = string.Equals(
             run.Purpose,
             AuthoringRunPurposeValues.InitialRevalidation,
@@ -72,11 +117,20 @@ public sealed class PreparedTicketRunPostProcessor(
                 $"Authoring run '{runId}' has unsupported purpose '{run.Purpose}'.");
         }
         if (publicationRefresh &&
-            snapshotSchema.Version !=
+            _options.SnapshotSchemaVersion !=
                 PreparedTicketSnapshotSchemaV3.Version)
         {
-            throw new InvalidOperationException(
+            throw new PreparedTicketPublicationProtectionException(
+                PreparedTicketPublicationRefreshFailureCodes.UnsupportedSnapshotSchema,
                 "Publication refresh runs require Preparer snapshot schema v3.");
+        }
+        AuthoringSnapshotSchemaCatalog snapshotSchema =
+            PreparedTicketSnapshotSchemaResolver.Resolve(_options.SnapshotSchemaVersion);
+        PreparedTicketPublicationEnrichmentInput? enrichmentInput =
+            publicationRefresh ? PreparerDatabase.ReadPublicationEnrichmentInput(run) : null;
+        if (enrichmentInput is not null)
+        {
+            await database.ValidatePublicationEnrichmentAsync(runId, enrichmentInput, ct);
         }
 
         AuthoringProcessorModeRecord mode =
@@ -108,6 +162,12 @@ public sealed class PreparedTicketRunPostProcessor(
             : await database.CountLegacyUnverifiedAsync(ct);
         if (!run.DatabaseOnly && blockingLegacyRows > 0)
         {
+            if (publicationRefresh)
+            {
+                throw new PreparedTicketPublicationProtectionException(
+                    PreparedTicketPublicationRefreshFailureCodes.InvalidAcceptedGraph,
+                    "The canonical corpus contains legacy-unverified output and cannot be enriched.");
+            }
             await authoringStore.SupersedeRunAsync(
                 runId,
                 "Canonical snapshot blocked until all legacy-unverified rows are revalidated.",
@@ -121,6 +181,9 @@ public sealed class PreparedTicketRunPostProcessor(
         List<AuthoringFinalizationStage> stages = [];
         PreparedTicketPublicationRefreshInventory? refreshInventory = null;
         string? refreshInputFingerprint = null;
+        string refreshStageName = enrichmentInput is null
+            ? PreparerDatabase.PublicationMetadataStageName
+            : PreparedTicketPublicationEnrichmentContract.StageName;
         if (initialRevalidation)
         {
             IReadOnlyList<AuthoringRunItemRecord> supersededItems =
@@ -149,33 +212,34 @@ public sealed class PreparedTicketRunPostProcessor(
                 publicationRefreshService ??
                 throw new InvalidOperationException(
                     "Publication refresh finalization is not configured.");
-            refreshInventory =
-                await database.GetPublicationRefreshInventoryAsync(ct);
+            refreshInventory = enrichmentInput is null
+                ? await database.GetPublicationRefreshInventoryAsync(ct)
+                : PreparedTicketPublicationRefreshInventory.FromEnrichmentInput(enrichmentInput);
             await refreshService.ValidateRunInventoryAsync(
                 run,
                 refreshInventory,
                 ct);
-            refreshInputFingerprint =
-                PreparedTicketPublicationContract
+            refreshInputFingerprint = enrichmentInput is null
+                ? PreparedTicketPublicationContract
                     .ComputePublicationRefreshInputFingerprint(
                         run.SourceRunId!,
                         refreshInventory.Candidates.Select(candidate =>
-                            candidate.ToPublicationCorpusItem()));
+                            candidate.ToPublicationCorpusItem()))
+                : PreparedTicketPublicationEnrichmentContract.ComputeInputFingerprint(enrichmentInput);
             PreparedTicketPublicationRefreshInventory capturedInventory =
                 refreshInventory;
             string capturedInputFingerprint = refreshInputFingerprint;
             stages.Add(
                 new AuthoringFinalizationStage(
-                    PreparerDatabase.PublicationMetadataStageName,
+                    refreshStageName,
                     string.Empty,
                     capturedInputFingerprint,
                     (lease, cancellationToken) =>
-                        refreshService.ExecuteMetadataStageAsync(
-                            run,
-                            lease,
-                            capturedInputFingerprint,
-                            capturedInventory,
-                            cancellationToken)));
+                        enrichmentInput is null
+                            ? refreshService.ExecuteMetadataStageAsync(
+                                run, lease, capturedInputFingerprint, capturedInventory, cancellationToken)
+                            : refreshService.ExecuteEnrichmentStageAsync(
+                                run, lease, capturedInputFingerprint, enrichmentInput, cancellationToken)));
             stages.AddRange(
                 partitions.Select(partition =>
                     new AuthoringFinalizationStage(
@@ -271,8 +335,7 @@ public sealed class PreparedTicketRunPostProcessor(
                             completedStages.Single(stage =>
                                 string.Equals(
                                     stage.StageName,
-                                    PreparerDatabase
-                                        .PublicationMetadataStageName,
+                                    refreshStageName,
                                     StringComparison.Ordinal) &&
                                 string.Equals(
                                     stage.PartitionKey,
@@ -347,17 +410,6 @@ public sealed class PreparedTicketRunPostProcessor(
                     },
                 completionGuard,
                 ct);
-        }
-        catch (AuthoringConflictException ex)
-            when (publicationRefresh &&
-                  ex.Code ==
-                      AuthoringConflictCode.SourceRevisionMismatch)
-        {
-            await authoringStore.SupersedeRunAsync(
-                runId,
-                $"{ex.Message} Ordinary re-authoring is required before publication data can be refreshed.",
-                ct: CancellationToken.None);
-            return null;
         }
         catch (AuthoringConflictException ex)
             when (initialRevalidation &&

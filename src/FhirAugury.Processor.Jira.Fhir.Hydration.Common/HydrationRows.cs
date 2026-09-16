@@ -152,7 +152,8 @@ public sealed record PublicationMetadataFetchResult(
     long? SourceContentRevision,
     bool? SourceIsStable,
     int? PublicDisplayNamePolicyVersion,
-    PublicationMetadataFetchFailure? Failure)
+    PublicationMetadataFetchFailure? Failure,
+    DateTimeOffset? UpdatedAt = null)
 {
     public bool IsSuccess => Failure is null;
 }

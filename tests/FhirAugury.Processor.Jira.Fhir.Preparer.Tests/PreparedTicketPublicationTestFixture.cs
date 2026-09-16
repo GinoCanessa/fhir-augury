@@ -27,6 +27,13 @@ using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Tests;
 
+// Baseline cleanup assertions observe process-wide temporary directories.
+[CollectionDefinition(PreparedTicketPublicationTestCollection.Name, DisableParallelization = true)]
+public sealed class PreparedTicketPublicationTestCollection
+{
+    public const string Name = "Prepared ticket publication snapshots";
+}
+
 internal static class PreparedTicketPublicationTestFixture
 {
     internal sealed record SourceResult(
@@ -87,6 +94,7 @@ internal static class PreparedTicketPublicationTestFixture
         public PreparerDatabase Database { get; }
         public AuthoringRunStore Store { get; }
         public string SnapshotDirectory { get; }
+        public Action<string>? BeforeSourceSnapshot { get; set; }
 
         public PreparedTicketPublicationBaselineReader CreateBaselineReader(
             ILogger<PreparedTicketPublicationBaselineReader>? logger = null)
@@ -194,7 +202,7 @@ internal static class PreparedTicketPublicationTestFixture
                 ticketKeys);
 
         public async Task<SourceResult> CreateSourceRunAtAsync(
-            DateTimeOffset sourceUpdatedAt,
+            DateTimeOffset? sourceUpdatedAt,
             params string[] ticketKeys)
         {
             List<JiraProcessingSourceTicketRecord> sources = [];
@@ -279,6 +287,7 @@ internal static class PreparedTicketPublicationTestFixture
                     acceptance.Receipt.ReceiptId);
             }
 
+            BeforeSourceSnapshot?.Invoke(creation.Run.Id);
             AuthoringSnapshotDescriptor descriptor =
                 Assert.IsType<AuthoringSnapshotDescriptor>(
                     await CreateOrdinaryPostProcessor()
@@ -292,7 +301,7 @@ internal static class PreparedTicketPublicationTestFixture
 
         public PreparedTicketPublicationRefreshService
             CreateRefreshService(
-                MetadataFetcher fetcher,
+                OrchestratorHydrationFetcher fetcher,
                 IPreparedTicketPublicationRefreshInterruptionHook?
                     hook = null,
                 AuthoringRunSchedulerWakeSignal? wakeSignal = null)
@@ -304,19 +313,40 @@ internal static class PreparedTicketPublicationTestFixture
                 Store,
                 new AuthoringRunControlService(Store, retryPolicy),
                 _coordinator,
-                fetcher,
+                CreateBaselineReader(),
+                CreateEnricher(fetcher),
                 wakeSignal ?? new AuthoringRunSchedulerWakeSignal(),
                 NullLogger<
                     PreparedTicketPublicationRefreshService>.Instance,
                 hook);
         }
 
+        public PreparedTicketPublicationEnricher CreateEnricher(OrchestratorHydrationFetcher fetcher)
+            => new(fetcher, NullLogger<PreparedTicketPublicationEnricher>.Instance);
+
+        public async Task<PreparedTicketPublicationRefreshResult> CreateLegacyRefreshRunAsync(string sourceRunId)
+        {
+            AuthoringRunRecord run = await Store.CreateMaintenanceRunAsync(
+                _coordinator.ProcessorKind,
+                PreparerDatabase.GetPublicationRefreshMaintenanceItemsAsync,
+                AuthoringRunPurposeValues.PublicationRefresh,
+                databaseOnly: false,
+                sourceRunId);
+            Assert.Null(run.RequestJson);
+            AuthoringRunControlStatus status = await new AuthoringRunControlService(
+                Store, new AuthoringRetryPolicy(Options.Create(new ProcessingServiceOptions())))
+                .GetStatusAsync(_coordinator.ProcessorKind, run.Id);
+            return new(status.Run, status.Items);
+        }
+
         public PreparedTicketRunPostProcessor CreatePostProcessor(
             PreparedTicketPublicationRefreshService service,
-            IPreparedTicketGroupingDispatcher? dispatcher = null)
+            IPreparedTicketGroupingDispatcher? dispatcher = null,
+            int? snapshotSchemaVersion = null)
             => CreatePostProcessorCore(
                 dispatcher ?? new RejectingGroupingDispatcher(),
-                service);
+                service,
+                snapshotSchemaVersion);
 
         public void MakeGroupingReceiptsLegacy(string runId)
         {
@@ -386,6 +416,7 @@ internal static class PreparedTicketPublicationTestFixture
             => DumpTables(
                 "prepared_ticket_hydration",
                 "prepared_jira_hydration",
+                "prepared_zulip_hydration",
                 "prepared_ticket_in_person_requesters",
                 "authoring_run_input_provenance");
 
@@ -398,8 +429,16 @@ internal static class PreparedTicketPublicationTestFixture
         private PreparedTicketRunPostProcessor CreatePostProcessorCore(
             IPreparedTicketGroupingDispatcher dispatcher,
             PreparedTicketPublicationRefreshService?
-                publicationRefreshService)
+                publicationRefreshService,
+            int? snapshotSchemaVersion = null)
         {
+            IOptions<PreparerServiceOptions> options = snapshotSchemaVersion is null
+                ? _options
+                : Options.Create(new PreparerServiceOptions
+                {
+                    SnapshotDirectory = SnapshotDirectory,
+                    SnapshotSchemaVersion = snapshotSchemaVersion.Value,
+                });
             HttpClient workGroupClient =
                 new(new WorkGroupHandler())
                 {
@@ -415,13 +454,13 @@ internal static class PreparedTicketPublicationTestFixture
                 new OrchestratorWorkGroupCatalogFetcher(
                     workGroupClient),
                 dispatcher,
-                _options,
+                options,
                 publicationRefreshService,
                 new PreparedTicketSnapshotMaterializer(
                     Database,
                     Store,
                     reconciler,
-                    _options));
+                    options));
         }
 
         private async Task ActivateAsync()
@@ -438,7 +477,7 @@ internal static class PreparedTicketPublicationTestFixture
                 AuthoringStatusValues.ProcessorModes.RunBacked);
         }
 
-        private string DumpTables(params string[] tables)
+        public string DumpTables(params string[] tables)
         {
             using SqliteConnection connection =
                 Database.OpenConnection();
@@ -498,12 +537,26 @@ internal static class PreparedTicketPublicationTestFixture
                 key => key,
                 _ => 901L,
                 StringComparer.OrdinalIgnoreCase);
+            UpdatedAtByTicket = expectedRevisions.ToDictionary(
+                pair => pair.Key,
+                pair => DateTimeOffset.TryParse(
+                    pair.Value, System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.RoundtripKind, out DateTimeOffset parsed)
+                    ? (DateTimeOffset?)parsed : null,
+                StringComparer.OrdinalIgnoreCase);
         }
 
         public Dictionary<string, string> ObservedRevisions { get; }
         public Dictionary<string, long> ContentRevisions { get; }
+        public Dictionary<string, DateTimeOffset?> UpdatedAtByTicket { get; }
+        public Dictionary<string, HydrationZulipRow> ZulipResults { get; } = new(StringComparer.Ordinal);
+        public List<(string TicketKey, string Reference)> ZulipCalls { get; } = [];
+        public Func<PublicationMetadataFetchResult, PublicationMetadataFetchResult>? TransformMetadata { get; set; }
+        public Action<string>? OnJiraFetch { get; set; }
         public int CallCount { get; private set; }
+        public int ZulipCallCount => ZulipCalls.Count;
         public bool ThrowWhenCalled { get; set; }
+        public bool ThrowWhenZulipCalled { get; set; }
 
         public static MetadataFetcher For(
             IReadOnlyDictionary<string, string> expectedRevisions)
@@ -515,15 +568,16 @@ internal static class PreparedTicketPublicationTestFixture
                 DateTimeOffset hydratedAt,
                 CancellationToken ct)
         {
+            ct.ThrowIfCancellationRequested();
             CallCount++;
             if (ThrowWhenCalled)
             {
                 throw new InvalidOperationException(
                     "Metadata fetch should have been skipped.");
             }
+            OnJiraFetch?.Invoke(ticketKey);
             string revision = ObservedRevisions[ticketKey];
-            return Task.FromResult(
-                new PublicationMetadataFetchResult(
+            PublicationMetadataFetchResult result = new(
                     ticketKey,
                     hydratedAt,
                     revision,
@@ -544,7 +598,54 @@ internal static class PreparedTicketPublicationTestFixture
                     ContentRevisions[ticketKey],
                     true,
                     PublicDisplayNamePolicy.CurrentVersion,
-                    Failure: null));
+                    Failure: null,
+                    UpdatedAt: UpdatedAtByTicket[ticketKey]);
+            return Task.FromResult(TransformMetadata?.Invoke(result) ?? result);
+        }
+
+        public override Task<HydrationZulipRow> FetchZulipAsync(
+            string ticketKey, string threadId, DateTimeOffset hydratedAt, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            ZulipCalls.Add((ticketKey, threadId));
+            if (ThrowWhenCalled || ThrowWhenZulipCalled)
+            {
+                throw new InvalidOperationException("Zulip fetch should have been skipped.");
+            }
+            HydrationZulipRow result = ZulipResults.TryGetValue(threadId, out HydrationZulipRow? configured)
+                ? configured : ZulipResult(threadId);
+            return Task.FromResult(result with { TicketKey = ticketKey, HydratedAt = hydratedAt });
+        }
+
+        public static HydrationZulipRow ZulipResult(
+            string reference,
+            ZulipReferenceLookupOutcome outcome = ZulipReferenceLookupOutcome.Resolved,
+            bool optionalDetails = true)
+        {
+            bool resolved = outcome == ZulipReferenceLookupOutcome.Resolved;
+            bool message = ZulipReferenceContract.TryGetMessageId(reference, out int messageId);
+            int separator = reference.IndexOf(':');
+            string stream = message ? "message stream" : reference[..separator];
+            string topic = message ? "message topic" : reference[(separator + 1)..];
+            string url = $"https://chat.fhir.org/#narrow/stream/{Uri.EscapeDataString(stream)}/topic/{Uri.EscapeDataString(topic)}";
+            if (message)
+            {
+                url += $"/near/{messageId}";
+            }
+            DateTimeOffset observedAt = new(2026, 9, 15, 10, 0, 0, TimeSpan.Zero);
+            return new(
+                string.Empty, reference, resolved ? 17 : null, resolved ? stream : null, resolved ? topic : null,
+                resolved && optionalDetails ? 4 : null,
+                resolved && optionalDetails ? observedAt.AddDays(-1) : null,
+                resolved && optionalDetails ? observedAt : null,
+                resolved && optionalDetails ? "Fresh indexed context" : null,
+                resolved ? url : null, observedAt, resolved ? "resolved" : "unresolved",
+                ZulipReferenceHydrationReason.Serialize(new()
+                {
+                    Backing = resolved ? ZulipReferenceBacking.TypedResolver : ZulipReferenceBacking.None,
+                    LatestOutcome = outcome,
+                    Diagnostics = [],
+                }));
         }
     }
 

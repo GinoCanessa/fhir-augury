@@ -1,11 +1,9 @@
-using FhirAugury.Common.Text;
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processing.Jira.Common.Authoring;
-using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database.Records;
@@ -44,7 +42,8 @@ public sealed class PreparedTicketPublicationRefreshService(
     AuthoringRunStore authoringStore,
     AuthoringRunControlService runControlService,
     JiraAuthoringRunCoordinator coordinator,
-    OrchestratorHydrationFetcher metadataFetcher,
+    PreparedTicketPublicationBaselineReader baselineReader,
+    PreparedTicketPublicationEnricher enricher,
     AuthoringRunSchedulerWakeSignal wakeSignal,
     ILogger<PreparedTicketPublicationRefreshService> logger,
     IPreparedTicketPublicationRefreshInterruptionHook? interruptionHook = null)
@@ -62,6 +61,7 @@ public sealed class PreparedTicketPublicationRefreshService(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceRunId);
         await ValidateSourceRunAsync(sourceRunId, ct);
+        PreparedTicketPublicationBaseline baseline = await baselineReader.ReadAsync(sourceRunId, ct);
 
         AuthoringRunRecord refreshRun;
         try
@@ -69,10 +69,7 @@ public sealed class PreparedTicketPublicationRefreshService(
             refreshRun = await authoringStore.CreateMaintenanceRunAsync(
                 coordinator.ProcessorKind,
                 (connection, cancellationToken) =>
-                    PreparerDatabase
-                        .GetPublicationRefreshMaintenanceItemsAsync(
-                            connection,
-                            cancellationToken),
+                    baselineReader.CreateSelectionAsync(connection, baseline, cancellationToken),
                 AuthoringRunPurposeValues.PublicationRefresh,
                 databaseOnly: false,
                 sourceRunId,
@@ -202,91 +199,8 @@ public sealed class PreparedTicketPublicationRefreshService(
             return;
         }
 
-        DateTimeOffset hydratedAt = DateTimeOffset.UtcNow;
-        List<PreparedTicketPublicationMetadata> metadata =
-            new(inventory.Candidates.Count);
-        long? sourceContentRevision = null;
-        foreach (PreparedTicketPublicationRefreshCandidate candidate in
-                 inventory.Candidates)
-        {
-            PublicationMetadataFetchResult result =
-                await metadataFetcher.FetchPublicationMetadataAsync(
-                    candidate.TicketKey,
-                    hydratedAt,
-                    ct);
-            if (!result.IsSuccess)
-            {
-                PublicationMetadataFetchFailure failure =
-                    result.Failure ??
-                    new PublicationMetadataFetchFailure(
-                        PublicationMetadataFetchFailureReason.InvalidResponse,
-                        "The publication metadata response did not include a failure reason.");
-                if (failure.Reason ==
-                    PublicationMetadataFetchFailureReason.TicketNotFound)
-                {
-                    throw new AuthoringConflictException(
-                        AuthoringConflictCode.SourceRevisionMismatch,
-                        $"{PreparedTicketPublicationRefreshFailureCodes.TicketNotFound}: Jira source ticket '{candidate.TicketKey}' no longer exists. {failure.Detail}");
-                }
-                throw new PreparedTicketPublicationRefreshStageException(
-                    ToFailureCode(failure.Reason),
-                    $"{candidate.TicketKey}: {failure.Detail}");
-            }
-            if (result.ObservedSourceRevision is null ||
-                result.SourceProject is null ||
-                result.SourceLastSuccessfulRefreshAt is null ||
-                result.SourceContentRevision is null ||
-                result.SourceContentRevision < 0 ||
-                result.SourceIsStable != true ||
-                result.PublicDisplayNamePolicyVersion !=
-                    PublicDisplayNamePolicy.CurrentVersion)
-            {
-                throw new PreparedTicketPublicationRefreshStageException(
-                    PreparedTicketPublicationRefreshFailureCodes
-                        .InvalidSourceResponse,
-                    $"{candidate.TicketKey}: The successful publication metadata response was incomplete.");
-            }
-
-            string expectedRevision =
-                AuthoringSourceRevision.CanonicalizeTimestamp(
-                    candidate.ExpectedSourceRevision);
-            string observedRevision =
-                AuthoringSourceRevision.CanonicalizeTimestamp(
-                    result.ObservedSourceRevision);
-            if (!JiraSourceRevision.AreEquivalent(
-                    expectedRevision,
-                    observedRevision))
-            {
-                throw new AuthoringConflictException(
-                    AuthoringConflictCode.SourceRevisionMismatch,
-                    $"{PreparedTicketPublicationRefreshFailureCodes.SourceRevisionMismatch}: Jira source revision for '{candidate.TicketKey}' changed from '{expectedRevision}' to '{observedRevision}'.");
-            }
-            if (sourceContentRevision is null)
-            {
-                sourceContentRevision = result.SourceContentRevision.Value;
-            }
-            else if (sourceContentRevision.Value !=
-                     result.SourceContentRevision.Value)
-            {
-                throw new AuthoringConflictException(
-                    AuthoringConflictCode.SourceRevisionMismatch,
-                    $"{PreparedTicketPublicationRefreshFailureCodes.SourceGenerationConflict}: Publication metadata spans more than one Jira content revision.");
-            }
-
-            metadata.Add(
-                new PreparedTicketPublicationMetadata(
-                    result.TicketKey,
-                    observedRevision,
-                    result.Reporter,
-                    result.Assignee,
-                    result.InPersonRequesters,
-                    result.SourceProject,
-                    result.SourceLastSuccessfulRefreshAt.Value,
-                    result.SourceContentRevision.Value,
-                    true,
-                    PublicDisplayNamePolicy.CurrentVersion,
-                    result.HydratedAt));
-        }
+        IReadOnlyList<PreparedTicketPublicationMetadata> metadata =
+            await enricher.FetchJiraMetadataAsync(inventory.Candidates, DateTimeOffset.UtcNow, ct);
 
         durableReceipt = await database.ApplyPublicationMetadataAsync(
             run.Id,
@@ -299,6 +213,29 @@ public sealed class PreparedTicketPublicationRefreshService(
             run.Id,
             durableReceipt,
             ct);
+    }
+
+    internal async Task ExecuteEnrichmentStageAsync(
+        AuthoringRunRecord run,
+        AuthoringRunStageLease lease,
+        string inputFingerprint,
+        PreparedTicketPublicationEnrichmentInput input,
+        CancellationToken ct)
+    {
+        PreparedTicketPublicationRefreshReceiptRecord? receipt =
+            await database.GetCommittedPublicationEnrichmentReceiptAsync(
+                run.Id, lease, inputFingerprint, input, ct);
+        if (receipt is not null)
+        {
+            logger.LogInformation(
+                "Reusing publication enrichment receipt for refresh run {RefreshRunId}", run.Id);
+            return;
+        }
+
+        PreparedTicketPublicationEnrichmentBatch batch = await enricher.FetchAsync(input, ct);
+        receipt = await database.ApplyPublicationEnrichmentAsync(
+            run.Id, lease, inputFingerprint, input, batch, ct);
+        await _interruptionHook.AfterMetadataCommitAsync(run.Id, receipt, ct);
     }
 
     private async Task ValidateSourceRunAsync(
@@ -345,33 +282,4 @@ public sealed class PreparedTicketPublicationRefreshService(
         }
     }
 
-    private static string ToFailureCode(
-        PublicationMetadataFetchFailureReason reason)
-        => reason switch
-        {
-            PublicationMetadataFetchFailureReason.SourceUnavailable =>
-                PreparedTicketPublicationRefreshFailureCodes
-                    .SourceUnavailable,
-            PublicationMetadataFetchFailureReason.TicketNotFound =>
-                PreparedTicketPublicationRefreshFailureCodes
-                    .TicketNotFound,
-            PublicationMetadataFetchFailureReason.InvalidResponse =>
-                PreparedTicketPublicationRefreshFailureCodes
-                    .InvalidSourceResponse,
-            PublicationMetadataFetchFailureReason.MissingSourceProvenance =>
-                PreparedTicketPublicationRefreshFailureCodes
-                    .MissingSourceProvenance,
-            PublicationMetadataFetchFailureReason.UnstableSource =>
-                PreparedTicketPublicationRefreshFailureCodes
-                    .UnstableSource,
-            PublicationMetadataFetchFailureReason
-                .MissingProjectProvenance =>
-                PreparedTicketPublicationRefreshFailureCodes
-                    .MissingProjectProvenance,
-            PublicationMetadataFetchFailureReason.PeoplePolicyNotCurrent =>
-                PreparedTicketPublicationRefreshFailureCodes
-                    .PeoplePolicyNotCurrent,
-            _ => PreparedTicketPublicationRefreshFailureCodes
-                .InvalidSourceResponse,
-        };
 }

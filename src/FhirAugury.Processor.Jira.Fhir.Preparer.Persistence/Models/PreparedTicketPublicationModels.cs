@@ -1,5 +1,6 @@
 using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processing.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
 
@@ -23,7 +24,16 @@ public sealed record PreparedTicketPublicationRefreshCandidate(
 
 public sealed record PreparedTicketPublicationRefreshInventory(
     IReadOnlyList<PreparedTicketPublicationRefreshCandidate> Candidates,
-    string CorpusFingerprint);
+    string CorpusFingerprint)
+{
+    public static PreparedTicketPublicationRefreshInventory FromEnrichmentInput(
+        PreparedTicketPublicationEnrichmentInput input)
+        => new(
+            input.Corpus.Select(item => new PreparedTicketPublicationRefreshCandidate(
+                item.TicketKey, item.ReceiptId, item.RunItemId, item.ContributingRunId,
+                item.ItemKind, item.ExpectedSourceRevision)).ToArray(),
+            input.CorpusFingerprint);
+}
 
 public sealed record PreparedTicketPublicationMetadata(
     string TicketKey,
@@ -36,7 +46,16 @@ public sealed record PreparedTicketPublicationMetadata(
     long SourceContentRevision,
     bool SourceIsStable,
     int PublicDisplayNamePolicyVersion,
-    DateTimeOffset HydratedAt);
+    DateTimeOffset HydratedAt,
+    DateTimeOffset? UpdatedAt = null);
+
+public sealed record PreparedTicketPublicationZulipOutcome(
+    string AssociationId,
+    HydrationZulipRow Hydration);
+
+public sealed record PreparedTicketPublicationEnrichmentBatch(
+    IReadOnlyList<PreparedTicketPublicationMetadata> JiraMetadata,
+    IReadOnlyList<PreparedTicketPublicationZulipOutcome> ZulipOutcomes);
 
 public sealed record PreparedTicketGroupingReceiptCoordinate(
     string RunId,

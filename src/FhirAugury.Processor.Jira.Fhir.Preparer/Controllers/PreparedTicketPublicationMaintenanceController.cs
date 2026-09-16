@@ -1,5 +1,6 @@
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
 using Microsoft.AspNetCore.Mvc;
 
@@ -51,6 +52,10 @@ public sealed class PreparedTicketPublicationMaintenanceController(
                     PreparedTicketPublicationRefreshFailureCodes
                         .InvalidSourceRun,
                     ex.Message));
+        }
+        catch (PreparedTicketPublicationProtectionException ex)
+        {
+            return Conflict(new PreparedTicketPublicationRefreshFailure(ex.FailureCode, ex.Message));
         }
         catch (AuthoringConflictException ex)
         {

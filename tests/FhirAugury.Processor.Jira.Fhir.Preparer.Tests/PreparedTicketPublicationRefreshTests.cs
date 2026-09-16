@@ -30,6 +30,7 @@ using static FhirAugury.Processor.Jira.Fhir.Preparer.Tests.PreparedTicketPublica
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Tests;
 
+[Collection(PreparedTicketPublicationTestCollection.Name)]
 public sealed class PreparedTicketPublicationRefreshTests
 {
     [Fact]
@@ -61,6 +62,10 @@ public sealed class PreparedTicketPublicationRefreshTests
         AuthoringRunRecord fenced = Assert.IsType<AuthoringRunRecord>(
             await fixture.Store.GetFencedRunAsync("jira-fhir"));
         Assert.Equal(result.Run.RunId, fenced.Id);
+        PreparedTicketPublicationEnrichmentInput input = Assert.IsType<PreparedTicketPublicationEnrichmentInput>(
+            PreparerDatabase.ReadPublicationEnrichmentInput(fenced));
+        Assert.Equal(source.Descriptor.SnapshotId, input.Source.SnapshotId);
+        Assert.Equal(new AuthoringRunCorpusComparison(source.Descriptor.SnapshotId, 1, 1, 0), result.Run.CorpusComparison);
     }
 
     [Fact]
@@ -395,7 +400,7 @@ public sealed class PreparedTicketPublicationRefreshTests
             fixture.CreateRefreshService(
                 MetadataFetcher.For(current.ExpectedRevisions));
         PreparedTicketPublicationRefreshResult started =
-            await service.StartAsync(source.Run.Id);
+            await fixture.CreateLegacyRefreshRunAsync(source.Run.Id);
 
         AuthoringSnapshotDescriptor descriptor =
             Assert.IsType<AuthoringSnapshotDescriptor>(
@@ -461,7 +466,7 @@ public sealed class PreparedTicketPublicationRefreshTests
             AuthoringStatusValues.Runs.Superseded,
             superseded.Status);
         Assert.Contains(
-            "Ordinary re-authoring is required",
+            "Retain the existing publication and inspect the conflict",
             superseded.Error,
             StringComparison.Ordinal);
         Assert.Null(await fixture.Store.GetFencedRunAsync("jira-fhir"));
@@ -673,6 +678,79 @@ public sealed class PreparedTicketPublicationRefreshTests
             AuthoringConflictCode.MutationFenceUnavailable,
             conflict.Code);
         Assert.Equal([first.Run.RunId], conflict.RelatedRunIds);
+    }
+
+    [Theory]
+    [InlineData("protected-value", PreparedTicketPublicationRefreshFailureCodes.OriginalOutputChanged)]
+    [InlineData("grouping", PreparedTicketPublicationRefreshFailureCodes.OriginalGroupingChanged)]
+    [InlineData("missing-parent", PreparedTicketPublicationRefreshFailureCodes.InvalidAcceptedGraph)]
+    [InlineData("missing-snapshot", PreparedTicketPublicationRefreshFailureCodes.InvalidSourceSnapshot)]
+    public async Task EndpointReportsTypedPreservationRefusalWithoutAdmittingRun(string change, string expectedCode)
+    {
+        using Fixture fixture = new(richGraph: true);
+        SourceResult source = await fixture.CreateSourceRunAsync("FHIR-801", "FHIR-802");
+        switch (change)
+        {
+            case "protected-value":
+                fixture.Execute("UPDATE prepared_jira_hydration SET DescriptionHtml = 'changed' WHERE JiraKey = TicketKey");
+                break;
+            case "grouping":
+                fixture.Execute("UPDATE prepared_ticket_topics SET ShortDescription = 'changed topic'");
+                break;
+            case "missing-parent":
+                fixture.Execute("DELETE FROM prepared_ticket_hydration WHERE TicketKey = 'FHIR-801'");
+                break;
+            case "missing-snapshot":
+                string path = Path.Combine(fixture.SnapshotDirectory, source.Descriptor.FileName);
+                File.Move(path, path + ".unavailable");
+                break;
+        }
+        int runCount = fixture.CountLive("authoring_runs");
+        string before = fixture.ReadPublicationMetadataState();
+        MetadataFetcher fetcher = MetadataFetcher.For(source.ExpectedRevisions);
+        fetcher.ThrowWhenCalled = true;
+        PreparedTicketPublicationMaintenanceController controller = new(fixture.CreateRefreshService(fetcher));
+
+        ConflictObjectResult response = Assert.IsType<ConflictObjectResult>(
+            await controller.Start(source.Run.Id, CancellationToken.None));
+
+        PreparedTicketPublicationRefreshFailure failure = Assert.IsType<PreparedTicketPublicationRefreshFailure>(response.Value);
+        Assert.Equal(expectedCode, failure.Error);
+        Assert.Equal(runCount, fixture.CountLive("authoring_runs"));
+        Assert.Equal(before, fixture.ReadPublicationMetadataState());
+        Assert.Null(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+        Assert.Equal(0, fetcher.CallCount);
+        Assert.Equal(0, fetcher.ZulipCallCount);
+    }
+
+    [Fact]
+    public async Task StartDisclosesAdditionalCurrentOutputAndFreezesItsAcceptedReferences()
+    {
+        using Fixture fixture = new(richGraph: true);
+        SourceResult source = await fixture.CreateSourceRunAsync("FHIR-801", "FHIR-802");
+        AuthoringRunRecord additional = await fixture.CreateAdditionalCurrentOutputAsync("R5", ["FHIR-901", "FHIR-902"]);
+        Dictionary<string, string> revisions = new(source.ExpectedRevisions, StringComparer.OrdinalIgnoreCase);
+        foreach (AuthoringRunItemRecord item in await fixture.Store.GetRunItemsAsync(additional.Id))
+        {
+            revisions.Add(item.BusinessKey, item.ExpectedSourceRevision);
+        }
+        string protectedBefore = fixture.ReadAuthoredAndGroupingState();
+        MetadataFetcher fetcher = MetadataFetcher.For(revisions);
+        PreparedTicketPublicationRefreshService service = fixture.CreateRefreshService(fetcher);
+
+        PreparedTicketPublicationRefreshResult result = await service.StartAsync(source.Run.Id);
+
+        Assert.Equal(new AuthoringRunCorpusComparison(source.Descriptor.SnapshotId, 2, 4, 2), result.Run.CorpusComparison);
+        AuthoringRunRecord persisted = (await fixture.Store.GetRunAsync(result.Run.RunId))!;
+        PreparedTicketPublicationEnrichmentInput input = Assert.IsType<PreparedTicketPublicationEnrichmentInput>(
+            PreparerDatabase.ReadPublicationEnrichmentInput(persisted));
+        Assert.Equal(["FHIR-901", "FHIR-902"], input.AdditionalTicketKeys);
+        Assert.Equal(8, input.ZulipReferences.Count);
+        Assert.Equal(result.Run.CorpusComparison, AuthoringMaintenanceRunRequest.ReadCorpusComparison(persisted.RequestJson));
+        Assert.NotNull(await fixture.CreatePostProcessor(service).FinalizeRunAsync(persisted.Id));
+        Assert.Equal(protectedBefore, fixture.ReadAuthoredAndGroupingState());
+        Assert.Equal(4, fetcher.CallCount);
+        Assert.Equal(2, fetcher.ZulipCallCount);
     }
 
     private static SqliteConnection OpenReadOnly(string path)

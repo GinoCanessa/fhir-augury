@@ -148,7 +148,8 @@ public class OrchestratorHydrationFetcher(
             provenance.ContentRevision,
             true,
             PublicDisplayNamePolicy.CurrentVersion,
-            Failure: null);
+            Failure: null,
+            UpdatedAt: item.UpdatedAt);
     }
 
     public virtual async Task<(HydrationTicketRow Parent, List<HydrationJiraXrefRow> XrefRows)> FetchParentAsync(

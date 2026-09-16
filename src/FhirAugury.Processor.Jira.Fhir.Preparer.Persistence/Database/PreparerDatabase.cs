@@ -1,10 +1,13 @@
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
+using FhirAugury.Common.Api;
 using FhirAugury.Common.Database;
 using FhirAugury.Common.Text;
 using FhirAugury.Common.WorkGroups;
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processing.Jira.Common.Authoring;
@@ -1157,6 +1160,465 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             ct);
     }
 
+    public static PreparedTicketPublicationEnrichmentInput? ReadPublicationEnrichmentInput(
+        AuthoringRunRecord run)
+        => ReadPublicationEnrichmentInput(run.RequestJson, run.SourceRunId);
+
+    private static PreparedTicketPublicationEnrichmentInput? ReadPublicationEnrichmentInput(
+        string? requestJson,
+        string? sourceRunId)
+    {
+        try
+        {
+            AuthoringMaintenanceRunRequest? request = AuthoringMaintenanceRunRequest.Parse(requestJson);
+            if (request is null)
+            {
+                return null;
+            }
+            request.EnsureRecipe(
+                PreparedTicketPublicationEnrichmentContract.RecipeName,
+                PreparedTicketPublicationEnrichmentContract.CurrentVersion);
+            PreparedTicketPublicationEnrichmentInput input =
+                PreparedTicketPublicationEnrichmentContract.ParseInput(request.RecipeInputJson);
+            if (input.Source.RunId != sourceRunId ||
+                request.CorpusComparison != new AuthoringRunCorpusComparison(
+                    input.Source.SnapshotId, input.Source.ExportedTicketCount,
+                    input.Corpus.Count, input.AdditionalTicketKeys.Count))
+            {
+                throw new ArgumentException("The stored recipe does not match its run and corpus comparison.");
+            }
+            return input;
+        }
+        catch (NotSupportedException)
+        {
+            throw new PreparedTicketPublicationProtectionException(
+                PreparedTicketPublicationRefreshFailureCodes.UnsupportedRecipe,
+                "The stored publication recipe or its version is unsupported.");
+        }
+        catch (Exception ex) when (ex is JsonException or ArgumentException)
+        {
+            throw new PreparedTicketPublicationProtectionException(
+                PreparedTicketPublicationRefreshFailureCodes.InvalidRecipe,
+                "The stored publication recipe is malformed or has inconsistent coordinates.");
+        }
+    }
+
+    public async Task ValidatePublicationEnrichmentAsync(
+        string runId,
+        PreparedTicketPublicationEnrichmentInput input,
+        CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await ExecuteRawAsync(connection, "BEGIN", ct);
+        try
+        {
+            await ValidatePublicationEnrichmentAsync(connection, runId, input, ct);
+            await ExecuteRawAsync(connection, "COMMIT", ct);
+        }
+        catch
+        {
+            await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
+            throw;
+        }
+    }
+
+    public static async Task ValidatePublicationEnrichmentAsync(
+        SqliteConnection connection,
+        string runId,
+        PreparedTicketPublicationEnrichmentInput input,
+        CancellationToken ct = default)
+    {
+        string sourceRunId = await ReadPublicationRefreshSourceRunIdAsync(connection, runId, ct);
+        PreparedTicketPublicationEnrichmentInput stored;
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = "SELECT RequestJson FROM authoring_runs WHERE Id = @runId";
+            command.Parameters.AddWithValue("@runId", runId);
+            object? requestJson = await command.ExecuteScalarAsync(ct);
+            stored = ReadPublicationEnrichmentInput(
+                requestJson is null or DBNull ? null : (string)requestJson, sourceRunId)
+                ?? throw new PreparedTicketPublicationProtectionException(
+                    PreparedTicketPublicationRefreshFailureCodes.InvalidRecipe,
+                    "The enrichment run no longer has its durable recipe.");
+        }
+        if (PreparedTicketPublicationEnrichmentContract.ComputeInputFingerprint(stored) !=
+            PreparedTicketPublicationEnrichmentContract.ComputeInputFingerprint(input))
+        {
+            throw new PreparedTicketPublicationProtectionException(
+                PreparedTicketPublicationRefreshFailureCodes.InvalidRecipe,
+                "The stored enrichment recipe changed after selection.");
+        }
+
+        Dictionary<string, PreparedTicketPublicationCorpusItem> candidates =
+            stored.Corpus.ToDictionary(item => item.TicketKey, StringComparer.OrdinalIgnoreCase);
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                SELECT BusinessKey, ItemKind, ExpectedSourceRevision, AcceptedReceiptId, Status
+                FROM authoring_run_items WHERE RunId = @runId
+                """;
+            command.Parameters.AddWithValue("@runId", runId);
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                string ticketKey = reader.GetString(0);
+                if (!seen.Add(ticketKey) ||
+                    !candidates.TryGetValue(ticketKey, out PreparedTicketPublicationCorpusItem? candidate) ||
+                    reader.GetString(1) != $"maintenance:{runId}:{candidate.ItemKind}" ||
+                    reader.GetString(2) != candidate.ExpectedSourceRevision ||
+                    ReadNullableString(reader, 3) != candidate.ReceiptId ||
+                    reader.GetString(4) != AuthoringStatusValues.Items.Complete)
+                {
+                    throw new AuthoringConflictException(
+                        AuthoringConflictCode.StageFingerprintMismatch,
+                        "The publication maintenance items no longer retain the frozen receipt coordinates.");
+                }
+            }
+        }
+        if (seen.Count != candidates.Count)
+        {
+            throw new AuthoringConflictException(
+                AuthoringConflictCode.StageFingerprintMismatch,
+                "The publication maintenance items no longer cover the frozen corpus.");
+        }
+        PreparedTicketPublicationProtectionReader.ValidateFrozen(
+            stored, await PreparedTicketPublicationProtectionReader.ReadCurrentAsync(connection, ct), runId);
+    }
+
+    public async Task<PreparedTicketPublicationRefreshReceiptRecord?>
+        GetCommittedPublicationEnrichmentReceiptAsync(
+            string runId,
+            AuthoringRunStageLease lease,
+            string inputFingerprint,
+            PreparedTicketPublicationEnrichmentInput input,
+            CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await ExecuteRawAsync(connection, "BEGIN", ct);
+        try
+        {
+            await EnsurePublicationEnrichmentStageAsync(connection, runId, lease, inputFingerprint, input, ct);
+            PreparedTicketPublicationRefreshReceiptRecord? receipt =
+                await ReadPublicationRefreshReceiptAsync(connection, runId, lease.StageId, ct);
+            if (receipt is not null)
+            {
+                EnsureMatchingPublicationRefreshReceipt(receipt, inputFingerprint, input.CorpusFingerprint);
+            }
+            await ExecuteRawAsync(connection, "COMMIT", ct);
+            return receipt;
+        }
+        catch
+        {
+            await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
+            throw;
+        }
+    }
+
+    private static async Task EnsurePublicationEnrichmentStageAsync(
+        SqliteConnection connection,
+        string runId,
+        AuthoringRunStageLease lease,
+        string inputFingerprint,
+        PreparedTicketPublicationEnrichmentInput input,
+        CancellationToken ct)
+    {
+        await EnsureStageLeaseAsync(
+            connection, runId, lease.StageId, lease.LeaseId, inputFingerprint,
+            PreparedTicketPublicationEnrichmentContract.StageName, string.Empty, ct);
+        if (PreparedTicketPublicationEnrichmentContract.ComputeInputFingerprint(input) != inputFingerprint)
+        {
+            throw new AuthoringConflictException(
+                AuthoringConflictCode.StageFingerprintMismatch,
+                "The enrichment stage does not match its frozen recipe fingerprint.");
+        }
+        await ValidatePublicationEnrichmentAsync(connection, runId, input, ct);
+    }
+
+    public async Task<PreparedTicketPublicationRefreshReceiptRecord> ApplyPublicationEnrichmentAsync(
+        string runId,
+        AuthoringRunStageLease lease,
+        string inputFingerprint,
+        PreparedTicketPublicationEnrichmentInput input,
+        PreparedTicketPublicationEnrichmentBatch batch,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentNullException.ThrowIfNull(lease);
+        ArgumentNullException.ThrowIfNull(input);
+        ArgumentNullException.ThrowIfNull(batch);
+        ArgumentNullException.ThrowIfNull(batch.JiraMetadata);
+        ArgumentNullException.ThrowIfNull(batch.ZulipOutcomes);
+        await using SqliteConnection connection = OpenConnection();
+        await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
+        try
+        {
+            await EnsurePublicationEnrichmentStageAsync(connection, runId, lease, inputFingerprint, input, ct);
+            PreparedTicketPublicationRefreshReceiptRecord? existing =
+                await ReadPublicationRefreshReceiptAsync(connection, runId, lease.StageId, ct);
+            if (existing is not null)
+            {
+                EnsureMatchingPublicationRefreshReceipt(existing, inputFingerprint, input.CorpusFingerprint);
+                await ExecuteRawAsync(connection, "COMMIT", ct);
+                return existing;
+            }
+
+            PreparedTicketPublicationMetadata[] metadata = NormalizeAndValidatePublicationMetadata(
+                PreparedTicketPublicationRefreshInventory.FromEnrichmentInput(input).Candidates,
+                batch.JiraMetadata);
+            ValidatePublicationZulipOutcomes(input.ZulipReferences, batch.ZulipOutcomes);
+            foreach (PreparedTicketPublicationMetadata row in metadata)
+            {
+                int parentRows = await ExecuteAsyncWithCount(
+                    connection,
+                    """
+                    UPDATE prepared_ticket_hydration
+                    SET Reporter = @reporter, Assignee = @assignee,
+                        PublicDisplayNamePolicyVersion = @policy,
+                        SourceProject = @project, SourceLastSuccessfulRefreshAt = @sourceRefresh,
+                        SourceContentRevision = @revision, HydratedAt = @hydratedAt
+                    WHERE TicketKey = @ticketKey COLLATE NOCASE
+                    """,
+                    ct,
+                    ("@reporter", row.Reporter), ("@assignee", row.Assignee),
+                    ("@policy", row.PublicDisplayNamePolicyVersion), ("@project", row.SourceProject),
+                    ("@sourceRefresh", Format(row.SourceLastSuccessfulRefreshAt)),
+                    ("@revision", row.SourceContentRevision), ("@hydratedAt", Format(row.HydratedAt)),
+                    ("@ticketKey", row.TicketKey));
+                int selfRows = await ExecuteAsyncWithCount(
+                    connection,
+                    """
+                    UPDATE prepared_jira_hydration
+                    SET Reporter = @reporter, Assignee = @assignee,
+                        PublicDisplayNamePolicyVersion = @policy,
+                        UpdatedAt = COALESCE(@updatedAt, UpdatedAt)
+                    WHERE TicketKey = @ticketKey COLLATE NOCASE
+                      AND JiraKey = TicketKey COLLATE NOCASE
+                    """,
+                    ct,
+                    ("@reporter", row.Reporter), ("@assignee", row.Assignee),
+                    ("@policy", row.PublicDisplayNamePolicyVersion),
+                    ("@updatedAt", row.UpdatedAt is { } updatedAt ? Format(updatedAt.ToUniversalTime()) : null),
+                    ("@ticketKey", row.TicketKey));
+                if (parentRows != 1 || selfRows != 1)
+                {
+                    throw new PreparedTicketPublicationProtectionException(
+                        PreparedTicketPublicationRefreshFailureCodes.InvalidAcceptedGraph,
+                        $"Prepared ticket '{row.TicketKey}' has no unique parent/self Jira hydration to enrich.");
+                }
+
+                await ExecuteAsync(
+                    connection,
+                    "DELETE FROM prepared_ticket_in_person_requesters WHERE TicketKey = @ticketKey COLLATE NOCASE",
+                    ct, ("@ticketKey", row.TicketKey));
+                foreach (string requester in row.InPersonRequesters)
+                {
+                    int inserted = await ExecuteAsyncWithCount(
+                        connection,
+                        """
+                        INSERT INTO prepared_ticket_in_person_requesters(
+                            TicketKey, DisplayName, PublicDisplayNamePolicyVersion)
+                        VALUES(@ticketKey, @displayName, @policy)
+                        """,
+                        ct, ("@ticketKey", row.TicketKey), ("@displayName", requester),
+                        ("@policy", row.PublicDisplayNamePolicyVersion));
+                    if (inserted != 1)
+                    {
+                        throw new PreparedTicketPublicationProtectionException(
+                            PreparedTicketPublicationRefreshFailureCodes.InvalidAcceptedGraph,
+                            "A publication requester write did not persist exactly one display row.");
+                    }
+                }
+            }
+            foreach (PreparedTicketPublicationZulipOutcome outcome in batch.ZulipOutcomes)
+            {
+                await ApplyPublicationZulipOutcomeAsync(connection, outcome.Hydration, ct);
+            }
+
+            await ValidatePublicationEnrichmentAsync(connection, runId, input, ct);
+            PreparedTicketPublicationRefreshReceiptRecord receipt = await WritePublicationRefreshReceiptAsync(
+                connection, runId, lease.StageId, inputFingerprint, input.CorpusFingerprint,
+                metadata.Max(row => row.SourceLastSuccessfulRefreshAt),
+                metadata[0].SourceContentRevision, DateTimeOffset.UtcNow, ct);
+            await ExecuteRawAsync(connection, "COMMIT", ct);
+            return receipt;
+        }
+        catch
+        {
+            await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
+            throw;
+        }
+    }
+
+    private static void ValidatePublicationZulipOutcomes(
+        IReadOnlyList<PreparedTicketPublicationZulipReference> references,
+        IReadOnlyList<PreparedTicketPublicationZulipOutcome> outcomes)
+    {
+        Dictionary<string, PreparedTicketPublicationZulipReference> accepted =
+            references.ToDictionary(reference => reference.AssociationId, StringComparer.Ordinal);
+        HashSet<string> seen = new(StringComparer.Ordinal);
+        if (outcomes.Count != references.Count)
+        {
+            throw InvalidBatch("Zulip outcomes must cover every frozen accepted association exactly once.");
+        }
+        foreach (PreparedTicketPublicationZulipOutcome outcome in outcomes)
+        {
+            if (outcome is null || outcome.Hydration is null ||
+                !seen.Add(outcome.AssociationId) ||
+                !accepted.TryGetValue(outcome.AssociationId, out PreparedTicketPublicationZulipReference? reference) ||
+                outcome.Hydration.TicketKey != reference.TicketKey ||
+                outcome.Hydration.ZulipThreadId != reference.Reference)
+            {
+                throw InvalidBatch("Zulip outcomes contain missing, duplicate, or extra accepted coordinates.");
+            }
+            HydrationZulipRow row = outcome.Hydration;
+            ZulipReferenceHydrationReasonReadResult reason = ZulipReferenceHydrationReason.Read(row.HydrationReason);
+            if (reason.MetadataFailure is not null || reason.Metadata is not { } metadata)
+            {
+                throw InvalidBatch("A Zulip outcome has no valid typed lookup metadata.");
+            }
+            if (metadata.LatestOutcome == ZulipReferenceLookupOutcome.Resolved)
+            {
+                bool message = ZulipReferenceContract.TryGetMessageId(reference.Reference, out int messageId);
+                if (row.HydrationStatus != "resolved" || metadata.Backing != ZulipReferenceBacking.TypedResolver ||
+                    !ZulipReferenceContract.IsCoherentResolution(new()
+                    {
+                        Reference = reference.Reference, Outcome = metadata.LatestOutcome,
+                        Kind = message ? ZulipReferenceKind.Message : ZulipReferenceKind.Thread,
+                        MessageId = message ? messageId : null, StreamId = row.StreamId,
+                        StreamName = row.StreamName, Topic = row.Topic, MessageCount = row.MessageCount,
+                        FirstMessageAt = row.FirstMessageAt, LastMessageAt = row.LastMessageAt,
+                        FirstMessageExcerpt = row.FirstMessageExcerpt, Url = row.Url,
+                        Diagnostics = metadata.Diagnostics,
+                    }, reference.Reference))
+                {
+                    throw InvalidBatch("A successful Zulip outcome has no coherent source-backed link.");
+                }
+            }
+            else if (row.HydrationStatus != "unresolved" || metadata.Backing != ZulipReferenceBacking.None ||
+                row.StreamId is not null || row.StreamName is not null || row.Topic is not null ||
+                row.MessageCount is not null || row.FirstMessageAt is not null || row.LastMessageAt is not null ||
+                row.FirstMessageExcerpt is not null || row.Url is not null)
+            {
+                throw InvalidBatch("A failed Zulip lookup cannot supply newly observed source context.");
+            }
+        }
+
+        static PreparedTicketPublicationProtectionException InvalidBatch(string detail)
+            => new(PreparedTicketPublicationRefreshFailureCodes.InvalidEnrichmentBatch, detail);
+    }
+
+    private static async Task ApplyPublicationZulipOutcomeAsync(
+        SqliteConnection connection,
+        HydrationZulipRow row,
+        CancellationToken ct)
+    {
+        string? id = null;
+        long? rowId = null;
+        string? storedUrl = null;
+        string? storedReason = null;
+        bool legacyIndexedContext = false;
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                SELECT RowId, Id, StreamName, Topic, MessageCount, Url, HydrationReason
+                FROM prepared_zulip_hydration
+                WHERE TicketKey = @ticketKey COLLATE NOCASE AND ZulipThreadId = @reference COLLATE BINARY
+                """;
+            command.Parameters.AddWithValue("@ticketKey", row.TicketKey);
+            command.Parameters.AddWithValue("@reference", row.ZulipThreadId);
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            if (await reader.ReadAsync(ct))
+            {
+                rowId = reader.GetInt64(0);
+                id = reader.GetString(1);
+                legacyIndexedContext = !string.IsNullOrWhiteSpace(ReadNullableString(reader, 2)) &&
+                    !string.IsNullOrWhiteSpace(ReadNullableString(reader, 3)) &&
+                    !reader.IsDBNull(4) && reader.GetInt64(4) > 0;
+                storedUrl = ReadNullableString(reader, 5);
+                storedReason = ReadNullableString(reader, 6);
+                if (await reader.ReadAsync(ct))
+                {
+                    throw new PreparedTicketPublicationProtectionException(
+                        PreparedTicketPublicationRefreshFailureCodes.InvalidAcceptedGraph,
+                        "An accepted Zulip reference has ambiguous hydration rows.");
+                }
+            }
+        }
+        int changed;
+        if (id is not null && row.HydrationStatus == "unresolved")
+        {
+            ZulipReferenceHydrationReasonReadResult prior = ZulipReferenceHydrationReason.Read(storedReason);
+            ZulipReferenceHydrationOutcome latest = ZulipReferenceHydrationReason.Read(row.HydrationReason).Metadata
+                ?? throw new InvalidOperationException("The validated lookup outcome has no metadata.");
+            bool safeUrl = ZulipReferenceContract.IsSafeUrl(storedUrl);
+            ZulipReferenceBacking backing = !safeUrl ? ZulipReferenceBacking.None
+                : prior is { HasSourceBacking: true, Metadata: { } backed } ? backed.Backing
+                : prior.Metadata is null && prior.MetadataFailure is null && legacyIndexedContext
+                    ? ZulipReferenceBacking.LegacyIndexedContext
+                    : ZulipReferenceBacking.Unverified;
+            ZulipReferenceDiagnosticCode[] diagnostics = latest.Diagnostics
+                .Concat(prior.Metadata?.Diagnostics ?? [])
+                .Concat(prior.MetadataFailure is { } failure ? [failure] : [])
+                .Distinct().Order().ToArray();
+            string reason = ZulipReferenceHydrationReason.Serialize(latest with
+            {
+                Backing = backing,
+                Diagnostics = diagnostics,
+            });
+            // Old context and its observation time are not a successful observation of this failed attempt.
+            changed = await ExecuteAsyncWithCount(
+                connection,
+                """
+                UPDATE prepared_zulip_hydration
+                SET Url = @url, HydrationStatus = 'unresolved', HydrationReason = @reason
+                WHERE RowId = @rowId AND Id = @id
+                """,
+                ct, ("@url", safeUrl ? storedUrl : null), ("@reason", reason),
+                ("@rowId", rowId), ("@id", id));
+        }
+        else
+        {
+            changed = await ExecuteAsyncWithCount(
+                connection,
+                id is null
+                    ? """
+                      INSERT INTO prepared_zulip_hydration(
+                          Id, TicketKey, ZulipThreadId, StreamId, StreamName, Topic, MessageCount,
+                          FirstMessageAt, LastMessageAt, FirstMessageExcerpt, Url,
+                          HydratedAt, HydrationStatus, HydrationReason)
+                      VALUES(
+                          @id, @ticketKey, @reference, @streamId, @streamName, @topic, @count,
+                          @first, @last, @excerpt, @url, @hydratedAt, @status, @reason)
+                      """
+                    : """
+                      UPDATE prepared_zulip_hydration
+                      SET StreamId = @streamId, StreamName = @streamName, Topic = @topic,
+                          MessageCount = @count, FirstMessageAt = @first, LastMessageAt = @last,
+                          FirstMessageExcerpt = @excerpt, Url = @url,
+                          HydratedAt = @hydratedAt, HydrationStatus = @status, HydrationReason = @reason
+                      WHERE RowId = @rowId AND Id = @id
+                      """,
+                ct, ("@id", id ?? Guid.NewGuid().ToString("N")), ("@rowId", rowId),
+                ("@ticketKey", row.TicketKey), ("@reference", row.ZulipThreadId),
+                ("@streamId", row.StreamId), ("@streamName", row.StreamName), ("@topic", row.Topic),
+                ("@count", row.MessageCount),
+                ("@first", row.FirstMessageAt is { } first ? Format(first.ToUniversalTime()) : null),
+                ("@last", row.LastMessageAt is { } last ? Format(last.ToUniversalTime()) : null),
+                ("@excerpt", row.FirstMessageExcerpt), ("@url", row.Url),
+                ("@hydratedAt", Format(row.HydratedAt)), ("@status", row.HydrationStatus),
+                ("@reason", row.HydrationReason));
+        }
+        if (changed != 1)
+        {
+            throw new PreparedTicketPublicationProtectionException(
+                PreparedTicketPublicationRefreshFailureCodes.InvalidAcceptedGraph,
+                "A publication Zulip write did not persist exactly one accepted hydration row.");
+        }
+    }
+
     public async Task<PreparedTicketPublicationRefreshReceiptRecord>
         ApplyPublicationMetadataAsync(
             string runId,
@@ -1340,57 +1802,10 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 ("@runId", runId),
                 ("@source",
                     PreparedTicketPublicationContract.JiraSourceName));
-            await ExecuteAsync(
-                connection,
-                """
-                INSERT INTO authoring_run_input_provenance(
-                    RunId, Source, LatestSuccessfulRefreshAt,
-                    ContentRevision, CapturedAt)
-                VALUES(
-                    @runId, @source, @sourceRefresh,
-                    @sourceContentRevision, @capturedAt)
-                """,
-                ct,
-                ("@runId", runId),
-                ("@source",
-                    PreparedTicketPublicationContract.JiraSourceName),
-                ("@sourceRefresh",
-                    Format(sourceLastSuccessfulRefreshAt)),
-                ("@sourceContentRevision", sourceContentRevision),
-                ("@capturedAt", Format(appliedAt)));
-
-            await ExecuteAsync(
-                connection,
-                """
-                INSERT INTO prepared_ticket_publication_refresh_receipts(
-                    RunId, StageId, InputFingerprint, CorpusFingerprint,
-                    SourceLastSuccessfulRefreshAt, SourceContentRevision,
-                    PublicDisplayNamePolicyVersion, AppliedAt)
-                VALUES(
-                    @runId, @stageId, @inputFingerprint,
-                    @corpusFingerprint, @sourceRefresh,
-                    @sourceContentRevision, @policyVersion, @appliedAt)
-                """,
-                ct,
-                ("@runId", runId),
-                ("@stageId", stageId),
-                ("@inputFingerprint", inputFingerprint),
-                ("@corpusFingerprint", corpusFingerprint),
-                ("@sourceRefresh",
-                    Format(sourceLastSuccessfulRefreshAt)),
-                ("@sourceContentRevision", sourceContentRevision),
-                ("@policyVersion",
-                    PublicDisplayNamePolicy.CurrentVersion),
-                ("@appliedAt", Format(appliedAt)));
-
             PreparedTicketPublicationRefreshReceiptRecord receipt =
-                await ReadPublicationRefreshReceiptAsync(
-                    connection,
-                    runId,
-                    stageId,
-                    ct)
-                ?? throw new InvalidOperationException(
-                    "The publication refresh receipt was not persisted.");
+                await WritePublicationRefreshReceiptAsync(
+                    connection, runId, stageId, inputFingerprint, corpusFingerprint,
+                    sourceLastSuccessfulRefreshAt, sourceContentRevision, appliedAt, ct);
             await ExecuteRawAsync(connection, "COMMIT", ct);
             return receipt;
         }
@@ -1519,7 +1934,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                     AuthoringConflictCode.StageFingerprintMismatch,
                     $"Publication metadata is missing ticket '{candidate.TicketKey}'.");
             }
-            if (!row.SourceIsStable)
+            if (!row.SourceIsStable || row.SourceContentRevision < 0)
             {
                 throw new AuthoringConflictException(
                     AuthoringConflictCode.StageFingerprintMismatch,
@@ -1546,6 +1961,13 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 throw new AuthoringConflictException(
                     AuthoringConflictCode.SourceRevisionMismatch,
                     $"Jira source revision for '{candidate.TicketKey}' changed from '{expectedRevision}' to '{observedRevision}'.");
+            }
+            if (row.UpdatedAt is { } updatedAt &&
+                !JiraSourceRevision.AreEquivalent(Format(updatedAt), observedRevision))
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.SourceRevisionMismatch,
+                    $"The explicit Jira update time for '{candidate.TicketKey}' does not match its observed source revision.");
             }
 
             int separator = candidate.TicketKey.IndexOf(
@@ -1595,6 +2017,52 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             });
         }
         return normalized.ToArray();
+    }
+
+    private static async Task<PreparedTicketPublicationRefreshReceiptRecord> WritePublicationRefreshReceiptAsync(
+        SqliteConnection connection,
+        string runId,
+        string stageId,
+        string inputFingerprint,
+        string corpusFingerprint,
+        DateTimeOffset sourceLastSuccessfulRefreshAt,
+        long sourceContentRevision,
+        DateTimeOffset appliedAt,
+        CancellationToken ct)
+    {
+        int provenanceRows = await ExecuteAsyncWithCount(
+            connection,
+            """
+            INSERT INTO authoring_run_input_provenance(
+                RunId, Source, LatestSuccessfulRefreshAt, ContentRevision, CapturedAt)
+            VALUES(@runId, @source, @sourceRefresh, @sourceContentRevision, @capturedAt)
+            """,
+            ct, ("@runId", runId), ("@source", PreparedTicketPublicationContract.JiraSourceName),
+            ("@sourceRefresh", Format(sourceLastSuccessfulRefreshAt)),
+            ("@sourceContentRevision", sourceContentRevision), ("@capturedAt", Format(appliedAt)));
+        if (provenanceRows != 1)
+        {
+            throw new InvalidOperationException("The publication provenance was not persisted exactly once.");
+        }
+        int receiptRows = await ExecuteAsyncWithCount(
+            connection,
+            """
+            INSERT INTO prepared_ticket_publication_refresh_receipts(
+                RunId, StageId, InputFingerprint, CorpusFingerprint,
+                SourceLastSuccessfulRefreshAt, SourceContentRevision, PublicDisplayNamePolicyVersion, AppliedAt)
+            VALUES(@runId, @stageId, @inputFingerprint, @corpusFingerprint,
+                @sourceRefresh, @sourceContentRevision, @policyVersion, @appliedAt)
+            """,
+            ct, ("@runId", runId), ("@stageId", stageId), ("@inputFingerprint", inputFingerprint),
+            ("@corpusFingerprint", corpusFingerprint), ("@sourceRefresh", Format(sourceLastSuccessfulRefreshAt)),
+            ("@sourceContentRevision", sourceContentRevision), ("@policyVersion", PublicDisplayNamePolicy.CurrentVersion),
+            ("@appliedAt", Format(appliedAt)));
+        if (receiptRows != 1)
+        {
+            throw new InvalidOperationException("The publication apply receipt was not persisted exactly once.");
+        }
+        return await ReadPublicationRefreshReceiptAsync(connection, runId, stageId, ct)
+            ?? throw new InvalidOperationException("The publication refresh receipt was not persisted.");
     }
 
     private static void EnsureMatchingPublicationInventory(

@@ -1,5 +1,7 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Text;
 using FhirAugury.Processing.Common.Authoring;
@@ -28,8 +30,149 @@ using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Tests;
 
+[Collection(PreparedTicketPublicationTestCollection.Name)]
 public sealed class PreparedTicketReviewSnapshotTests
 {
+    [Fact]
+    public async Task EnrichmentSnapshot_PreservesAuthoredRelationshipsAndPublicSchemaV3()
+    {
+        using PreparedTicketPublicationTestFixture.Fixture fixture = new(richGraph: true);
+        PreparedTicketPublicationTestFixture.SourceResult source =
+            await fixture.CreateSourceRunAsync("FHIR-10028", "FHIR-29212");
+        string originalPath = Path.Combine(fixture.SnapshotDirectory, source.Descriptor.FileName);
+        byte[] originalHash = SHA256.HashData(await File.ReadAllBytesAsync(originalPath));
+        PreparedTicketPublicationTestFixture.MetadataFetcher fetcher =
+            PreparedTicketPublicationTestFixture.MetadataFetcher.For(source.ExpectedRevisions);
+        PreparedTicketPublicationRefreshService service = fixture.CreateRefreshService(fetcher);
+        PreparedTicketPublicationRefreshResult admitted = await service.StartAsync(source.Run.Id);
+
+        AuthoringSnapshotDescriptor descriptor = Assert.IsType<AuthoringSnapshotDescriptor>(
+            await fixture.CreatePostProcessor(service).FinalizeRunAsync(admitted.Run.RunId));
+
+        Assert.Equal(PreparedTicketSnapshotSchemaV3.Version, descriptor.SchemaVersion);
+        Assert.Equal(PreparedTicketPublicationContract.CurrentVersion, descriptor.PublicationProof!.ContractVersion);
+        Assert.NotEqual(source.Descriptor.SnapshotId, descriptor.SnapshotId);
+        Assert.True(descriptor.Sequence > source.Descriptor.Sequence);
+        Assert.Equal(originalHash, SHA256.HashData(await File.ReadAllBytesAsync(originalPath)));
+        await using SqliteConnection original = await SqliteReviewSnapshotValidator.OpenReadOnlyAsync(originalPath);
+        await using SqliteConnection enriched = await SqliteReviewSnapshotValidator.OpenReadOnlyAsync(
+            Path.Combine(fixture.SnapshotDirectory, descriptor.FileName));
+        AssertMatchesCatalog(enriched, PreparedTicketSnapshotSchemaV3.Catalog);
+        foreach (string table in new[]
+        {
+            "prepared_tickets", "prepared_ticket_repos", "prepared_ticket_related_jira",
+            "prepared_ticket_related_zulip", "prepared_ticket_related_github",
+            "prepared_github_hydration", "prepared_repo_hydration", "prepared_ticket_jira_xref",
+            "prepared_ticket_jira_content", "prepared_ticket_artifacts", "prepared_ticket_pages",
+            "prepared_ticket_topics", "prepared_ticket_topic_groups", "prepared_ticket_topic_members",
+            "authoring_result_receipts",
+        })
+        {
+            Assert.Equal(
+                ReadSnapshotRows(original, $"SELECT * FROM {table} ORDER BY RowId"),
+                ReadSnapshotRows(enriched, $"SELECT * FROM {table} ORDER BY RowId"));
+        }
+        Assert.Equal(
+            ReadSnapshotRows(original, "SELECT * FROM prepared_ticket_partition_receipts ORDER BY RunId, PartitionKey"),
+            ReadSnapshotRows(enriched, "SELECT * FROM prepared_ticket_partition_receipts ORDER BY RunId, PartitionKey"));
+        Assert.Equal(
+            ReadSnapshotRows(original, $"SELECT * FROM authoring_run_items WHERE RunId = '{source.Run.Id}' ORDER BY RowId"),
+            ReadSnapshotRows(enriched, $"SELECT * FROM authoring_run_items WHERE RunId = '{source.Run.Id}' ORDER BY RowId"));
+        Assert.Equal(
+            ReadSnapshotRows(original, $"SELECT * FROM authoring_run_input_provenance WHERE RunId = '{source.Run.Id}' ORDER BY RowId"),
+            ReadSnapshotRows(enriched, $"SELECT * FROM authoring_run_input_provenance WHERE RunId = '{source.Run.Id}' ORDER BY RowId"));
+        Assert.Equal(
+            ReadSnapshotRows(original, "SELECT * FROM prepared_jira_hydration WHERE TicketKey <> JiraKey ORDER BY RowId"),
+            ReadSnapshotRows(enriched, "SELECT * FROM prepared_jira_hydration WHERE TicketKey <> JiraKey ORDER BY RowId"));
+        Assert.Equal(
+            "2002-02-02T00:00:00.0000000+00:00",
+            Scalar<string>(original, "SELECT UpdatedAt FROM prepared_jira_hydration WHERE TicketKey = 'FHIR-10028' AND JiraKey = TicketKey"));
+        Assert.Equal(
+            "2026-09-01T00:00:00.0000000+00:00",
+            Scalar<string>(enriched, "SELECT UpdatedAt FROM prepared_jira_hydration WHERE TicketKey = 'FHIR-10028' AND JiraKey = TicketKey"));
+        Assert.Equal("Reporter FHIR-10028", Scalar<string>(enriched,
+            "SELECT Reporter FROM prepared_ticket_hydration WHERE TicketKey = 'FHIR-10028'"));
+        Assert.Equal("Requester FHIR-10028", Scalar<string>(enriched,
+            "SELECT DisplayName FROM prepared_ticket_in_person_requesters WHERE TicketKey = 'FHIR-10028'"));
+        Assert.Equal("Missing hydration reason FHIR-10028", Scalar<string>(enriched,
+            "SELECT Justification FROM prepared_ticket_related_zulip WHERE TicketKey = 'FHIR-10028' AND ZulipThreadId = '12345'"));
+        Assert.EndsWith("/near/12345", Scalar<string>(enriched,
+            "SELECT Url FROM prepared_zulip_hydration WHERE TicketKey = 'FHIR-10028' AND ZulipThreadId = '12345'"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EnrichmentSnapshot_RechecksActualBackupAfterLivePreflight()
+    {
+        using PreparedTicketPublicationTestFixture.Fixture fixture = new(richGraph: true);
+        PreparedTicketPublicationTestFixture.SourceResult source =
+            await fixture.CreateSourceRunAsync("FHIR-10028", "FHIR-29212");
+        string originalPath = Path.Combine(fixture.SnapshotDirectory, source.Descriptor.FileName);
+        byte[] originalHash = SHA256.HashData(await File.ReadAllBytesAsync(originalPath));
+        PreparedTicketPublicationRefreshService service = fixture.CreateRefreshService(
+            PreparedTicketPublicationTestFixture.MetadataFetcher.For(source.ExpectedRevisions));
+        PreparedTicketPublicationRefreshResult admitted = await service.StartAsync(source.Run.Id);
+        fixture.Execute(
+            $"""
+            CREATE TRIGGER enrichment_snapshot_drift AFTER INSERT ON authoring_review_snapshots
+            WHEN NEW.RunId = '{admitted.Run.RunId}'
+            BEGIN
+                UPDATE prepared_jira_hydration SET DescriptionHtml = 'changed between preflight and backup'
+                WHERE TicketKey = 'FHIR-10028' AND JiraKey = TicketKey;
+            END
+            """);
+        PreparedTicketPublicationTestFixture.CountingGroupingDispatcher grouping = new(fixture.Database);
+
+        Assert.Null(await fixture.CreatePostProcessor(service, grouping).FinalizeRunAsync(admitted.Run.RunId));
+
+        Assert.Equal(AuthoringStatusValues.Runs.Superseded, (await fixture.Store.GetRunAsync(admitted.Run.RunId))!.Status);
+        Assert.Null(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+        Assert.Equal(0, grouping.CallCount);
+        Assert.Equal(2, fixture.CountLive("authoring_run_attempts"));
+        Assert.Equal(originalHash, SHA256.HashData(await File.ReadAllBytesAsync(originalPath)));
+        AuthoringReviewSnapshotRecord rejected = Assert.Single(
+            await fixture.Store.GetSnapshotRecordsAsync(), record => record.RunId == admitted.Run.RunId);
+        Assert.Equal(AuthoringStatusValues.Snapshots.Error, rejected.Status);
+        Assert.False(File.Exists(rejected.Path));
+        Assert.False(File.Exists(rejected.TempPath));
+    }
+
+    private static string ReadSnapshotRows(SqliteConnection connection, string sql)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = sql;
+        using SqliteDataReader reader = command.ExecuteReader();
+        List<object?[]> rows = [];
+        while (reader.Read())
+        {
+            rows.Add(Enumerable.Range(0, reader.FieldCount).Select(index =>
+                reader.IsDBNull(index) ? null : reader.GetValue(index)).ToArray());
+        }
+        return JsonSerializer.Serialize(rows);
+    }
+
+    [Theory]
+    [InlineData(PreparedTicketSnapshotSchemaV1.Version)]
+    [InlineData(PreparedTicketSnapshotSchemaV2.Version)]
+    [InlineData(PreparedTicketSnapshotSchemaV3.Version)]
+    public async Task EnrichmentAcceptsLegacySourceSchemasButAlwaysProducesSchemaV3(int sourceSchema)
+    {
+        using PreparedTicketPublicationTestFixture.Fixture fixture = new(richGraph: true, schemaVersion: sourceSchema);
+        PreparedTicketPublicationTestFixture.SourceResult source =
+            await fixture.CreateSourceRunAsync("FHIR-10028", "FHIR-29212");
+        Assert.Equal(sourceSchema, source.Descriptor.SchemaVersion);
+        PreparedTicketPublicationRefreshService service = fixture.CreateRefreshService(
+            PreparedTicketPublicationTestFixture.MetadataFetcher.For(source.ExpectedRevisions));
+        PreparedTicketPublicationRefreshResult admitted = await service.StartAsync(source.Run.Id);
+
+        AuthoringSnapshotDescriptor result = Assert.IsType<AuthoringSnapshotDescriptor>(
+            await fixture.CreatePostProcessor(service, snapshotSchemaVersion: PreparedTicketSnapshotSchemaV3.Version)
+                .FinalizeRunAsync(admitted.Run.RunId));
+
+        Assert.Equal(PreparedTicketSnapshotSchemaV3.Version, result.SchemaVersion);
+        Assert.Equal(PreparedTicketPublicationContract.CurrentVersion, result.PublicationProof!.ContractVersion);
+        Assert.Equal(source.Run.Id, result.PublicationProof.SourceRunId);
+    }
+
     [Fact]
     public void PublicationContractFingerprintsAreCanonicalAndVersioned()
     {
