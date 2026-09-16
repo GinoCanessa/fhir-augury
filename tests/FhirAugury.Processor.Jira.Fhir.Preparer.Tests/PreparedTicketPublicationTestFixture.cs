@@ -1,3 +1,7 @@
+using System.Globalization;
+using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Text;
 using FhirAugury.Processing.Common.Authoring;
@@ -93,6 +97,7 @@ internal static class PreparedTicketPublicationTestFixture
 
         public PreparerDatabase Database { get; }
         public AuthoringRunStore Store { get; }
+        public string DirectoryPath => _directory;
         public string SnapshotDirectory { get; }
         public Action<string>? BeforeSourceSnapshot { get; set; }
 
@@ -145,11 +150,13 @@ internal static class PreparedTicketPublicationTestFixture
         public async Task<AuthoringRunRecord> CreateAdditionalCurrentOutputAsync(
             string specification,
             string[] ticketKeys,
-            bool groupOutput = true)
+            bool groupOutput = true,
+            DateTimeOffset? sourceUpdatedAt = null)
         {
             AuthoringRunRecord run = await Store.CreateRunAsync(
                 "jira-fhir",
-                ticketKeys.Select(key => new AuthoringRunItemDefinition(key, "fhir", $"additional-{key}")).ToArray(),
+                ticketKeys.Select(key => new AuthoringRunItemDefinition(
+                    key, "fhir", sourceUpdatedAt?.ToString("O", CultureInfo.InvariantCulture) ?? $"additional-{key}")).ToArray(),
                 databaseOnly: true,
                 inputProvenance: [new("jira", new DateTimeOffset(2026, 9, 14, 0, 0, 0, TimeSpan.Zero), 18)]);
             Assert.True(await Store.TryAcquireMutationFenceAsync("jira-fhir", run.Id));
@@ -518,6 +525,144 @@ internal static class PreparedTicketPublicationTestFixture
             SqliteConnection.ClearAllPools();
             TestFileCleanup.SafeDeleteDirectory(_directory);
         }
+    }
+
+    internal sealed class PublicationHttpHandler : HttpMessageHandler
+    {
+        public const string MessageUrl =
+            "https://chat.fhir.org/#narrow/stream/implementers/topic/Publication/near/12345";
+        public static readonly DateTimeOffset SourceRefreshedAt =
+            new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
+
+        private readonly Fixture _fixture;
+        private readonly AuthoringRunControlService _control;
+
+        public PublicationHttpHandler(Fixture fixture, IReadOnlyDictionary<string, DateTimeOffset> jiraUpdates)
+        {
+            _fixture = fixture;
+            _control = new AuthoringRunControlService(
+                fixture.Store, new AuthoringRetryPolicy(Options.Create(new ProcessingServiceOptions())));
+            AddJiraItems(jiraUpdates);
+        }
+
+        public Dictionary<string, ItemResponse> JiraItems { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public List<string> JiraRequests { get; } = [];
+        public List<string> ZulipRequests { get; } = [];
+        public List<string> Requests { get; } = [];
+
+        public HttpClient CreateClient()
+            => new(this) { BaseAddress = new Uri("http://publication-fixture.invalid/") };
+
+        public void AddJiraItems(IReadOnlyDictionary<string, DateTimeOffset> jiraUpdates)
+        {
+            foreach ((string key, DateTimeOffset updatedAt) in jiraUpdates)
+            {
+                JiraItems.Add(key, new ItemResponse
+                {
+                    Source = "jira",
+                    Id = key,
+                    Title = $"Title {key}",
+                    UpdatedAt = updatedAt.ToUniversalTime(),
+                    People = new ItemPeopleResponse(
+                        key == "FHIR-806" ? null : $"Reporter {key}",
+                        key is "FHIR-29212" or "FHIR-806" ? null : $"Assignee {key}",
+                        key is "FHIR-29212" or "FHIR-806" ? [] : [$"Requester {key}"])
+                    {
+                        PublicDisplayNamePolicyVersion = PublicDisplayNamePolicy.CurrentVersion,
+                    },
+                    Provenance = new SourceReadProvenance
+                    {
+                        Source = "jira",
+                        ContentRevision = 901,
+                        IsStable = true,
+                        ProjectLastSuccessfulRefreshAt = new Dictionary<string, DateTimeOffset?>
+                        {
+                            [key[..key.IndexOf('-')]] = SourceRefreshedAt,
+                        },
+                    },
+                });
+            }
+        }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Uri uri = Assert.IsType<Uri>(request.RequestUri);
+            Assert.Equal("publication-fixture.invalid", uri.Host);
+            Assert.Equal(HttpMethod.Get, request.Method);
+            Requests.Add(uri.PathAndQuery);
+            const string jiraPrefix = "/api/v1/jira/items/";
+            const string runPrefix = "/api/v1/processing-services/Preparer/authoring/runs/";
+            if (uri.AbsolutePath.StartsWith(jiraPrefix, StringComparison.Ordinal))
+            {
+                string key = Uri.UnescapeDataString(uri.AbsolutePath[jiraPrefix.Length..]);
+                JiraRequests.Add(key);
+                return Json(JiraItems[key]);
+            }
+            if (uri.AbsolutePath == "/api/v1/zulip/references/resolve")
+            {
+                Assert.StartsWith("?reference=", uri.Query, StringComparison.Ordinal);
+                string reference = Uri.UnescapeDataString(uri.Query["?reference=".Length..]);
+                ZulipRequests.Add(reference);
+                return reference switch
+                {
+                    "12345" => Json(new ZulipReferenceResolutionResponse
+                    {
+                        Reference = reference,
+                        Outcome = ZulipReferenceLookupOutcome.Resolved,
+                        Kind = ZulipReferenceKind.Message,
+                        MessageId = 12345,
+                        StreamId = 17,
+                        StreamName = "implementers",
+                        Topic = "Publication",
+                        MessageCount = 4,
+                        FirstMessageAt = null,
+                        LastMessageAt = new DateTimeOffset(2026, 9, 10, 12, 0, 0, TimeSpan.Zero),
+                        FirstMessageExcerpt = "Indexed discussion for the accepted proposal.",
+                        Url = MessageUrl,
+                        Diagnostics = [ZulipReferenceDiagnosticCode.InvalidTimestamp],
+                    }),
+                    "stream::topic" => Json(new ZulipReferenceResolutionResponse
+                    {
+                        Reference = reference,
+                        Outcome = ZulipReferenceLookupOutcome.NotFound,
+                    }, HttpStatusCode.NotFound),
+                    _ => throw new InvalidOperationException($"Unexpected synthetic Zulip reference '{reference}'."),
+                };
+            }
+            if (uri.AbsolutePath.StartsWith(runPrefix, StringComparison.Ordinal))
+            {
+                string[] coordinate = uri.AbsolutePath[runPrefix.Length..].Split('/');
+                string runId = coordinate[0];
+                if (coordinate.Length == 1)
+                {
+                    AuthoringRunControlStatus status = await _control.GetStatusAsync("jira-fhir", runId, cancellationToken);
+                    return Json(new AuthoringRunResponse(status.Run, status.Items));
+                }
+                AuthoringRunRecord run = Assert.IsType<AuthoringRunRecord>(
+                    await _fixture.Store.GetRunAsync(runId, cancellationToken));
+                AuthoringSnapshotDescriptor descriptor = Assert.IsType<AuthoringSnapshotDescriptor>(
+                    await _fixture.Store.GetSnapshotDescriptorAsync(
+                        Assert.IsType<string>(run.SnapshotId), cancellationToken));
+                if (coordinate is [_, "snapshot"])
+                {
+                    return Json(descriptor);
+                }
+                if (coordinate is [_, "snapshot", "bytes"])
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StreamContent(File.OpenRead(
+                            Path.Combine(_fixture.SnapshotDirectory, descriptor.FileName))),
+                    };
+                }
+            }
+            throw new InvalidOperationException($"Unexpected synthetic HTTP request '{request.Method} {uri.PathAndQuery}'.");
+        }
+
+        private static HttpResponseMessage Json<T>(T value, HttpStatusCode status = HttpStatusCode.OK)
+            => new(status) { Content = JsonContent.Create(value, options: JsonSerializerOptions.Web) };
     }
 
     internal sealed class MetadataFetcher

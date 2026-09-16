@@ -25,29 +25,35 @@ schema v3; the current host requires that version. The publisher also accepts
 legacy Preparer snapshot schema v1 and v2 pairs. Older pairs remain publishable
 but produce degraded readiness, cannot expose trusted people, and are never
 edited in place. The live processor database is not a site input. Preparer
-snapshot schema v3 and the publication-owned Discussion renderer schema v2 are
+snapshot schema v3 and the publication-owned Discussion renderer schema v3 are
 separate contracts.
 
 ## Reading the generated site
 
-The default visible title is
-`Tickets for Discussion - Built <Month dd, yyyy>` when a schema-v2 or
-schema-v3 snapshot can prove Jira provenance for the complete retained corpus.
-`Built` means the latest successful upstream Jira refresh represented by every
-retained ticket's accepted authoring run and stable parent-ticket hydration.
-The date is formatted from the frozen UTC value. It is **not** the authoring
-completion, snapshot creation, or publication date.
+The default visible title is, for example,
+`Tickets for Discussion - Sept 15, 2026`. Its date is the maximum **self-ticket
+Jira `UpdatedAt`** among the tickets actually exported by the publication's
+generation filters. In the snapshot this is
+`prepared_jira_hydration.UpdatedAt` where `TicketKey` equals `JiraKey`.
+Related-ticket dates, upstream refresh watermarks, authoring completion,
+snapshot creation, and publication time are not substitutes. The maximum is
+normalized to UTC, with fixed English labels
+`Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sept, Oct, Nov, Dec` and an unpadded
+day. There is no `Built` prefix.
 
-For schema-v2 or schema-v3 input, each retained ticket must have exactly one
-accepted authoring coordinate. Zero or multiple matches are structural
-validation errors that abort publication rather than a reason to hide the
-date. After that check passes, the publisher omits the suffix rather than
-substitute another timestamp when a migrated legacy run has null provenance,
-a source read was unstable, or any run or parent freshness coordinate is
-missing, null, or partially bound. Schema-v1 input is also unsuffixed. An
-explicit `ticket-site --title` remains the base title; Discussion appends the
-freshness suffix and then any filter suffix. This does not affect Tickets for
-Applying, whose Planner snapshot and renderer path remain on schema v1.
+The suffix requires a nonempty export with a valid date for every exported
+ticket. `discussionCorpus.dateCoverage` is `empty`, `none`, `partial`, or
+`complete`; partial coverage retains its known `maxJiraUpdatedAt` as a fact
+but does not add a title date. Malformed non-null dates fail validation rather
+than silently becoming missing dates. For schema-v2/v3 input, zero or multiple
+accepted authoring coordinates for a retained ticket remain structural
+validation errors. Complete dates can qualify the suffix even when provenance
+readiness is degraded, including on a readable legacy snapshot.
+
+An explicit `ticket-site --title` remains the stable base title. The date
+suffix and then the generation-filter suffix form `displayTitle`. Browser
+filters do not change this frozen title. Tickets for Applying remains
+unchanged on the Planner snapshot/renderer v1 path.
 
 Every newly generated Discussion manifest and renderer database also carries
 structured readiness:
@@ -62,24 +68,55 @@ structured readiness:
   trusted people as unverified.
 
 Schema v1 and v2 always have degraded readiness because they predate the
-schema-v3 people-policy contract. A provenance-complete v2 publication may
-still show its `Built` date, but it still cannot expose trusted people.
+schema-v3 people-policy contract. They can still have complete self-ticket
+dates, but cannot expose trusted people and are never upgraded in place.
+`jiraSourceLastSuccessfulRefreshAt` remains upstream provenance, not the title
+date.
+
+Readiness and coverage are separate. Renderer-v3 manifests and browser
+databases record `discussionCorpus`: ticket and exported-project counts,
+valid self-date count and maximum, tickets with a public Reporter, Assignee,
+or in-person requester, and per-kind related-link counts. Link counts
+distinguish resolved safe links, unresolved rows retaining a safe URL, and
+rows without a usable URL. These are measured exported-corpus facts, not a
+promise that every name or link is available. Older manifests without this
+summary have **unknown coverage**, not zero coverage.
 
 Ticket pages use only public, snapshot-resident context:
 
 - Reporter and Assignee use only schema-v3 display names carrying the exact
   current public-policy marker. When that proof is unavailable, the page shows
-  the structured readiness reason instead of a legacy value. `Not provided`
-  means the current policy ran and that role is legitimately absent.
+  the structured readiness reason instead of a legacy value.
+  `No public display name available` means no publishable value was supplied
+  under the current policy; it does not establish that the role is absent or
+  that a ticket is unassigned.
   In-person requesters appear only when at least one current-policy,
   context-free-safe v3 value exists. Schema-v1 and schema-v2 sites
   intentionally show no public people because those snapshots cannot prove
   that the account-identifier policy ran.
-- Standalone `FHIR-<number>` keys in summary prose link to canonical Jira in a
-  new tab. Linked/related Jira summaries and related Zulip summaries place
-  deduplicated source lists beside the text; GitHub summaries do not gain
-  links.
-- The browser reads a publication-owned renderer-schema-v2 database projected
+- Facets are cumulative and preserve the current overview, crosscut, or list
+  route. Removing one chip keeps the other filters. Active and
+  generation-fixed dimensions are hidden from facet choices; Project is
+  omitted for a single-project **export**, not merely a filtered subset.
+  List search/sort and back/forward state survive filter changes, and an
+  empty result retains recovery controls.
+- Guided proposal headings explain the choices without changing authored
+  proposal bodies, justifications, recommendations, or their copy-for-AI
+  contents.
+- Safe HTTP(S) repository, Jira, and Zulip URLs are actionable
+  external links. In-corpus Jira navigation uses the site's hash route and
+  preserves filters; external source links open safely in another tab.
+  Numeric Zulip references resolve to indexed message context and a `/near/`
+  URL, not a guessed topic link. Linked/related Jira and Zulip summaries share
+  source links with the related-item context. Repair of missing GitHub-item
+  URLs or lookup failures is outside this enrichment operation; repository
+  references use their separate snapshot-resident URLs.
+- A failed lookup retains previously source-backed safe context as
+  **last-known**, with the lookup failure still visible. An old zero-message
+  thread URL is **unverified**, even if it once carried a `resolved` flag.
+  Sidebar and summary-source diagnostics distinguish these cases. Optional
+  detail diagnostics remain visible even when the link itself is resolved.
+- The browser reads a publication-owned renderer-schema-v3 database projected
   from the verified snapshot. It never reads processor tables and makes no
   live Jira, Orchestrator, or Preparer request, so the complete output remains
   usable through `file://` or ordinary static hosting. Discussion HTML embeds
@@ -224,35 +261,101 @@ release; remove old workflow/run directories manually only while the Dev UI is
 stopped. Generated JavaScript is served from the Dev UI origin, which is a
 trusted-local boundary, and the snapshot cache itself is never web-served.
 
-## Repair a degraded Discussion publication
+## Populate source people only after an explicit preview
+
+Source-person population is a separate, explicitly authorized prerequisite
+when qualifying names are missing. Generating a site or refreshing Preparer
+publication data does **not** perform Jira backfill. Use the Orchestrator
+gateway (`:5150`) or the Dev UI API catalog's **Public People Maintenance**
+entries; there is no dedicated preview/apply CLI action documented here.
+
+Preview is read-only and defaults to cache-only evidence:
+
+```http
+POST /api/v1/jira/public-people/preview
+Content-Type: application/json
+
+{"keys":["FHIR-10028","FHIR-29212"],"evidenceMode":"cache-only"}
+```
+
+Review `code`, each ticket/role reason, `canApply`, `affectedTickets`,
+`changes`, and `requiresSharedUserImpactAcknowledgement`. The source binds
+exact identities, ticket revisions, before-images, trusted observations, and
+the complete shared-user impact, including nonselected tickets. It never
+matches or rebinds people by display name. Limits are 2,000 requested keys,
+10,000 affected ticket coordinates, eight outstanding previews, and 15 minutes
+after preview completion. Oversized impact is refused, not truncated.
+
+Legacy raw caches without source-written acquisition receipts have **unknown,
+untrusted origin**. Their presence is not permission to populate names.
+Missing identity/name evidence, conflicting observations, missing fields,
+malformed values, and rejected names are surfaced explicitly. There is no
+guarantee that every missing name can be recovered. Only a deliberate
+`"evidenceMode":"upstream"` opts into upstream reads using existing Jira source
+authentication; it does not ingest issues, and a different upstream revision
+can still make the preview ineligible.
+
+Apply only the issued token. Set `acknowledgeSharedUserImpact` to `true` only
+after expressly accepting every disclosed nonselected-ticket effect when
+required:
+
+```http
+POST /api/v1/jira/public-people/apply
+Content-Type: application/json
+
+{"previewToken":"<previewToken>","acknowledgeSharedUserImpact":false}
+```
+
+The source holds its pipeline gate and rechecks the preview in one SQLite
+immediate transaction. People, people lookups, and the local content-generation
+increment commit together; existing identity bindings, non-people data,
+mutation markers, and ingestion/upstream watermarks are preserved. Caller
+names, identities, URLs, paths, and unknown request fields are not accepted as
+replacement evidence. Stale, expired, consumed, or restart-lost previews need a
+new preview. A lost apply response is an unknown outcome: inspect and obtain
+fresh evidence, never blindly replay the mutation.
+
+## Refresh publication data without replacing original output
 
 Publication repair is a Preparer-owned metadata-only lifecycle followed by
 ordinary pair download and local site generation. It does not edit the legacy
 pair or site and does not replay authoring or grouping.
 
-The Dev UI offers **Refresh publication data and snapshot** only on an
-existing Prepare publication whose `discussionReadiness` is absent or
-degraded. An unpublished completed run keeps **Generate review site**; a ready
-publication keeps **Regenerate review site**. Planner, database-only,
-superseded, active, and `publication-refresh` source runs are not eligible.
+**Generate/Regenerate review site** and **Refresh publication data and
+snapshot** are independent Dev UI actions for an eligible completed Prepare
+source run with an existing publication, even if it is already proof-ready.
+An unpublished completed run offers generation only. Readiness does not
+guarantee complete names or links.
+Generation uses the verified pair already associated with that run; refresh
+requests a different linked run and pair. Planner, database-only, superseded,
+active, and `publication-refresh` source runs remain ineligible in this UI.
 
 1. Open the completed source run at `/operations/prepare/<sourceRunId>` and
-   review **Publication readiness is not recorded** or **Publication readiness
-   is degraded**, including every reason code.
-2. Complete the effective-configuration preflight above, then choose
+   retain its original descriptor, database, and complete site. Record their
+   identities/digests and review readiness and coverage separately.
+2. Complete the effective-configuration preflight and, only if separately
+   authorized and needed, the source people preview/apply above. Then choose
    **Refresh publication data and snapshot** once.
 3. The Preparer creates a different run with
    `purpose:"publication-refresh"`, `sourceRunId:"<sourceRunId>"`, and
    `databaseOnly:false`; the UI navigates to
-   `/operations/prepare/<refreshRunId>`.
+   `/operations/prepare/<refreshRunId>`. Admission first verifies the source
+   run's immutable snapshot and requires its actual protected content,
+   accepted receipts, and grouping IDs/order/membership to remain unchanged.
+   It then freezes the entire current accepted corpus atomically with the
+   new recipe and mutation fence.
 4. Follow that run until `state.isTerminal` is true. It covers the Preparer's
-   current accepted receipt-backed corpus, which can differ from the old
-   source run's membership. Its items retain accepted receipt coordinates and
-   create no authoring attempts. Finalization fetches only current Jira
-   publication metadata, requires each accepted ticket revision to remain
-   unchanged and every read to share one stable Jira content revision, updates
-   publication-only fields atomically, and certifies existing grouping output
-   without dispatching grouping.
+   frozen receipt-backed corpus. Additional current output is permitted only
+   without changing the original protected output and is disclosed through
+   public run status `corpusComparison` (source snapshot, source exported
+   count, current accepted count, and additional count); clients do not read
+   the live database. Items retain accepted receipts and create no authoring
+   attempts. The `publication-enrichment` v1 recipe's
+   `publication-enrichment-v1` stage fetches current Jira publication metadata
+   and accepted Zulip references through typed Orchestrator HTTP. Jira
+   revisions must still match and all Jira reads must share one stable content
+   generation. An allowlisted transaction applies the metadata and per-reference
+   outcomes, and existing grouping is certified without dispatching it.
 5. When the refresh run reaches `completed`, choose **Generate review site**
    on that run. The Dev UI downloads its verified pair to
    `cache\devui-authoring-snapshots\prepare\<refreshRunId>\` and publishes the
@@ -260,7 +363,8 @@ superseded, active, and `publication-refresh` source runs are not eligible.
    `/review-sites/prepare/<refreshRunId>/discussion/`. Snapshot download and
    site publication remain separate from processor completion.
 
-The new schema-v3 descriptor contains `publicationProof` binding the source
+The new schema-v3 descriptor retains publication-proof contract v1:
+`publicationProof` binds the source
 run, stable Jira generation and freshness, current people policy, accepted
 corpus, and retained grouping output. A matching renderer reports
 `discussionReadiness.evidence:"publication-refresh"` and verified readiness.
@@ -281,11 +385,22 @@ A transient metadata or snapshot failure leaves the linked run in recoverable
 `error`; keep polling and let processor recovery reuse its durable state. A
 crash after the metadata transaction reuses the apply receipt without another
 source fetch, and interrupted snapshot promotion resumes the same proof and
-snapshot coordinate. If a ticket disappeared, an accepted Jira revision
-changed, or the reads span multiple Jira content revisions, the run instead
-ends as terminal `superseded`, releases its fence, produces no snapshot, and
-states that ordinary re-authoring is required. There is no override or partial
-refresh; start a normal Preparer run for the changed source.
+snapshot coordinate. Missing/replaced original content or changed grouping
+causes refusal, including before a run is admitted. If an accepted Jira
+revision changes, the source generation conflicts, or frozen protection
+drifts during execution, the new run is terminally refused/superseded without
+a usable new snapshot. Retain the original publication and inspect the
+conflict. Do not delete accepted output, re-author, regroup, reset a database,
+or force replacement of the old site as a fallback repair.
+
+The new recipe is persisted before scheduling, even before the first stage
+exists. Recovery of an explicitly persisted legacy null maintenance request
+uses the old Jira-only recipe; malformed or unknown non-null metadata is
+refused, not interpreted as legacy. Before a binary downgrade, quiesce or
+reconcile all new-recipe runs. Committed source people and processor
+publication metadata survive a code revert: do not reset them or lower source
+generations. Any correction requires a separately reviewed owning-service
+operation while retaining accepted output and immutable artifacts.
 
 ## Headless equivalent
 
@@ -399,20 +514,24 @@ snapshot IDs, descriptor/database filenames, size, and both digests.
 dotnet run --project tools\ticket-site -- `
   --preparer-snapshot "<snapshotPath>" `
   --snapshot-descriptor "<descriptorPath>" `
-  --out cache\jira-ticket-site `
-  --force
+  --out "cache\jira-ticket-sites\<runId>"
 ```
 
-Open `cache\jira-ticket-site\index.html` and choose the discussion entry. Its
-label includes the frozen Jira date when provenance is complete. The
+Open `cache\jira-ticket-sites\<runId>\index.html` and choose the discussion entry.
+Use a distinct output root for a linked refresh run; do not force the original
+site's replacement. Its label includes the frozen maximum Jira self-ticket
+date when exported date coverage is complete. The
 discussion sub-site records the stable base title, display title, optional
-source refresh, structured `discussionReadiness`, source snapshot identity,
-and renderer schema version in `discussion\site-manifest.json`.
+source refresh, structured `discussionReadiness` and `discussionCorpus`, source
+snapshot identity, and renderer schema version in
+`discussion\site-manifest.json`.
 
 ### Headless publication repair
 
-After confirming that an existing publication is legacy or degraded and
-completing the schema-v3 configuration preflight, start the linked refresh:
+After retaining the original pair/site, reviewing coverage independently of
+readiness, and completing the schema-v3 configuration and preservation
+preflights, start the linked refresh. Any source people backfill is a separate
+authorized preview/apply, not an effect of this command:
 
 ```powershell
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"refresh-publication","runId":"<sourceRunId>"}'
@@ -423,7 +542,8 @@ The successful response contains the new run under `run` and its receipt-backed
 maintenance items under `items`. Save `run.runId` as `<refreshRunId>`, poll it
 with the existing `status` action, download its snapshot with the existing
 `snapshot` action, and invoke `ticket-site` with that new verified pair. Do not
-pass `<sourceRunId>` to those post-refresh steps.
+pass `<sourceRunId>` to those post-refresh steps. Review the returned run's
+`corpusComparison` before accepting a publication with additional tickets.
 
 The refresh mutation is sent once. If its response is lost, the CLI does not
 replay it; it performs one
@@ -454,11 +574,13 @@ and renders the verified pair supplied after processor completion.
 - A site publication failure is client-side. Keep the snapshot pair and rerun
   only `ticket-site`; never restart authoring to repair publication.
 - A publication-refresh metadata transaction updates only publication fields
-  and writes a durable apply receipt. It does not modify authored content,
-  accepted receipts, historical input provenance, or grouping output.
-- A refresh source-revision or source-generation mismatch terminally
-  supersedes the refresh run, releases the fence, and requires ordinary
-  re-authoring. Do not override the stop or publish a partial refresh.
+  and accepted Zulip enrichment outcomes and writes a durable apply receipt.
+  It does not modify authored content, accepted receipts, historical input
+  provenance, or grouping output.
+- Original protected-output drift refuses admission; an execution-time
+  protection, source-revision, or source-generation conflict supersedes the
+  refresh run and releases the fence. Retain the original publication, inspect
+  the refusal, and do not override it or substitute authoring/grouping.
 - Existing pre-cutover rows remain `legacy-unverified` until the processor's
   initial revalidation run accepts real receipts. Ordinary runs and the first
   canonical snapshot remain blocked until that gate clears.
@@ -469,6 +591,14 @@ and renders the verified pair supplied after processor completion.
 - Scheduled discovery does not automatically reselect an exhausted unchanged
   Jira revision. A newer revision is eligible normally; deliberately retrying
   the unchanged revision requires an explicit new run.
+
+Typed Zulip diagnostics are available separately at gateway
+`GET /api/v1/zulip/references/resolve?reference=...`. Resolution is indexed-only
+and returns a per-reference outcome, including explicit ambiguity/unindexed
+failures, with canonical nullable UTC timestamps. Neither the transport fix
+nor synthetic acceptance evidence proves that all historical JSON failures,
+missing names, or a particular live publication have been repaired. Live
+repair and acceptance remain separately authorized operations.
 
 ## Reference
 

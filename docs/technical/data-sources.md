@@ -70,6 +70,8 @@ Each source also exposes source-specific HTTP API endpoints for domain queries:
 | `GetIssueNumbers` | Bulk issue number lookup |
 | `GetIssueSnapshot` | Detailed issue snapshot |
 | `ListLocalProcessingTickets` | Page processor candidates with the Jira source generation represented by the page |
+| `POST /api/v1/public-people/preview` | Read-only, bounded preview of policy-safe public-person population |
+| `POST /api/v1/public-people/apply` | Conditional apply of an acknowledged source-owned preview |
 
 ### Zulip Endpoints
 
@@ -83,6 +85,7 @@ Each source also exposes source-specific HTTP API endpoints for domain queries:
 | `GetMessagesByUser` | Messages filtered by sender |
 | `QueryMessages` | Arbitrary message query |
 | `GetThreadSnapshot` | Thread snapshot with context |
+| `GET /api/v1/references/resolve?reference=...` | Typed, indexed-only resolution of a numeric message or legacy thread reference |
 
 ### Confluence Endpoints
 
@@ -273,10 +276,62 @@ while constructing the complete response and sets
 `PublicDisplayNamePolicyVersion` to the current version even when no people
 remain. Missing, older, unknown, or future markers are not trusted by
 downstream hydration. Usernames, email addresses, and Jira user IDs never
-cross this structured contract; old rows remain ineligible until reingestion
-supplies a policy-safe authenticated display name. The existing string
+cross this structured contract. Old rows without qualifying evidence remain
+ineligible; deliberate source-owned population can supply a proven
+policy-safe name without ordinary ingestion. The existing string
 metadata remains a separate compatibility surface and is not used by Preparer
 hydration.
+
+#### Deliberate public-people preview/apply
+
+The Orchestrator exposes the source operations at
+`POST /api/v1/jira/public-people/preview` and
+`POST /api/v1/jira/public-people/apply`. The Dev UI API catalog lists
+`public-people.preview` and `public-people.apply` under **Public People
+Maintenance**. These are separate source maintenance operations, not
+publication, processor authoring, or ingestion commands.
+
+Preview accepts `keys` and `evidenceMode` (`cache-only`, the default, or an
+explicit `upstream` opt-in). It is read-only, uses no display-name identity
+matching, and binds exact identities, explicit same-revision observations,
+before-images, and complete shared-user reference impact. Public responses
+contain safe ticket/role reason codes and affected-ticket coordinates/counts,
+not raw private identity/name evidence. A missing role differs from a missing
+field or malformed value. Unknown request fields and unsupported modes are
+rejected rather than ignored.
+
+Source-written acquisition receipts are required to trust cached XML/JSON
+observations. Legacy raw caches without those receipts are **untrusted
+unknown-origin evidence**, not a backfill shortcut. Explicit upstream mode
+uses the source's existing authenticated Jira client without ingestion; a
+different upstream ticket revision, conflicting observations, missing exact
+identity/name evidence, or policy rejection can still prevent population.
+This capability does not guarantee recovery of every empty name.
+
+Source-local bounds are 2,000 requested keys, 10,000 affected ticket
+coordinates, eight outstanding previews, and a 15-minute lifetime measured
+after preview completion. Limits cause explicit refusal, never a truncated
+apply scope. Restart discards outstanding previews.
+
+Apply accepts only `previewToken` and `acknowledgeSharedUserImpact`. An
+operator must expressly acknowledge the full disclosed effect on nonselected
+tickets when required; shared-user name changes never rebind those tickets.
+The pipeline gate excludes concurrent ingestion. One SQLite `BEGIN IMMEDIATE`
+transaction rechecks the source generation, identities, revisions,
+before-images, observations, and impact; conditionally writes people and
+missing proven bindings; rebuilds only the people lookups; and increments the
+local content generation when data changed. People, lookups, and generation
+commit together. Before commit, cancellation or conditional-write failure
+rolls them back; late cancellation does not undo a known commit.
+Non-people fields, existing bindings, mutation markers, ingestion state, and
+project upstream-refresh watermarks are preserved; it never clears another
+writer's `MutationInProgress`.
+
+Stale/expired/consumed previews require a fresh preview. After an apply response
+is lost, inspect the source outcome and preview again rather than blindly
+replaying the token. See the [Discussion operator procedure](../user/generating-discussion-tickets.md#populate-source-people-only-after-an-explicit-preview).
+Source backfill does not update a Preparer snapshot or site; a separately
+admitted linked enrichment run is needed for new publication metadata.
 
 ---
 
@@ -332,6 +387,35 @@ message ID per stream. Sets `anchor = lastId + 1` and fetches forward.
 
 **Pagination:** Anchor-based (`anchor`, `num_before=0`, `num_after=batchSize`).
 Continues until `found_newest` is true.
+
+#### Typed reference resolution and transport
+
+Clients use gateway
+`GET /api/v1/zulip/references/resolve?reference=...`, forwarded to the source's
+`GET /api/v1/references/resolve`. A positive numeric message ID is resolved
+only from indexed message/stream/topic context and yields the canonical
+`/near/<messageId>` URL. A legacy `stream:topic` reference likewise needs
+indexed backing. Delimiter ambiguity is an explicit `ambiguous-reference`
+conflict, not a guessed split; unindexed references return `not-found`.
+Resolution never fetches upstream or indexes new content.
+
+The shared `ZulipReferenceResolutionResponse` identifies the exact reference
+and its outcome, kind, safe URL, context, and diagnostics. Timestamps on this
+contract and the thread response are canonical nullable UTC
+`DateTimeOffset` values, not raw SQLite timestamp strings. Aggregated dates
+compare instants across offsets. Malformed optional source dates become null
+with an `invalid-timestamp` diagnostic without discarding an otherwise valid
+indexed link. Malformed JSON/envelopes, unsupported/ambiguous references,
+authentication failures, unavailable sources, timeouts, and not-found results
+remain distinguishable to hydration as per-reference outcomes.
+
+An old thread response could include a safe URL even for zero indexed
+messages. That URL or a legacy `resolved` flag alone is not proof of source
+backing. Publication enrichment retains qualified prior context as last-known
+on a failed lookup, but marks an unbacked retained URL as unverified and
+preserves the failure reason. It never discovers or rewrites analytical
+associations. The transport contract and its automated fixtures do not prove
+that every historical JSON failure or any reported live corpus is recovered.
 
 ---
 

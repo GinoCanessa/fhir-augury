@@ -75,6 +75,12 @@ linked to an earlier run. A publication repair therefore has its own `runId`,
 `purpose:"publication-refresh"`, and the selected snapshot-producing run in
 `sourceRunId`.
 
+New publication-enrichment runs also expose optional `corpusComparison` in
+public run status: `sourceSnapshotId`, `sourceExportedTicketCount`,
+`currentAcceptedTicketCount`, and `additionalTicketCount`. It is the durable
+admission comparison, not a client-side live database query. Legacy runs may
+omit it; omission is not a measured zero.
+
 The processor appends `state` to each operator run:
 
 | Run status | `state.isTerminal` | `state.isRecoverable` | Polling |
@@ -130,9 +136,10 @@ runs sort before terminal runs; each group is newest first.
 
 Ordinary Jira authoring runs with a durable normalized start request are
 listed, as are purpose-marked maintenance runs. In particular, a
-`publication-refresh` remains visible even though it has no ordinary
-`RequestJson`, allowing clients to reconcile an ambiguous POST by `purpose`
-and `sourceRunId`. Purpose-marked `grouping-maintenance` runs are visible too.
+`publication-refresh` remains visible whether it has legacy null request
+metadata or the new versioned maintenance recipe in `RequestJson`, allowing
+clients to reconcile an ambiguous POST by `purpose` and `sourceRunId`.
+Purpose-marked `grouping-maintenance` runs are visible too.
 Initial revalidation and legacy unmarked authoring rows remain available by
 exact ID but are intentionally absent. The response contains `runs` and
 `truncated`; use exact detail as the escape hatch for a known older run.
@@ -211,11 +218,11 @@ Tickets for Applying publication path accepts only that v1 contract.
 
 Discussion publication does not expose either processor schema directly to the
 browser. It validates the verified Preparer pair and projects a fresh
-**Discussion renderer schema v2** database containing only presentation
-metadata and readiness, the facet catalog, tickets, people availability,
-normalized facets, summary sources, related context, and topic/group
-membership. Preparer snapshot schema v3 and Discussion renderer schema v2 are
-separate versioned contracts; neither version implies the other. Applying
+**Discussion renderer schema v3** database containing only presentation
+metadata, readiness and corpus coverage, the facet catalog, tickets, people
+availability, normalized facets, summary sources, related context, and
+topic/group membership. Preparer snapshot schema v3 and Discussion renderer
+schema v3 are separate versioned contracts; neither version implies the other. Applying
 continues through its existing Planner-v1 path. Both generated sites are
 static artifacts with no live source, Orchestrator, or processor dependency.
 
@@ -224,21 +231,46 @@ is `ordinary-snapshot` or `publication-refresh`, and its reason codes can
 include `legacy-snapshot-schema`, `missing-ordinary-provenance`,
 `invalid-refresh-proof`, and `missing-people-policy-proof`. Preparer v1 and v2
 pairs remain readable but always produce degraded readiness and never expose
-trusted people; they are not rewritten. A v2 pair can still provide a
-qualified `Built` date when its ordinary freshness provenance is complete.
-Only v3 can carry the current public-display-name policy proof. In renderer
-v2, a missing legacy proof displays its explicit unavailability reason, while
-`Not provided` means a policy-qualified v3 role is legitimately empty.
+trusted people; they are not rewritten. Only v3 can carry the current
+public-display-name policy proof. A missing legacy proof displays its explicit
+unavailability reason. `No public display name available` for a current-policy
+value means no publishable name was supplied, not that the person/role is
+absent or the ticket is unassigned.
 
 For a v2 or v3 discussion corpus, every retained ticket must first resolve to
 exactly one accepted authoring coordinate. Zero or multiple matches are
-invalid snapshot structure and abort publication. With that structural
-requirement satisfied, the visible `Built` date is the latest successful
-upstream Jira refresh across the run and stable parent hydration freshness
-coordinates for every retained ticket. Missing or null run provenance,
-missing/null/partially bound parent project/revision/watermark coordinates, or
-v1 input leave the title unsuffixed. Authoring completion, snapshot creation,
-and site generation are never fallbacks.
+invalid snapshot structure and abort publication. The title date is a separate
+exported-corpus fact: the maximum self-ticket
+`prepared_jira_hydration.UpdatedAt` (`TicketKey = JiraKey`) after generation
+filters, normalized to UTC. A nonempty export with complete valid dates uses
+`Tickets for Discussion - Sept 15, 2026`, with fixed
+`Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sept, Oct, Nov, Dec` labels and an
+unpadded day, never `Built`. Missing/partial dates omit the suffix;
+malformed non-null values fail validation. Related-ticket dates, provenance
+watermarks, authoring/snapshot clocks, and publication time are never
+fallbacks. Complete dates can qualify even on degraded or legacy input.
+`JiraSourceLastSuccessfulRefreshAt` remains independent upstream provenance.
+
+Renderer-v3 manifests require `discussionCorpus`, matching the browser's
+`site_metadata.CorpusSummaryJson`. It records `ticketCount`,
+`exportedProjectCount`, `validJiraUpdatedAtCount`, `maxJiraUpdatedAt`,
+`dateCoverage` (`empty`, `none`, `partial`, `complete`), and ticket counts with
+public Reporter, Assignee, and requester names. A partial maximum remains a
+reported fact without a title suffix. Each `linksByKind` entry records
+`kind`, `totalRows`, `resolvedSafeLinks`, `unresolvedWithRetainedSafeLinks`,
+and `withoutUsableUrl`. A safe retained URL does not itself prove source
+backing. Legacy manifests can omit this summary and have unknown coverage;
+Applying does not acquire this Discussion-only contract.
+
+Generation filters fix the exported corpus and display-title suffix;
+interactive filters do not alter the frozen title. Discussion's classic
+`state.js` is a mandatory versioned asset, not an optional module. Facets
+preserve overview/crosscut/list routes, accumulate without clearing other
+chips, and preserve search/sort/history. Active/fixed dimensions and a
+single-project export's Project dimension are hidden. Guided proposal labels
+leave authored bodies unchanged. Safe external links and filter-preserving
+in-corpus Jira links share explicit failure/last-known diagnostics across
+related-item and summary-source surfaces.
 
 Item-level supersession does not supersede the run. When every item is either
 `complete` or `superseded`, normal fenced finalization still runs—even if every
@@ -263,9 +295,11 @@ the public snapshot schema before rendering. The Dev UI invokes it in-process;
 `ticket-site` is a thin CLI adapter over the same publisher. Each sub-site
 writes the exact filename `site-manifest.json`. Discussion manifests retain a
 stable base `title` and add display title, optional Jira refresh, renderer
-schema, and structured readiness fields; Dev UI reconstruction validates the
-stable title while preserving those additions. Neither publisher accepts a
-live processor database.
+schema, readiness, and corpus coverage. Dev UI reconstruction validates the
+committed manifest/presentation and recomputes
+`TicketSiteManifest.ComputeBuildIdentity()`;
+it does not rewrite legacy artifacts into the new contract. Neither publisher
+accepts a live processor database or performs an in-place renderer migration.
 
 ### Failure boundaries
 
@@ -290,37 +324,70 @@ live processor database.
 
 ### Metadata-only Discussion publication refresh
 
-A publication refresh repairs publication evidence without replaying authored
-work. Its source coordinate must be a completed, non-database-only Preparer run
-with a ready snapshot. The source run establishes operator lineage; it does
-not freeze the old snapshot's membership as the repair corpus. At admission,
-the Preparer enumerates the **current accepted receipt-backed corpus**, creates
-a new snapshot-producing run with `purpose:"publication-refresh"` and
-`sourceRunId` set to the selected run, reuses each accepted receipt on a
-completed maintenance item, acquires the mutation fence, and wakes the
-scheduler. The start request does not fetch Jira publication metadata; that
-work runs under the durable finalization stage. No authoring attempt or worker
-callback is created.
+A publication refresh enriches publication metadata without replaying authored
+work. Its source coordinate must be a completed, non-database-only Preparer
+run with a ready snapshot. Retain that run's original descriptor/database pair
+and complete site, including their digests, as the immutable fallback.
+
+Admission makes two comparisons. First it verifies the source run's own
+immutable snapshot and requires its actual accepted content, receipt
+coordinates, grouping IDs, values, ordering, and membership to remain present
+unchanged. It then freezes the **entire current accepted receipt-backed
+corpus**, including historical protected provenance. Additional current
+tickets/disjoint grouping partitions are allowed only without altering
+original protected output, and are disclosed through public run status
+`corpusComparison`; the source run's item count alone is not the baseline's
+exported-corpus count.
+
+The new `purpose:"publication-refresh"` run, `sourceRunId`, completed
+receipt-backed maintenance items, mutation fence, and versioned recipe are
+created atomically. `authoring_runs.RequestJson` records recipe
+`publication-enrichment`, version `1`, with original/frozen protection
+coordinates before the scheduler is woken, including if no stage rows yet
+exist. New `StartAsync` calls always use this protected recipe; null is not a
+caller-selectable legacy mode. The start does not fetch publication metadata,
+create authoring attempts, or dispatch workers.
+
+Source people population remains a separate explicit prerequisite, not part
+of refresh or site generation. Use gateway
+`POST /api/v1/jira/public-people/preview` and `/apply` with trusted
+same-revision evidence and complete shared-impact acknowledgement. Cache-only
+is the default; legacy raw caches without source acquisition receipts are
+untrusted and upstream authentication use requires deliberate opt-in. A
+current policy marker does not guarantee any name is available. See the
+[source maintenance contract](data-sources.md#deliberate-public-people-previewapply)
+for bounds, atomicity, refusal, and lost-response handling.
 
 Fenced finalization performs these steps:
 
-1. Re-read the current accepted corpus and require it to match the refresh
-   run's receipt, item, expected-revision, and input-fingerprint coordinates.
-2. In the `publication-metadata` stage, read each current ticket through the
-   Orchestrator. Every response must be stable, match that ticket's accepted
-   Jira revision, carry the current public-display-name policy, and share one
-   Jira content revision across the corpus.
-3. In one allowlisted transaction, update only parent/self publication
-   metadata and requester rows, write the refresh run's Jira input provenance,
-   and insert a durable metadata apply receipt. Historical contributing runs'
-   `authoring_run_input_provenance` rows remain frozen.
+1. Re-read the frozen current graph and require exact receipt, item,
+   expected-revision, protected-value, and grouping coordinates. Counts and
+   legacy content hashes alone are insufficient.
+2. In `publication-enrichment-v1`, use the real typed Orchestrator Jira item
+   API and `GET /api/v1/zulip/references/resolve?reference=...` for accepted
+   Zulip associations only. Every Jira response must be stable, match the
+   accepted revision, carry the current people policy, and share one Jira
+   content generation. The explicit self-ticket Jira update time is
+   publication metadata, not a replacement receipt revision.
+3. `ApplyPublicationEnrichmentAsync` rechecks the full stage lease, fence,
+   recipe, graph, and exact outcome coverage in one allowlisted transaction.
+   It updates parent/self publication metadata, requester rows, and accepted
+   Zulip hydration only; writes the new run's Jira provenance and durable
+   apply receipt; and verifies protection again. Authored analysis,
+   proposals, reference justifications, unrelated hydration, accepted
+   receipts, historical contributing-run provenance, and grouping are not
+   rewritten. Every accepted Zulip reference has an outcome: a failed lookup
+   can retain a safe, previously source-backed link/context as last-known,
+   but cannot certify it as resolved. A legacy zero-message URL remains
+   unverified. Optional timestamp diagnostics can accompany a resolved link.
 4. In `grouping-certification` stages, verify current grouping output against
    retained source grouping receipts. Receipts with an existing output
    fingerprint are reused directly; legacy receipts are bound to the current
    output by a separate durable certification. Grouping is never dispatched or
    recomputed.
-5. Emit a new Preparer schema-v3 snapshot and descriptor. Its
-   `publicationProof` binds publication contract version, purpose, source run,
+5. Recheck protection on the actual SQLite backup and emit a new Preparer
+   schema-v3 snapshot and descriptor. Public publication-proof contract v1
+   remains unchanged: `publicationProof` binds purpose, source run,
    Jira freshness/content revision, people-policy version, corpus fingerprint,
    grouping fingerprint, and capture time. The new snapshot has its own
    `runId`, `snapshotId`, and monotonic sequence.
@@ -328,9 +395,10 @@ Fenced finalization performs these steps:
 Authored payloads, accepted receipts, historical input provenance, topic
 grouping, and source grouping receipts are not rewritten by this flow. After
 the refresh run reaches `completed`, download that run's verified pair and
-publish its Discussion site as a separate client-side operation. The prior
-pair and site remain usable until the replacement publication is independently
-accepted.
+publish its Discussion site in a different run-scoped directory as a separate
+client-side operation. Keep the prior pair/site intact and usable. The Dev UI
+offers generation/regeneration independently from refresh even when readiness
+is verified; neither action silently invokes the other or backfills sources.
 
 Stage and snapshot recovery stay on the same refresh run. If the process stops
 after the metadata transaction but before stage completion, retry consumes the
@@ -340,12 +408,30 @@ the same immutable proof and ready snapshot coordinate rather than creating a
 different repair generation. Other transient stage failures leave the run in
 recoverable `error` for scheduler-owned retry.
 
-A missing ticket, changed accepted Jira revision, or mixed Jira content
-generation is intentionally different: the refresh run becomes terminal
-`superseded`, records that ordinary re-authoring is required, releases the
-mutation fence, writes no metadata apply receipt for the rejected generation,
-and produces no snapshot. There is no override and no partial metadata apply;
-start an ordinary Preparer authoring run against the changed source instead.
+Missing/replaced original output or changed grouping refuses admission.
+Execution-time protected-graph drift, a missing ticket, changed accepted Jira
+revision, or mixed Jira generation terminally supersedes/refuses the refresh,
+releases the fence, and prevents a usable new snapshot. A rejected metadata
+batch has no partial apply or apply receipt. A later protection failure after
+an already committed batch does not undo that commit. Retain the original
+publication and inspect the conflict; there is no deletion, reset,
+re-authoring, regrouping, or forced old-site replacement fallback.
+
+Recovery discriminates recipes only from persisted metadata. An explicitly
+persisted null legacy maintenance request resumes the old Jira-only
+`publication-metadata` recipe. A malformed or unknown non-null recipe is
+refused, never treated as legacy; an old stage receipt cannot satisfy
+`publication-enrichment-v1`. Receipt-first recovery of a committed new stage
+does not refetch Jira or Zulip. Before deploying an older binary, stop new
+enrichment admission and quiesce/reconcile new-recipe runs: database
+readability alone does not establish safe in-flight downgrade.
+
+Committed source people and processor publication metadata persist after a
+code revert. Do not reset them, restore broad SQL backups, lower source
+generations, or replay expensive authoring/grouping. A metadata correction
+requires a separately reviewed conditional operation by its owning service,
+while retaining all accepted output and prior artifacts. No Preparer public
+schema migration needs reversal.
 
 The refresh POST is another non-replayed outer mutation. On transport or
 response-body loss, Dev UI and CLI clients issue one bounded read-only run-list
@@ -423,9 +509,14 @@ Publish a downloaded verified pair:
 dotnet run --project tools\ticket-site -- `
   --preparer-snapshot "<snapshotPath>" `
   --snapshot-descriptor "<descriptorPath>" `
-  --out cache\jira-ticket-site `
-  --force
+  --out "cache\jira-ticket-sites\<runId>"
 ```
+
+Use the new refresh run's pair and output root, never `--force` against the
+original publication as a repair. The offline publisher neither reads sources
+nor starts/checks enrichment. Synthetic tests and browser walkthroughs are not
+authorization or proof of live-corpus repair; that remains a separate operator
+operation with preservation/revision evidence gates.
 
 The current Preparer host **requires** snapshot schema v3; v1 and v2 are
 publisher/test compatibility inputs, not selectable producer modes. Before an

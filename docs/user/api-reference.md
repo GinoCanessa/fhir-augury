@@ -491,26 +491,47 @@ run is known:
 | `409` | `authoring-not-activated`, `cutover-in-progress`, or `revalidation-required` | Run-backed authoring is not ready for maintenance |
 | `409` | `mutation-fence-unavailable` | Another fenced mutation is active; related run coordinates are returned when known |
 | `409` | `run-not-active`, `source-revision-mismatch`, or `stage-fingerprint-mismatch` | Processor state no longer permits the requested maintenance start |
+| `409` | `invalid-source-snapshot` | The selected original snapshot fails identity, integrity, schema, size, or digest validation |
+| `409` | `original-output-changed` or `original-grouping-changed` | Original accepted output or grouping values/IDs/order/membership no longer match the source snapshot |
+| `409` | `invalid-accepted-graph`, `invalid-protection-catalog`, or `unclassified-protection-column` | The current graph cannot be safely covered by the publication-preservation contract |
 
 After acceptance, poll the returned run through the ordinary status route.
-Finalization performs publication metadata reads/updates, existing grouping
-certification, and snapshot materialization; it launches no authoring or
-grouping worker. Transient source and stage failures can appear as recoverable
-run `error` with `state.isTerminal:false`. A durable metadata apply receipt
-makes recovery after the metadata commit idempotent, and snapshot
-reconciliation preserves the same proof-bearing snapshot after interrupted
-promotion.
+Admission preserves the original snapshot's protected output and freezes the
+entire current accepted corpus with the `publication-enrichment` v1 recipe,
+items, and mutation fence in one transaction. Optional public
+`run.corpusComparison` discloses its `sourceSnapshotId`,
+`sourceExportedTicketCount`, `currentAcceptedTicketCount`, and
+`additionalTicketCount`; the source run's item count is not a substitute.
+Finalization performs allowlisted Jira and accepted-Zulip metadata updates,
+existing grouping certification, and snapshot materialization; it launches no
+authoring or grouping worker. Source people preview/apply is separate and is
+never invoked by this operation. Transient source and stage failures can appear
+as recoverable run `error` with `state.isTerminal:false`. A durable metadata apply receipt
+makes recovery after the metadata commit idempotent without refetching Jira or
+Zulip, and snapshot reconciliation preserves the same proof-bearing snapshot
+after interrupted promotion.
 
 A missing ticket, per-ticket revision mismatch, or mixed Jira content
-generation terminally changes the refresh run to `superseded`, releases its
-mutation fence, creates no snapshot, and records that ordinary re-authoring is
-required. The old pair/site remains unchanged and available, but cannot prove
-the changed source is current; there is no override or partial refresh. Run
-error text contains stable stage failure codes such as
+generation, as well as frozen protected-state drift, terminally changes the
+refresh run to `superseded`, releases its mutation fence, and prevents a usable
+new snapshot. A rejected metadata batch has no partial apply or apply receipt;
+a later refusal does not undo metadata that already committed. Retain the old
+pair/site and inspect the conflict. Deletion, reset, ordinary re-authoring,
+regrouping, and forced replacement of the old site are not repair fallbacks.
+Run error text contains stable stage failure codes such as
 `source-unavailable`, `ticket-not-found`, `invalid-source-response`,
 `missing-source-provenance`, `unstable-source`,
 `missing-project-provenance`, `people-policy-not-current`,
-`source-revision-mismatch`, and `source-generation-conflict`.
+`source-revision-mismatch`, `source-generation-conflict`,
+`frozen-protection-drift`, `invalid-publication-recipe`, and
+`unsupported-publication-recipe`.
+
+Only persisted null request metadata selects the legacy Jira-only
+`publication-metadata` recipe during recovery. New runs use
+`publication-enrichment-v1`; malformed or unknown non-null recipes are
+refused, and legacy receipts cannot satisfy the new stage. Quiesce/reconcile
+new-recipe runs before a binary downgrade. These contracts do not authorize
+live repair or establish recovery of a particular historical publication.
 
 Outer-control clients do not replay start, retry, supersede, or
 publication-refresh after transport loss because the processor may have
