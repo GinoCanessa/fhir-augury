@@ -167,8 +167,10 @@ builder.Services.AddSingleton<PreparedTicketPublicationBaselineReader>();
 builder.Services.AddSingleton<PreparedTicketPublicationEnricher>();
 builder.Services.AddSingleton<PreparedTicketPublicationRefreshService>();
 builder.Services.AddSingleton<PreparedTicketPublicationReconciliationPlanner>();
+builder.Services.AddSingleton<PreparedTicketGroupingDeltaDispatcher>();
 builder.Services.AddSingleton<PreparedTicketRunWorkflowRegistry>();
 builder.Services.AddSingleton<PreparedTicketSnapshotMaterializer>();
+builder.Services.AddSingleton<PreparedTicketPublicationRecoveryService>();
 builder.Services.AddSingleton<PreparedTicketRunPostProcessor>();
 builder.Services.AddSingleton<PreparedTicketGroupingMaintenanceService>();
 builder.Services.AddSingleton<IAuthoringRunFinalizationStrategy>(sp =>
@@ -203,6 +205,9 @@ JiraAuthoringRunCoordinator preparerRunCoordinator =
     app.Services.GetRequiredService<JiraAuthoringRunCoordinator>();
 preparerDatabase.AcquireStartupOwnership();
 await preparerDatabase.RecoverInterruptedMaintenanceLeasesAsync();
+await app.Services
+    .GetRequiredService<PreparedTicketPublicationRecoveryService>()
+    .RecoverPendingAsync();
 if (preparerOptions.ActivateRunBackedAuthoring)
 {
     AuthoringCutoverCoordinator cutover =

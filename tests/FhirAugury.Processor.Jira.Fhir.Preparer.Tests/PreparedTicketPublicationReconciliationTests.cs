@@ -182,6 +182,91 @@ public sealed class PreparedTicketPublicationReconciliationTests
     }
 
     [Fact]
+    public async Task PendingPromotionCanOnlyBeAbandonedWithDurableAudit()
+    {
+        using Fixture fixture = new();
+        SourceResult source = await fixture.CreateSourceRunAsync("FHIR-13054");
+        PreparedTicketPublicationReconciliationComparison comparison = new(
+            PreparedTicketPublicationReconciliationContract.CurrentVersion,
+            source.Run.Id,
+            source.Descriptor.SnapshotId,
+            source.Descriptor.Sha256,
+            "42",
+            DateTimeOffset.UtcNow,
+            Hash('c'),
+            [
+                new(
+                    "FHIR-13054",
+                    PreparedTicketPublicationReconciliationDispositionValues
+                        .CarryForward,
+                    source.ExpectedRevisions["FHIR-13054"],
+                    source.ExpectedRevisions["FHIR-13054"],
+                    source.ReceiptIds["FHIR-13054"],
+                    "baseline-item",
+                    source.Run.Id,
+                    Hash('a'),
+                    Hash('b')),
+            ]);
+        AuthoringRunRecord run =
+            await fixture.Database.CreatePublicationReconciliationAsync(
+                comparison);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => fixture.Database.AbandonPublicationReconciliationAsync(
+                run.Id,
+                "not promoted"));
+        Assert.NotNull(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+
+        fixture.Execute(
+            """
+            UPDATE authoring_runs
+            SET Status = 'finalizing'
+            WHERE Id = @runId;
+            UPDATE prepared_ticket_publication_reconciliations
+            SET PromotionState = 'snapshot-publish-pending'
+            WHERE RunId = @runId;
+            UPDATE prepared_ticket_publication_reconciliation_journal
+            SET State = 'snapshot-publish-pending'
+            WHERE RunId = @runId;
+            """,
+            ("@runId", run.Id));
+
+        DateTimeOffset abandonedAt =
+            new(2026, 9, 16, 18, 0, 0, TimeSpan.Zero);
+        await fixture.Database.AbandonPublicationReconciliationAsync(
+            run.Id,
+            "operator accepted canonical-only state",
+            abandonedAt);
+
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .CanonicalUnpublished,
+            fixture.Scalar<string>(
+                $"""
+                SELECT PromotionState
+                FROM prepared_ticket_publication_reconciliations
+                WHERE RunId = '{run.Id}'
+                """));
+        Assert.Equal(
+            "operator accepted canonical-only state",
+            fixture.Scalar<string>(
+                $"""
+                SELECT AbandonmentReason
+                FROM prepared_ticket_publication_reconciliations
+                WHERE RunId = '{run.Id}'
+                """));
+        Assert.Equal(
+            0,
+            fixture.Scalar<long>(
+                $"""
+                SELECT COUNT(*)
+                FROM prepared_ticket_publication_reconciliation_fences
+                WHERE RunId = '{run.Id}'
+                """));
+        Assert.Null(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+    }
+
+    [Fact]
     public void ContractSerializesFrozenDecisionsCountsAndRecoveryState()
     {
         DateTimeOffset capturedAt =

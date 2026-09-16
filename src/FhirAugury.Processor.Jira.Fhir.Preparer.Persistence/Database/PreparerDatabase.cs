@@ -335,6 +335,19 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 Sha256 TEXT NOT NULL,
                 PersistedAt TEXT NOT NULL
             );
+
+            CREATE TRIGGER IF NOT EXISTS prevent_snapshot_after_unpublished_canonical
+            BEFORE INSERT ON authoring_runs
+            WHEN NEW.DatabaseOnly = 0
+             AND EXISTS(
+                SELECT 1
+                FROM prepared_ticket_publication_reconciliations
+                WHERE PromotionState = 'canonical-unpublished')
+            BEGIN
+                SELECT RAISE(
+                    ABORT,
+                    'canonical-unpublished-restriction');
+            END;
             """;
         command.ExecuteNonQuery();
     }
@@ -6938,6 +6951,487 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         }
     }
 
+    public sealed record PublicationReconciliationPromotion(
+        string RunId,
+        string SnapshotId,
+        string TemporaryPath,
+        string FinalPath,
+        string CandidateSha256,
+        int SchemaVersion,
+        long Sequence,
+        long AuthoringEpoch,
+        int ItemCount,
+        int ReceiptCount,
+        IReadOnlyDictionary<string, long> TableCounts,
+        DateTimeOffset CreatedAt);
+
+    public async Task<PublicationReconciliationPromotion?>
+        GetPendingPublicationReconciliationAsync(
+            string runId,
+            CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT SnapshotDescriptorJson
+            FROM prepared_ticket_publication_reconciliation_journal
+            WHERE RunId = @runId AND State = @state
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue(
+            "@state",
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .SnapshotPublishPending);
+        string? json = (string?)await command.ExecuteScalarAsync(ct);
+        return json is null
+            ? null
+            : JsonSerializer.Deserialize<PublicationReconciliationPromotion>(
+                json)
+              ?? throw new InvalidOperationException(
+                  $"Reconciliation '{runId}' has an invalid promotion journal.");
+    }
+
+    public async Task<IReadOnlyList<string>>
+        ListPendingPublicationReconciliationsAsync(
+            CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT RunId
+            FROM prepared_ticket_publication_reconciliation_journal
+            WHERE State = @state
+            ORDER BY UpdatedAt, RunId
+            """;
+        command.Parameters.AddWithValue(
+            "@state",
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .SnapshotPublishPending);
+        List<string> runIds = [];
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            runIds.Add(reader.GetString(0));
+        }
+        return runIds;
+    }
+
+    public async Task<PublicationReconciliationPromotion>
+        PromotePublicationReconciliationAsync(
+            string runId,
+            string finalPath,
+            CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(finalPath);
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteTransaction transaction =
+            connection.BeginTransaction(deferred: false);
+        try
+        {
+            string state;
+            string descriptorJson;
+            await using (SqliteCommand read = connection.CreateCommand())
+            {
+                read.Transaction = transaction;
+                read.CommandText =
+                    """
+                    SELECT reconciliation.PromotionState,
+                           descriptor.DescriptorJson
+                    FROM prepared_ticket_publication_reconciliations reconciliation
+                    INNER JOIN prepared_ticket_publication_snapshot_descriptors descriptor
+                      ON descriptor.RunId = reconciliation.RunId
+                    WHERE reconciliation.RunId = @runId
+                    """;
+                read.Parameters.AddWithValue("@runId", runId);
+                await using SqliteDataReader reader =
+                    await read.ExecuteReaderAsync(ct);
+                if (!await reader.ReadAsync(ct))
+                {
+                    throw new InvalidOperationException(
+                        $"Reconciliation '{runId}' has no verified candidate snapshot.");
+                }
+                state = reader.GetString(0);
+                descriptorJson = reader.GetString(1);
+            }
+            if (state ==
+                PreparedTicketPublicationReconciliationPromotionStateValues
+                    .SnapshotPublishPending)
+            {
+                await transaction.CommitAsync(ct);
+                return await GetPendingPublicationReconciliationAsync(
+                    runId,
+                    ct)
+                    ?? throw new InvalidOperationException(
+                        $"Reconciliation '{runId}' lost its pending journal.");
+            }
+            if (state !=
+                PreparedTicketPublicationReconciliationPromotionStateValues
+                    .Staged)
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{runId}' cannot promote from '{state}'.");
+            }
+
+            PreparedTicketPublicationCandidateSnapshot candidate =
+                JsonSerializer.Deserialize<
+                    PreparedTicketPublicationCandidateSnapshot>(
+                    descriptorJson)
+                ?? throw new InvalidOperationException(
+                    $"Reconciliation '{runId}' has an invalid candidate snapshot.");
+            if (!File.Exists(candidate.TemporaryPath) ||
+                new FileInfo(candidate.TemporaryPath).Length !=
+                    candidate.SizeBytes ||
+                !string.Equals(
+                    await SqliteReviewSnapshotWriter.ComputeSha256Async(
+                        candidate.TemporaryPath,
+                        ct),
+                    candidate.Sha256,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "The verified reconciliation candidate is missing or corrupt.");
+            }
+
+            await EnsurePublicationPromotionPreconditionsAsync(
+                connection,
+                transaction,
+                runId,
+                ct);
+            await ApplyPublicationReconciliationOverlayAsync(
+                connection,
+                runId,
+                ct);
+
+            string snapshotId = Guid.NewGuid().ToString("N");
+            DateTimeOffset createdAt = DateTimeOffset.UtcNow;
+            long sequence;
+            long authoringEpoch;
+            int itemCount;
+            int receiptCount;
+            await using (SqliteCommand coordinates = connection.CreateCommand())
+            {
+                coordinates.Transaction = transaction;
+                coordinates.CommandText =
+                    """
+                    SELECT run.AuthoringEpoch,
+                           (SELECT COALESCE(MAX(Sequence), 0) + 1
+                            FROM authoring_review_snapshots
+                            WHERE ProcessorKind = run.ProcessorKind),
+                           (SELECT COUNT(*) FROM authoring_run_items
+                            WHERE RunId = run.Id),
+                           (SELECT COUNT(*)
+                            FROM prepared_ticket_publication_reconciliation_items
+                            WHERE RunId = run.Id)
+                    FROM authoring_runs run
+                    WHERE run.Id = @runId
+                    """;
+                coordinates.Parameters.AddWithValue("@runId", runId);
+                await using SqliteDataReader reader =
+                    await coordinates.ExecuteReaderAsync(ct);
+                if (!await reader.ReadAsync(ct))
+                {
+                    throw new KeyNotFoundException(
+                        $"Authoring run '{runId}' was not found.");
+                }
+                authoringEpoch = reader.GetInt64(0);
+                sequence = reader.GetInt64(1);
+                itemCount = reader.GetInt32(2);
+                receiptCount = reader.GetInt32(3);
+            }
+            PublicationReconciliationPromotion promotion = new(
+                runId,
+                snapshotId,
+                candidate.TemporaryPath,
+                Path.GetFullPath(finalPath),
+                candidate.Sha256,
+                candidate.SchemaVersion,
+                sequence,
+                authoringEpoch,
+                itemCount,
+                receiptCount,
+                candidate.TableCounts,
+                createdAt);
+            PreparedTicketPublicationReconciliationProof proof =
+                await ReadPublicationReconciliationProofAsync(
+                    connection,
+                    transaction,
+                    runId,
+                    ct);
+            AuthoringSnapshotPublicationProof snapshotProof = new(
+                proof.ContractVersion,
+                proof.Purpose,
+                proof.SourceRunId,
+                PreparedTicketPublicationContract.JiraSourceName,
+                proof.CapturedAt,
+                long.TryParse(
+                    proof.StableJiraGeneration,
+                    CultureInfo.InvariantCulture,
+                    out long generation)
+                    ? generation
+                    : 0,
+                0,
+                proof.CorpusFingerprint,
+                proof.GroupingImpactFingerprint,
+                proof.CapturedAt);
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                INSERT INTO authoring_review_snapshots(
+                    Id, ProcessorKind, RunId, AuthoringEpoch, Sequence,
+                    SchemaVersion, Status, TempPath, Path, SizeBytes,
+                    ItemCount, ReceiptCount, TableCountsJson,
+                    PublicationProofJson, CreatedAt)
+                VALUES(
+                    @snapshotId, @processorKind, @runId, @epoch, @sequence,
+                    @schemaVersion, @status, @tempPath, @path, 0,
+                    @itemCount, @receiptCount, @counts, @proof, @createdAt)
+                """,
+                ct,
+                ("@snapshotId", snapshotId),
+                ("@processorKind", AuthoringProcessorKind),
+                ("@runId", runId),
+                ("@epoch", authoringEpoch),
+                ("@sequence", sequence),
+                ("@schemaVersion", candidate.SchemaVersion),
+                ("@status", AuthoringStatusValues.Snapshots.Creating),
+                ("@tempPath", candidate.TemporaryPath),
+                ("@path", promotion.FinalPath),
+                ("@itemCount", itemCount),
+                ("@receiptCount", receiptCount),
+                ("@counts", JsonSerializer.Serialize(candidate.TableCounts)),
+                ("@proof", JsonSerializer.Serialize(
+                    snapshotProof,
+                    JsonSerializerOptions.Web)),
+                ("@createdAt", Format(createdAt)));
+            string promotionJson = JsonSerializer.Serialize(promotion);
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                UPDATE prepared_ticket_publication_reconciliation_journal
+                SET State = @pending, SnapshotDescriptorJson = @descriptor,
+                    FailureCode = NULL, FailureDetail = NULL,
+                    UpdatedAt = @updatedAt
+                WHERE RunId = @runId AND State = @staged
+                """,
+                ct,
+                ("@pending",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .SnapshotPublishPending),
+                ("@descriptor", promotionJson),
+                ("@updatedAt", Format(createdAt)),
+                ("@runId", runId),
+                ("@staged",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .Staged));
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                UPDATE prepared_ticket_publication_reconciliations
+                SET PromotionState = @pending
+                WHERE RunId = @runId AND PromotionState = @staged
+                """,
+                ct,
+                ("@pending",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .SnapshotPublishPending),
+                ("@runId", runId),
+                ("@staged",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .Staged));
+            await transaction.CommitAsync(ct);
+            return promotion;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
+    public async Task RecordPublicationReconciliationRecoveryFailureAsync(
+        string runId,
+        string detail,
+        CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await ExecuteAsync(
+            connection,
+            """
+            UPDATE prepared_ticket_publication_reconciliation_journal
+            SET LastRecoveryAttemptAt = @attemptedAt,
+                FailureCode = @failureCode,
+                FailureDetail = @detail,
+                UpdatedAt = @attemptedAt
+            WHERE RunId = @runId AND State = @pending
+            """,
+            ct,
+            ("@attemptedAt", Format(DateTimeOffset.UtcNow)),
+            ("@failureCode",
+                PreparedTicketPublicationReconciliationFailureCodes
+                    .PromotionRecoveryFailure),
+            ("@detail", detail),
+            ("@runId", runId),
+            ("@pending",
+                PreparedTicketPublicationReconciliationPromotionStateValues
+                    .SnapshotPublishPending));
+    }
+
+    public async Task MarkPublicationReconciliationReadyAsync(
+        string runId,
+        CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteTransaction transaction =
+            connection.BeginTransaction(deferred: false);
+        try
+        {
+            int updated = await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                UPDATE prepared_ticket_publication_reconciliation_journal
+                SET State = @ready, LastRecoveryAttemptAt = @attemptedAt,
+                    FailureCode = NULL, FailureDetail = NULL,
+                    UpdatedAt = @attemptedAt
+                WHERE RunId = @runId AND State IN (@pending, @ready)
+                """,
+                ct,
+                ("@ready",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .Ready),
+                ("@attemptedAt", Format(DateTimeOffset.UtcNow)),
+                ("@runId", runId),
+                ("@pending",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .SnapshotPublishPending));
+            if (updated != 1)
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{runId}' journal changed during recovery.");
+            }
+            int reconciliationUpdated = await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                UPDATE prepared_ticket_publication_reconciliations
+                SET PromotionState = @ready
+                WHERE RunId = @runId
+                  AND PromotionState IN (@pending, @ready)
+                """,
+                ct,
+                ("@ready",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .Ready),
+                ("@runId", runId),
+                ("@pending",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .SnapshotPublishPending));
+            if (reconciliationUpdated != 1)
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{runId}' journal changed during recovery.");
+            }
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                DELETE FROM prepared_ticket_publication_reconciliation_fences
+                WHERE RunId = @runId
+                """,
+                ct,
+                ("@runId", runId));
+            await transaction.CommitAsync(ct);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
+    private static async Task EnsurePublicationPromotionPreconditionsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string runId,
+        CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT COUNT(*)
+            FROM authoring_runs run
+            WHERE run.Id = @runId
+              AND run.Status = @finalizing
+              AND run.Purpose = @purpose
+              AND NOT EXISTS(
+                  SELECT 1 FROM authoring_run_items item
+                  WHERE item.RunId = run.Id
+                    AND item.Status NOT IN (@complete, @superseded))
+              AND EXISTS(
+                  SELECT 1 FROM authoring_mutation_fences fence
+                  WHERE fence.ProcessorKind = run.ProcessorKind
+                    AND fence.RunId = run.Id)
+              AND EXISTS(
+                  SELECT 1
+                  FROM prepared_ticket_publication_reconciliation_fences fence
+                  WHERE fence.RunId = run.Id)
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue(
+            "@finalizing",
+            AuthoringStatusValues.Runs.Finalizing);
+        command.Parameters.AddWithValue(
+            "@purpose",
+            PreparedTicketPublicationReconciliationContract.Purpose);
+        command.Parameters.AddWithValue(
+            "@complete",
+            AuthoringStatusValues.Items.Complete);
+        command.Parameters.AddWithValue(
+            "@superseded",
+            AuthoringStatusValues.Items.Superseded);
+        if (Convert.ToInt32(
+                await command.ExecuteScalarAsync(ct),
+                CultureInfo.InvariantCulture) != 1)
+        {
+            throw new InvalidOperationException(
+                $"Reconciliation '{runId}' is incomplete or lost its mutation fence.");
+        }
+    }
+
+    private static async Task<PreparedTicketPublicationReconciliationProof>
+        ReadPublicationReconciliationProofAsync(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            string runId,
+            CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT ProofJson
+            FROM prepared_ticket_publication_reconciliation_proofs
+            WHERE RunId = @runId
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        string? json = (string?)await command.ExecuteScalarAsync(ct);
+        return json is null
+            ? throw new InvalidOperationException(
+                $"Reconciliation '{runId}' has no publication proof.")
+            : JsonSerializer.Deserialize<
+                PreparedTicketPublicationReconciliationProof>(json)
+              ?? throw new InvalidOperationException(
+                  $"Reconciliation '{runId}' has an invalid publication proof.");
+    }
+
     public async Task CleanupPublicationReconciliationWorkspaceAsync(
         string runId,
         CancellationToken ct = default)
@@ -7077,19 +7571,52 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             connection.BeginTransaction(deferred: false);
         try
         {
-            await ExecuteInTransactionAsync(
+            int abandoned = await ExecuteInTransactionAsync(
                 connection,
                 transaction,
                 """
                 UPDATE prepared_ticket_publication_reconciliations
-                SET AbandonedAt = @abandonedAt,
+                SET PromotionState = @state,
+                    AbandonedAt = @abandonedAt,
                     AbandonmentReason = @reason
                 WHERE RunId = @runId
+                  AND PromotionState = @pending
                 """,
                 ct,
+                ("@state",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .CanonicalUnpublished),
                 ("@abandonedAt", Format(abandonedAt)),
                 ("@reason", reason),
-                ("@runId", runId));
+                ("@runId", runId),
+                ("@pending",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .SnapshotPublishPending));
+            if (abandoned != 1)
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{runId}' can only be abandoned after canonical promotion.");
+            }
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                UPDATE prepared_ticket_publication_reconciliation_journal
+                SET State = @state, UpdatedAt = @abandonedAt,
+                    LastRecoveryAttemptAt = @abandonedAt,
+                    FailureCode = NULL, FailureDetail = @reason
+                WHERE RunId = @runId AND State = @pending
+                """,
+                ct,
+                ("@state",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .CanonicalUnpublished),
+                ("@abandonedAt", Format(abandonedAt)),
+                ("@reason", reason),
+                ("@runId", runId),
+                ("@pending",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .SnapshotPublishPending));
             await ExecuteInTransactionAsync(
                 connection,
                 transaction,
@@ -7099,6 +7626,34 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 """,
                 ct,
                 ("@runId", runId));
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                DELETE FROM authoring_mutation_fences
+                WHERE ProcessorKind = @processorKind AND RunId = @runId
+                """,
+                ct,
+                ("@processorKind", AuthoringProcessorKind),
+                ("@runId", runId));
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                UPDATE authoring_runs
+                SET Status = @status, CompletedAt = @abandonedAt,
+                    Error = @reason
+                WHERE Id = @runId
+                  AND Status IN (@finalizing, @error)
+                """,
+                ct,
+                ("@status", AuthoringStatusValues.Runs.Error),
+                ("@abandonedAt", Format(abandonedAt)),
+                ("@reason",
+                    $"canonical-unpublished: {reason}"),
+                ("@runId", runId),
+                ("@finalizing", AuthoringStatusValues.Runs.Finalizing),
+                ("@error", AuthoringStatusValues.Runs.Error));
             await transaction.CommitAsync(ct);
         }
         catch
@@ -8136,7 +8691,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         await command.ExecuteNonQueryAsync(ct);
     }
 
-    private static async Task ExecuteInTransactionAsync(
+    private static async Task<int> ExecuteInTransactionAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         string sql,
@@ -8150,7 +8705,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         {
             command.Parameters.AddWithValue(name, value ?? DBNull.Value);
         }
-        await command.ExecuteNonQueryAsync(ct);
+        return await command.ExecuteNonQueryAsync(ct);
     }
 
     private static async Task InsertIdempotentStageRowAsync(

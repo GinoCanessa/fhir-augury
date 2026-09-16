@@ -27,7 +27,8 @@ public sealed class PreparedTicketRunPostProcessor(
     IPreparedTicketGroupingDispatcher groupingDispatcher,
     IOptions<PreparerServiceOptions> optionsAccessor,
     PreparedTicketPublicationRefreshService? publicationRefreshService = null,
-    PreparedTicketSnapshotMaterializer? snapshotMaterializer = null)
+    PreparedTicketSnapshotMaterializer? snapshotMaterializer = null,
+    PreparedTicketRunWorkflowRegistry? workflowRegistry = null)
     : IAuthoringRunFinalizationStrategy
 {
     private readonly PreparerServiceOptions _options = optionsAccessor.Value;
@@ -45,6 +46,12 @@ public sealed class PreparedTicketRunPostProcessor(
     {
         AuthoringRunRecord run = await authoringStore.GetRunAsync(runId, ct)
             ?? throw new KeyNotFoundException($"Authoring run '{runId}' was not found.");
+        if (workflowRegistry?.HandlesFinalization(run) == true)
+        {
+            return await workflowRegistry.FinalizeReconciliationAsync(
+                run,
+                ct);
+        }
         bool publicationRefresh = run.Purpose == AuthoringRunPurposeValues.PublicationRefresh;
         if (publicationRefresh && run.Status == AuthoringStatusValues.Runs.Completed)
         {

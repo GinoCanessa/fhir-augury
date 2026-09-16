@@ -16,6 +16,9 @@ public sealed class PreparedTicketPublicationMaintenanceController
     private readonly PreparedTicketPublicationRefreshService _service;
     private readonly PreparedTicketPublicationReconciliationPlanner?
         _reconciliationPlanner;
+    private readonly PreparedTicketPublicationRecoveryService?
+        _recoveryService;
+    private readonly PreparerDatabase? _database;
 
     public PreparedTicketPublicationMaintenanceController(
         PreparedTicketPublicationRefreshService service)
@@ -26,10 +29,14 @@ public sealed class PreparedTicketPublicationMaintenanceController
     [ActivatorUtilitiesConstructor]
     public PreparedTicketPublicationMaintenanceController(
         PreparedTicketPublicationRefreshService service,
-        PreparedTicketPublicationReconciliationPlanner reconciliationPlanner)
+        PreparedTicketPublicationReconciliationPlanner reconciliationPlanner,
+        PreparedTicketPublicationRecoveryService recoveryService,
+        PreparerDatabase database)
     {
         _service = service;
         _reconciliationPlanner = reconciliationPlanner;
+        _recoveryService = recoveryService;
+        _database = database;
     }
 
     [HttpPost("{sourceRunId}/publication-refresh")]
@@ -174,6 +181,87 @@ public sealed class PreparedTicketPublicationMaintenanceController
                 new PreparedTicketPublicationReconciliationFailure(
                     PreparedTicketPublicationReconciliationFailureCodes
                         .InvalidBaseline,
+                    ex.Message,
+                    RunId: runId));
+        }
+    }
+
+    [HttpPost("{runId}/publication-reconciliation/retry")]
+    [ProducesResponseType(
+        typeof(PreparedTicketPublicationReconciliationRetryResult),
+        StatusCodes.Status200OK)]
+    [ProducesResponseType(
+        typeof(PreparedTicketPublicationReconciliationFailure),
+        StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> RetryReconciliation(
+        string runId,
+        CancellationToken ct)
+    {
+        PreparedTicketPublicationRecoveryService recovery =
+            _recoveryService ??
+            throw new InvalidOperationException(
+                "Publication reconciliation recovery is not configured.");
+        PreparedTicketPublicationReconciliationPlanner planner =
+            _reconciliationPlanner ??
+            throw new InvalidOperationException(
+                "Publication reconciliation is not configured.");
+        try
+        {
+            _ = await recovery.RecoverAsync(runId, ct);
+            return Ok(new PreparedTicketPublicationReconciliationRetryResult(
+                await planner.GetStatusAsync(runId, ct),
+                true));
+        }
+        catch (PreparedTicketPublicationReconciliationException ex)
+        {
+            return Conflict(
+                new PreparedTicketPublicationReconciliationFailure(
+                    ex.FailureCode,
+                    ex.Message,
+                    RunId: runId));
+        }
+    }
+
+    [HttpPost("{runId}/publication-reconciliation/abandon")]
+    [ProducesResponseType(
+        typeof(PreparedTicketPublicationReconciliationAbandonResult),
+        StatusCodes.Status200OK)]
+    [ProducesResponseType(
+        typeof(PreparedTicketPublicationReconciliationFailure),
+        StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> AbandonReconciliation(
+        string runId,
+        PreparedTicketPublicationReconciliationAbandonRequest request,
+        CancellationToken ct)
+    {
+        PreparerDatabase database = _database ??
+            throw new InvalidOperationException(
+                "Publication reconciliation recovery is not configured.");
+        PreparedTicketPublicationReconciliationPlanner planner =
+            _reconciliationPlanner ??
+            throw new InvalidOperationException(
+                "Publication reconciliation is not configured.");
+        try
+        {
+            DateTimeOffset abandonedAt = DateTimeOffset.UtcNow;
+            await database.AbandonPublicationReconciliationAsync(
+                runId,
+                request.Reason,
+                abandonedAt,
+                ct);
+            return Ok(
+                new PreparedTicketPublicationReconciliationAbandonResult(
+                    await planner.GetStatusAsync(runId, ct),
+                    abandonedAt,
+                    request.Reason));
+        }
+        catch (Exception ex) when (
+            ex is ArgumentException or InvalidOperationException)
+        {
+            return Conflict(
+                new PreparedTicketPublicationReconciliationFailure(
+                    PreparedTicketPublicationReconciliationFailureCodes
+                        .PromotionRecoveryFailure,
                     ex.Message,
                     RunId: runId));
         }
