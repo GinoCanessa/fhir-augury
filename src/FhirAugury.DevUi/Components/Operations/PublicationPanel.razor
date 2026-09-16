@@ -1,3 +1,4 @@
+@using System.Globalization
 @using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts
 @using FhirAugury.Publishing.Tickets
 
@@ -88,6 +89,46 @@
         </p>
     }
 
+    @if (Details.Workflow.SiteKind == TicketSiteKind.Discussion &&
+        Details.Response.Run.CorpusComparison is
+            AuthoringRunCorpusComparison comparison)
+    {
+        <div class="callout @(comparison.AdditionalTicketCount > 0 ? "callout--warning" : "callout--neutral") publication-corpus-comparison">
+            <i class="bi bi-files" aria-hidden="true"></i>
+            <div>
+                <h3 class="h6">Frozen refresh corpus comparison</h3>
+                <dl class="row mb-2">
+                    <dt class="col-sm-6">Source snapshot</dt>
+                    <dd class="col-sm-6"><code>@comparison.SourceSnapshotId</code></dd>
+                    <dt class="col-sm-6">Source exported tickets</dt>
+                    <dd class="col-sm-6">@comparison.SourceExportedTicketCount</dd>
+                    <dt class="col-sm-6">Current accepted tickets</dt>
+                    <dd class="col-sm-6">@comparison.CurrentAcceptedTicketCount</dd>
+                    <dt class="col-sm-6">Additional current tickets</dt>
+                    <dd class="col-sm-6">@comparison.AdditionalTicketCount</dd>
+                </dl>
+                @if (comparison.AdditionalTicketCount > 0)
+                {
+                    <p class="mb-1">
+                        <strong>Additional current output is included.</strong>
+                        This refresh includes @comparison.AdditionalTicketCount
+                        tickets beyond the source snapshot's exported corpus.
+                        It is not an identical-membership republication.
+                    </p>
+                }
+                else
+                {
+                    <p class="mb-1">No additional current tickets are included.</p>
+                }
+                <p class="mb-0">
+                    These persisted counts describe the frozen accepted corpus,
+                    not the run's completed-item count. Publication remains a
+                    separate step after the refresh completes.
+                </p>
+            </div>
+        </div>
+    }
+
     @if (Publication is ReviewSitePublication publication)
     {
         <div class="publication-location">
@@ -112,6 +153,7 @@
     {
         DiscussionPublicationReadiness? readiness =
             discussionPublication.Manifest.DiscussionReadiness;
+        <h3 class="h6">Provenance readiness</h3>
         @if (readiness is null)
         {
             <div class="callout callout--warning publication-readiness-evidence">
@@ -120,8 +162,8 @@
                 <div>
                     <strong>Publication readiness is not recorded.</strong>
                     This legacy manifest predates structured readiness
-                    evidence, so Jira freshness and trusted people cannot be
-                    verified from the publication.
+                    evidence, so Jira provenance and public-display-name
+                    policy proof are unknown.
                 </div>
             </div>
         }
@@ -142,7 +184,8 @@
                    aria-hidden="true"></i>
                 <div>
                     <strong>Publication readiness is degraded.</strong>
-                    Jira freshness or trusted-people evidence is unavailable:
+                    Jira provenance or public-display-name policy proof is
+                    unavailable:
                     <ul class="mb-0">
                         @foreach (DiscussionPublicationReadinessReason reason
                             in readiness.Reasons)
@@ -153,6 +196,133 @@
                             </li>
                         }
                     </ul>
+                </div>
+            </div>
+        }
+        <p class="text-body-secondary">
+            Proof readiness does not establish complete public names or links.
+            Upstream Jira last successful refresh (provenance):
+            @if (discussionPublication.Manifest.JiraSourceLastSuccessfulRefreshAt
+                is DateTimeOffset sourceRefresh)
+            {
+                <time datetime="@sourceRefresh.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)">
+                    @FormatUtc(sourceRefresh)
+                </time>
+            }
+            else
+            {
+                <span>Unavailable.</span>
+            }
+            This is not the selected-corpus ticket date.
+        </p>
+
+        @if (discussionPublication.Manifest.DiscussionCorpus is
+            DiscussionCorpusSummary corpus)
+        {
+            <div class="publication-corpus-evidence">
+                <h3 class="h6">Selected-corpus dates</h3>
+                <p>
+                    Frozen, generation-filtered projection:
+                    <strong>@corpus.TicketCount tickets</strong> across
+                    @corpus.ExportedProjectCount projects.
+                    Browser filters do not change these facts or the frozen title.
+                </p>
+                <dl class="row">
+                    <dt class="col-sm-6">Date coverage</dt>
+                    <dd class="col-sm-6"><code>@corpus.DateCoverage</code></dd>
+                    <dt class="col-sm-6">Valid self-ticket Jira dates</dt>
+                    <dd class="col-sm-6">@corpus.ValidJiraUpdatedAtCount / @corpus.TicketCount tickets</dd>
+                    <dt class="col-sm-6">Maximum known self-ticket Jira update</dt>
+                    <dd class="col-sm-6">
+                        @if (corpus.MaxJiraUpdatedAt is DateTimeOffset maximum)
+                        {
+                            <time datetime="@maximum.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)">
+                                @FormatUtc(maximum)
+                            </time>
+                        }
+                        else
+                        {
+                            <span>Unavailable; no valid self-ticket date is recorded.</span>
+                        }
+                    </dd>
+                </dl>
+                <p class="text-body-secondary">
+                    @if (corpus.DateCoverage == DiscussionDateCoverage.Complete)
+                    {
+                        <span>
+                            Complete selected-corpus dates supply the ticket-date
+                            title suffix independently of provenance readiness.
+                        </span>
+                    }
+                    else
+                    {
+                        <span>
+                            Empty or incomplete date coverage does not supply a
+                            ticket-date title suffix, even when a partial maximum
+                            is known.
+                        </span>
+                    }
+                </p>
+
+                <h3 class="h6">Public-name coverage</h3>
+                <dl class="row">
+                    <dt class="col-sm-6">Reporter</dt>
+                    <dd class="col-sm-6">@corpus.TicketsWithPublicReporter / @corpus.TicketCount tickets</dd>
+                    <dt class="col-sm-6">Assignee</dt>
+                    <dd class="col-sm-6">@corpus.TicketsWithPublicAssignee / @corpus.TicketCount tickets</dd>
+                    <dt class="col-sm-6">In-person requester</dt>
+                    <dd class="col-sm-6">@corpus.TicketsWithPublicRequester / @corpus.TicketCount tickets</dd>
+                </dl>
+                <p class="text-body-secondary">
+                    Counts measure tickets with public names, not distinct people.
+                    An empty Assignee does not establish whether someone is assigned.
+                    A current policy marker does not prove a display name exists
+                    or that a role is absent.
+                </p>
+
+                <h3 class="h6">Link coverage</h3>
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                        <caption>Related-item rows by kind, not ticket counts.</caption>
+                        <thead>
+                            <tr>
+                                <th scope="col">Kind</th>
+                                <th scope="col">Total rows</th>
+                                <th scope="col">Resolved safe links</th>
+                                <th scope="col">Unresolved with retained safe URLs</th>
+                                <th scope="col">Without usable URL</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (DiscussionLinkCoverage links in corpus.LinksByKind)
+                            {
+                                <tr>
+                                    <th scope="row"><code>@links.Kind</code></th>
+                                    <td>@links.TotalRows</td>
+                                    <td>@links.ResolvedSafeLinks</td>
+                                    <td>@links.UnresolvedWithRetainedSafeLinks</td>
+                                    <td>@links.WithoutUsableUrl</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <p class="text-body-secondary">
+                    A retained safe URL does not certify current resolution or
+                    source backing. Review the link's lookup diagnostics for
+                    last-known or unverified context.
+                </p>
+            </div>
+        }
+        else
+        {
+            <div class="callout callout--neutral publication-corpus-evidence">
+                <i class="bi bi-question-circle" aria-hidden="true"></i>
+                <div>
+                    <strong>Selected-corpus coverage is unavailable.</strong>
+                    This legacy publication does not record date, public-name,
+                    or link coverage. Counts and the maximum self-ticket Jira
+                    update are unknown, not zero; its stored title is unchanged.
                 </div>
             </div>
         }
@@ -240,15 +410,23 @@
                 replay authoring or grouping; publish the returned run's
                 verified pair as a separate step.
             </p>
+            <p class="form-text mb-0">
+                Source people population is separate. In the
+                <a href="/api-test?source=Jira">Jira API catalog</a>,
+                use <strong>Preview public people population</strong>, inspect
+                the evidence and shared-user effects, then explicitly
+                <strong>Apply public people population</strong> when eligible.
+                This refresh never performs source backfill.
+            </p>
         </div>
     }
-    else if (CanPublish)
+    @if (CanPublish)
     {
         <div class="publication-panel__actions">
             <button @ref="_primaryAction"
                     class="btn btn-primary"
                     type="button"
-                    disabled="@(Busy || Disabled || _confirmingReplacement)"
+                    disabled="@(Busy || Refreshing || Disabled || _confirmingReplacement)"
                     @onclick="PublishPrimaryAsync">
                 @if (Busy)
                 {
@@ -280,7 +458,7 @@
                 <button @ref="_replacementTrigger"
                         class="btn btn-outline-danger"
                         type="button"
-                        disabled="@(Busy || Disabled || _confirmingReplacement)"
+                        disabled="@(Busy || Refreshing || Disabled || _confirmingReplacement)"
                         aria-expanded="@_confirmingReplacement"
                         aria-controls="@ReplacementPanelId"
                         @onclick="BeginReplacementAsync">
@@ -292,6 +470,7 @@
             <p class="form-text mb-0">
                 Generation runs in this Dev UI process. It does not launch
                 another server process or replay ticket authoring.
+                It uses this run's frozen snapshot, not current source data.
             </p>
         </div>
 
@@ -413,8 +592,7 @@
             Details.Workflow.ProcessingServiceName,
             "Preparer",
             StringComparison.Ordinal) &&
-        Publication is ReviewSitePublication publication &&
-        publication.Manifest.DiscussionReadiness?.IsReady != true &&
+        Publication is not null &&
         CanPublish &&
         !string.Equals(
             Details.Response.Run.Purpose,
@@ -432,7 +610,12 @@
                 TicketOperationDisposition.Failed);
 
     private bool ReplacementAttemptBusy =>
-        Busy || _replacementAttemptActive;
+        Busy || Refreshing || _replacementAttemptActive;
+
+    private static string FormatUtc(DateTimeOffset value) =>
+        value.ToUniversalTime().ToString(
+            "yyyy-MM-dd HH:mm:ss 'UTC'",
+            CultureInfo.InvariantCulture);
 
     private string PublicationStatus
     {

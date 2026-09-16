@@ -1,3 +1,5 @@
+using System.Text.Json;
+using FhirAugury.Common.IO;
 using FhirAugury.DevUi.Configuration;
 using FhirAugury.DevUi.Models;
 using FhirAugury.Processing.Client;
@@ -36,6 +38,9 @@ public interface IReviewSiteStore
 
 public sealed class ReviewSiteStore : IReviewSiteStore
 {
+    private static readonly JsonSerializerOptions JsonOptions =
+        new(JsonSerializerDefaults.Web);
+
     private readonly DevUiOptions _options;
     private readonly TicketWorkflowCatalog _catalog;
     private readonly IFileSystemInspector _fileSystem;
@@ -339,6 +344,15 @@ public sealed class ReviewSiteStore : IReviewSiteStore
             indexPath,
             _fileSystem,
             "Published ticket site");
+        if (coordinates.Workflow.SiteKind == TicketSiteKind.Discussion &&
+            manifest.RendererSchemaVersion is >= 3)
+        {
+            await ValidateDiscussionPublicationAsync(
+                coordinates,
+                manifest,
+                indexPath,
+                ct);
+        }
         RevalidateCoordinates(coordinates);
         return new ReviewSitePublication(
             coordinates,
@@ -491,6 +505,170 @@ public sealed class ReviewSiteStore : IReviewSiteStore
         {
             throw new InvalidOperationException(
                 "Ticket site manifest does not match its workflow-bound snapshot and exact run-scoped output coordinates.");
+        }
+    }
+
+    private async Task ValidateDiscussionPublicationAsync(
+        ReviewSiteCoordinates coordinates,
+        TicketSiteManifest manifest,
+        string indexPath,
+        CancellationToken ct)
+    {
+        if (manifest.RendererSchemaVersion != 3)
+        {
+            throw new InvalidOperationException(
+                $"Unsupported Discussion renderer schema version '{manifest.RendererSchemaVersion}'.");
+        }
+
+        DiscussionCorpusSummary corpus = manifest.DiscussionCorpus ??
+            throw new InvalidOperationException(
+                "Discussion renderer-v3 manifest is missing selected-corpus coverage.");
+        if (manifest.DiscussionReadiness?.Reasons is null ||
+            string.IsNullOrWhiteSpace(manifest.DisplayTitle) ||
+            string.IsNullOrWhiteSpace(manifest.RendererAssetsVersion) ||
+            manifest.BuildIdentity is not { Length: 64 } ||
+            !manifest.BuildIdentity.All(Uri.IsHexDigit) ||
+            manifest.TableCounts is null ||
+            !manifest.TableCounts.TryGetValue("tickets", out long ticketCount) ||
+            ticketCount != manifest.IncludedItemCount ||
+            corpus.TicketCount != ticketCount ||
+            ticketCount < 0 ||
+            corpus.ExportedProjectCount < (ticketCount == 0 ? 0 : 1) ||
+            corpus.ExportedProjectCount > ticketCount ||
+            corpus.ValidJiraUpdatedAtCount < 0 ||
+            corpus.ValidJiraUpdatedAtCount > ticketCount ||
+            (corpus.MaxJiraUpdatedAt is null) !=
+                (corpus.ValidJiraUpdatedAtCount == 0) ||
+            corpus.MaxJiraUpdatedAt is { Offset: var offset } &&
+                offset != TimeSpan.Zero ||
+            corpus.TicketsWithPublicReporter < 0 ||
+            corpus.TicketsWithPublicReporter > ticketCount ||
+            corpus.TicketsWithPublicAssignee < 0 ||
+            corpus.TicketsWithPublicAssignee > ticketCount ||
+            corpus.TicketsWithPublicRequester < 0 ||
+            corpus.TicketsWithPublicRequester > ticketCount ||
+            corpus.LinksByKind is null ||
+            !manifest.TableCounts.TryGetValue("related_items", out long relatedRows) ||
+            relatedRows < 0)
+        {
+            throw new InvalidOperationException(
+                "Discussion renderer-v3 manifest has invalid presentation or selected-corpus coverage.");
+        }
+
+        string expectedDateCoverage = ticketCount == 0
+            ? DiscussionDateCoverage.Empty
+            : corpus.ValidJiraUpdatedAtCount == 0
+                ? DiscussionDateCoverage.None
+                : corpus.ValidJiraUpdatedAtCount == ticketCount
+                    ? DiscussionDateCoverage.Complete
+                    : DiscussionDateCoverage.Partial;
+        if (!string.Equals(
+                corpus.DateCoverage,
+                expectedDateCoverage,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Discussion date coverage does not match its selected-ticket counts.");
+        }
+
+        HashSet<string> kinds = new(StringComparer.Ordinal);
+        foreach (DiscussionLinkCoverage links in corpus.LinksByKind)
+        {
+            if (links is null ||
+                string.IsNullOrWhiteSpace(links.Kind) ||
+                !kinds.Add(links.Kind) ||
+                links.TotalRows < 0 ||
+                links.TotalRows > relatedRows ||
+                links.ResolvedSafeLinks < 0 ||
+                links.ResolvedSafeLinks > links.TotalRows ||
+                links.UnresolvedWithRetainedSafeLinks < 0 ||
+                links.UnresolvedWithRetainedSafeLinks >
+                    links.TotalRows - links.ResolvedSafeLinks ||
+                links.WithoutUsableUrl != links.TotalRows -
+                    links.ResolvedSafeLinks -
+                    links.UnresolvedWithRetainedSafeLinks)
+            {
+                throw new InvalidOperationException(
+                    "Discussion link coverage does not partition its related-item rows.");
+            }
+            relatedRows -= links.TotalRows;
+        }
+        if (relatedRows != 0)
+        {
+            throw new InvalidOperationException(
+                "Discussion link coverage does not account for all related-item rows.");
+        }
+        if (!string.Equals(
+                manifest.BuildIdentity,
+                manifest.ComputeBuildIdentity(),
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Discussion manifest facts do not match its committed build identity.");
+        }
+
+        string versionPath = Path.Combine(
+            coordinates.SiteDirectory,
+            StagedDirectoryPublisher.VersionFileName);
+        DevUiPathGuard.EnsureNoReparsePoints(
+            versionPath,
+            _fileSystem,
+            "Discussion publication version");
+        StagedDirectoryVersion? version =
+            JsonSerializer.Deserialize<StagedDirectoryVersion>(
+                await File.ReadAllTextAsync(versionPath, ct),
+                JsonOptions);
+        if (version != StagedDirectoryVersion.Snapshot(
+                "ticket-site:preparer",
+                manifest.ProcessorKind,
+                manifest.SnapshotSequence,
+                manifest.SnapshotId,
+                manifest.BuildIdentity))
+        {
+            throw new InvalidOperationException(
+                "Discussion manifest build identity does not match its committed publication version.");
+        }
+
+        string html = await File.ReadAllTextAsync(indexPath, ct);
+        const string presentationMarker =
+            "<script id=\"site-presentation\" type=\"application/json\">";
+        int start = html.IndexOf(presentationMarker, StringComparison.Ordinal);
+        int end = start < 0
+            ? -1
+            : html.IndexOf("</script>", start + presentationMarker.Length, StringComparison.Ordinal);
+        if (start < 0 || end < 0 ||
+            html.IndexOf(presentationMarker, start + presentationMarker.Length, StringComparison.Ordinal) >= 0)
+        {
+            throw new InvalidOperationException(
+                "Discussion renderer-v3 site is missing a unique presentation payload.");
+        }
+
+        using JsonDocument presentation = JsonDocument.Parse(
+            html[(start + presentationMarker.Length)..end]);
+        JsonElement expectedPresentation = JsonSerializer.SerializeToElement(
+            new
+            {
+                manifest.RendererSchemaVersion,
+                BaseTitle = manifest.Title,
+                SiteName = manifest.DisplayTitle,
+                manifest.JiraSourceLastSuccessfulRefreshAt,
+                Filters = new
+                {
+                    Specification = manifest.Filters.Spec,
+                    manifest.Filters.Project,
+                    WorkGroup = manifest.Filters.Wg,
+                    HasAnyFilter = false,
+                },
+                Readiness = manifest.DiscussionReadiness,
+                CorpusSummary = corpus,
+            },
+            JsonOptions);
+        if (!JsonElement.DeepEquals(
+                presentation.RootElement,
+                expectedPresentation))
+        {
+            throw new InvalidOperationException(
+                "Discussion renderer-v3 presentation does not match its manifest's title, readiness, and selected-corpus coverage.");
         }
     }
 

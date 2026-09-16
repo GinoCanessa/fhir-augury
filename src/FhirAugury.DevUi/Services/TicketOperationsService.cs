@@ -441,16 +441,7 @@ public sealed class TicketOperationsService : IDisposable
                     definition,
                     sourceRunId,
                     Message:
-                        "No existing Discussion publication needs repair. Generate the first review site from this run instead.");
-            }
-            if (publication.Manifest.DiscussionReadiness?.IsReady == true)
-            {
-                return new TicketPublicationRefreshResult(
-                    TicketOperationDisposition.NotAllowed,
-                    definition,
-                    sourceRunId,
-                    Message:
-                        "The existing Discussion publication already has verified freshness and trusted-people evidence.");
+                        "No existing Discussion publication was found. Generate the first review site from this run instead.");
             }
 
             AuthoringRunResponse latest =

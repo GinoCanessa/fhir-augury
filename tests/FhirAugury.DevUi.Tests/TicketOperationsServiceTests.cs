@@ -95,8 +95,10 @@ public sealed class TicketOperationsServiceTests : IDisposable
         Assert.Equal(0, authoring.ListCalls);
     }
 
-    [Fact]
-    public async Task OpenPreservesRunWhenPublicationReconstructionFails()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OpenPreservesRunWhenPublicationReconstructionFails(bool malformedCorpus)
     {
         FakeAuthoringClient authoring = new();
         AuthoringRunResponse authoritative = RunResponse(
@@ -110,8 +112,10 @@ public sealed class TicketOperationsServiceTests : IDisposable
             new TicketWorkflowCatalog())
         {
             ReconstructionException =
-                new FileNotFoundException(
-                    "The verified publication pair is missing."),
+                malformedCorpus
+                    ? new JsonException("The renderer-v3 corpus coverage is malformed.")
+                    : new FileNotFoundException(
+                        "The verified publication pair is missing."),
         };
         using TicketOperationsService service =
             CreateService(
@@ -132,7 +136,7 @@ public sealed class TicketOperationsServiceTests : IDisposable
             details.Outcome.Publication);
         Assert.Null(details.Publication);
         Assert.Contains(
-            "missing",
+            malformedCorpus ? "malformed" : "missing",
             Assert.IsType<string>(
                 details.PublicationError),
             StringComparison.OrdinalIgnoreCase);
@@ -669,17 +673,26 @@ public sealed class TicketOperationsServiceTests : IDisposable
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task PublicationRefreshStartsForLegacyOrDegradedDiscussionSite(
-        bool legacyManifest)
+    [InlineData("legacy")]
+    [InlineData("degraded")]
+    [InlineData("ready")]
+    [InlineData("ready-partial")]
+    public async Task PublicationRefreshStartsForReadyDegradedOrLegacyDiscussionSite(
+        string evidence)
     {
         FakeAuthoringClient authoring = new();
-        authoring.GetHandler = (_, _, _) =>
-            Task.FromResult(RunResponse(
-                canRetry: false,
-                canSupersede: false,
-                completed: true));
+        AuthoringRunResponse source = RunResponse(
+            canRetry: false,
+            canSupersede: false,
+            completed: true);
+        if (evidence == "ready-partial")
+        {
+            source = source with
+            {
+                Run = source.Run with { TotalItems = 2, SupersededItems = 1 },
+            };
+        }
+        authoring.GetHandler = (_, _, _) => Task.FromResult(source);
         AuthoringRunResponse refreshRun = RunResponse(
             canRetry: false,
             canSupersede: false,
@@ -689,7 +702,12 @@ public sealed class TicketOperationsServiceTests : IDisposable
             sourceRunId: "run-1");
         refreshRun = refreshRun with
         {
-            Run = refreshRun.Run with { RunId = "refresh-run" },
+            Run = refreshRun.Run with
+            {
+                RunId = "refresh-run",
+                CorpusComparison = new(
+                    "original-snapshot", 1177, 1180, 3),
+            },
             Items = refreshRun.Items
                 .Select(item => item with
                 {
@@ -705,9 +723,14 @@ public sealed class TicketOperationsServiceTests : IDisposable
         };
         FakeSiteStore store =
             CreatePublishedStore(
-                legacyManifest
-                    ? null
-                    : DegradedReadiness());
+                evidence switch
+                {
+                    "legacy" => null,
+                    "degraded" => DegradedReadiness(),
+                    "ready" or "ready-partial" => ReadyReadiness(),
+                    _ => throw new InvalidOperationException(
+                        $"Unknown evidence fixture '{evidence}'."),
+                });
         using TicketOperationsService service =
             CreateService(authoring, siteStore: store);
 
@@ -730,29 +753,77 @@ public sealed class TicketOperationsServiceTests : IDisposable
         Assert.Equal(
             ("prepare", "run-1"),
             Assert.Single(store.Reconstructions));
+        Assert.Equal(
+            new AuthoringRunCorpusComparison("original-snapshot", 1177, 1180, 3),
+            result.Run?.Run.CorpusComparison);
+        Assert.Equal(0, authoring.StartCalls);
+        Assert.Equal(0, authoring.DownloadCalls);
+
+        store.Publication = null;
+        string responseJson = JsonSerializer.Serialize(refreshRun, JsonOptions);
+        authoring.GetHandler = (serviceName, runId, _) =>
+        {
+            Assert.Equal("Preparer", serviceName);
+            Assert.Equal("refresh-run", runId);
+            return Task.FromResult(
+                JsonSerializer.Deserialize<AuthoringRunResponse>(responseJson, JsonOptions)
+                ?? throw new InvalidOperationException("The refresh fixture is empty."));
+        };
+        TicketRunDetails reloaded = await service.OpenRunAsync("prepare", "refresh-run");
+        Assert.Equal(refreshRun.Run.CorpusComparison, reloaded.Response.Run.CorpusComparison);
+        Assert.Null(reloaded.Publication);
+        Assert.Equal(2, authoring.GetCalls);
+        Assert.Equal(1, authoring.RefreshCalls);
     }
 
     [Theory]
     [InlineData("active")]
+    [InlineData("recoverable")]
+    [InlineData("nonterminal-completed")]
     [InlineData("database-only")]
+    [InlineData("database-only-flag")]
     [InlineData("superseded")]
     [InlineData("already-refresh")]
     public async Task PublicationRefreshRevalidatesUnsafeSourceRun(
         string sourceState)
     {
         FakeAuthoringClient authoring = new();
+        AuthoringRunResponse current = RunResponse(
+            canRetry: false, canSupersede: false, completed: true);
         authoring.GetHandler = (_, _, _) =>
-            Task.FromResult(sourceState switch
+            Task.FromResult(current);
+        FakeSiteStore store =
+            CreatePublishedStore(ReadyReadiness());
+        using TicketOperationsService service =
+            CreateService(authoring, siteStore: store);
+        TicketRunDetails opened = await service.OpenRunAsync("prepare", "run-1");
+        Assert.Equal(ProcessorRunOutcome.Completed, opened.Outcome.Processor);
+
+        current = sourceState switch
             {
                 "active" => RunResponse(
                     canRetry: false,
                     canSupersede: false,
                     statusOverride: "running"),
+                "recoverable" => RunResponse(
+                    canRetry: true,
+                    canSupersede: true),
+                "nonterminal-completed" => current with
+                {
+                    Run = current.Run with
+                    {
+                        State = new AuthoringRunStateInfo(false, false),
+                    },
+                },
                 "database-only" => RunResponse(
                     canRetry: false,
                     canSupersede: false,
                     completed: true,
                     databaseOnly: true),
+                "database-only-flag" => current with
+                {
+                    Run = current.Run with { DatabaseOnly = true },
+                },
                 "superseded" => RunResponse(
                     canRetry: false,
                     canSupersede: false,
@@ -766,11 +837,7 @@ public sealed class TicketOperationsServiceTests : IDisposable
                     sourceRunId: "older-run"),
                 _ => throw new InvalidOperationException(
                     $"Unknown source state '{sourceState}'."),
-            });
-        FakeSiteStore store =
-            CreatePublishedStore(DegradedReadiness());
-        using TicketOperationsService service =
-            CreateService(authoring, siteStore: store);
+            };
 
         TicketPublicationRefreshResult result =
             await service.RefreshPublicationAsync(
@@ -780,9 +847,11 @@ public sealed class TicketOperationsServiceTests : IDisposable
         Assert.Equal(
             TicketOperationDisposition.NotAllowed,
             result.Disposition);
-        Assert.Equal(1, authoring.GetCalls);
+        Assert.Equal(2, authoring.GetCalls);
         Assert.Equal(0, authoring.RefreshCalls);
         Assert.Equal(0, authoring.ListCalls);
+        Assert.Equal(2, store.Reconstructions.Count);
+        Assert.False(string.IsNullOrWhiteSpace(result.Message));
     }
 
     [Fact]
@@ -808,22 +877,13 @@ public sealed class TicketOperationsServiceTests : IDisposable
         Assert.Empty(store.Reconstructions);
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task PublicationRefreshRequiresExistingUnreadySite(
-        bool existingReadySite)
+    [Fact]
+    public async Task PublicationRefreshRequiresExistingPublication()
     {
         FakeAuthoringClient authoring = new();
         FakeSiteStore store = new(
             _root,
             new TicketWorkflowCatalog());
-        if (existingReadySite)
-        {
-            store.Publication = CreatePublication(
-                store,
-                ReadyReadiness());
-        }
         using TicketOperationsService service =
             CreateService(authoring, siteStore: store);
 
@@ -838,6 +898,99 @@ public sealed class TicketOperationsServiceTests : IDisposable
         Assert.Equal(0, authoring.GetCalls);
         Assert.Equal(0, authoring.RefreshCalls);
         Assert.Equal(0, authoring.ListCalls);
+        Assert.Contains("Generate the first review site", result.Message);
+    }
+
+    [Fact]
+    public async Task PublicationRefreshRevalidatesPublicationAfterOpen()
+    {
+        FakeAuthoringClient authoring = new()
+        {
+            GetHandler = (_, _, _) => Task.FromResult(RunResponse(
+                canRetry: false, canSupersede: false, completed: true)),
+        };
+        FakeSiteStore store = CreatePublishedStore(ReadyReadiness());
+        using TicketOperationsService service = CreateService(authoring, siteStore: store);
+        Assert.NotNull((await service.OpenRunAsync("prepare", "run-1")).Publication);
+        store.Publication = null;
+
+        TicketPublicationRefreshResult result = await service.RefreshPublicationAsync("prepare", "run-1");
+
+        Assert.Equal(TicketOperationDisposition.NotAllowed, result.Disposition);
+        Assert.Equal(2, store.Reconstructions.Count);
+        Assert.Equal(1, authoring.GetCalls);
+        Assert.Equal(0, authoring.RefreshCalls);
+        Assert.Equal(0, authoring.ListCalls);
+    }
+
+    [Fact]
+    public async Task PublicationRefreshReportsMalformedCoverageWithoutPosting()
+    {
+        FakeAuthoringClient authoring = new();
+        FakeSiteStore store = CreatePublishedStore(ReadyReadiness());
+        store.ReconstructionException = new JsonException(
+            "Discussion renderer-v3 corpus coverage is malformed.");
+        using TicketOperationsService service = CreateService(authoring, siteStore: store);
+
+        TicketPublicationRefreshResult result = await service.RefreshPublicationAsync("prepare", "run-1");
+
+        Assert.Equal(TicketOperationDisposition.Failed, result.Disposition);
+        Assert.Contains("corpus coverage is malformed", result.Message);
+        Assert.Single(store.Reconstructions);
+        Assert.Equal(0, authoring.GetCalls);
+        Assert.Equal(0, authoring.RefreshCalls);
+        Assert.Equal(0, authoring.ListCalls);
+        Assert.False(service.RequiresUnknownPublicationRefreshReview("prepare", "run-1"));
+    }
+
+    [Fact]
+    public async Task PublicationRefreshMutationGateRejectsDoubleSubmitAndGeneration()
+    {
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        AuthoringRunResponse refresh = RunResponse(
+            canRetry: false, canSupersede: false,
+            purpose: "publication-refresh", sourceRunId: "run-1");
+        FakeAuthoringClient authoring = new()
+        {
+            GetHandler = (_, _, _) => Task.FromResult(RunResponse(
+                canRetry: false, canSupersede: false, completed: true)),
+            RefreshHandler = async (_, _, ct) =>
+            {
+                entered.SetResult();
+                await release.Task.WaitAsync(ct);
+                return refresh;
+            },
+        };
+        FakePublisher publisher = new();
+        FakeSiteStore store = CreatePublishedStore(ReadyReadiness());
+        using TicketOperationsService service = CreateService(
+            authoring, siteStore: store, publisher: publisher);
+        Task<TicketPublicationRefreshResult> first = service.RefreshPublicationAsync("prepare", "run-1");
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            TicketPublicationRefreshResult duplicate = await service.RefreshPublicationAsync("prepare", "run-1");
+            TicketPublicationResult generation = await service.PublishAsync("prepare", "run-1");
+            TicketStartResult authoringStart = await service.StartAsync(
+                new TicketRunStartRequest("prepare", TicketSelectionMode.Configured));
+
+            Assert.Equal(TicketOperationDisposition.Busy, duplicate.Disposition);
+            Assert.Equal(TicketOperationDisposition.Busy, generation.Disposition);
+            Assert.Equal(TicketOperationDisposition.Busy, authoringStart.Disposition);
+            Assert.Equal(1, authoring.GetCalls);
+            Assert.Equal(1, authoring.RefreshCalls);
+            Assert.Equal(0, authoring.StartCalls);
+            Assert.Equal(0, authoring.ListCalls);
+            Assert.Equal(0, authoring.DownloadCalls);
+            Assert.Equal(0, publisher.Calls);
+            Assert.Single(store.Reconstructions);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+        Assert.Equal(TicketOperationDisposition.Succeeded, (await first).Disposition);
     }
 
     [Fact]
@@ -869,7 +1022,11 @@ public sealed class TicketOperationsServiceTests : IDisposable
                     _now.AddSeconds(1),
                     terminal: false,
                     purpose: "publication-refresh",
-                    sourceRunId: "run-1"),
+                    sourceRunId: "run-1") with
+                {
+                    CorpusComparison = new(
+                        "original-snapshot", 1177, 1180, 3),
+                },
                 RunStatus(
                     "old-refresh",
                     "completed",
@@ -895,7 +1052,7 @@ public sealed class TicketOperationsServiceTests : IDisposable
             Truncated: false));
         };
         FakeSiteStore store =
-            CreatePublishedStore(DegradedReadiness());
+            CreatePublishedStore(ReadyReadiness());
         using TicketOperationsService service =
             CreateService(authoring, siteStore: store);
 
@@ -917,6 +1074,10 @@ public sealed class TicketOperationsServiceTests : IDisposable
         Assert.Equal(
             "matching-refresh",
             Assert.Single(result.Candidates).RunId);
+        Assert.Equal(
+            new AuthoringRunCorpusComparison("original-snapshot", 1177, 1180, 3),
+            Assert.Single(blocked.Candidates).CorpusComparison);
+        Assert.Same(result, service.GetUnknownPublicationRefreshReview("prepare", "run-1"));
         Assert.Null(result.Run);
         Assert.Same(result, blocked);
         Assert.True(
@@ -934,6 +1095,62 @@ public sealed class TicketOperationsServiceTests : IDisposable
             service.RequiresUnknownPublicationRefreshReview(
                 "prepare",
                 "run-1"));
+        authoring.RefreshHandler = (_, _, _) => Task.FromResult(
+            new AuthoringRunResponse(Assert.Single(result.Candidates), []));
+        TicketPublicationRefreshResult acknowledged = await service.RefreshPublicationAsync("prepare", "run-1");
+        Assert.Equal(TicketOperationDisposition.Succeeded, acknowledged.Disposition);
+        Assert.Equal(Assert.Single(result.Candidates).CorpusComparison, acknowledged.Run?.Run.CorpusComparison);
+        Assert.Equal(2, authoring.RefreshCalls);
+        Assert.Equal(2, authoring.GetCalls);
+        Assert.Equal(1, authoring.ListCalls);
+    }
+
+    [Theory]
+    [InlineData("timeout")]
+    [InlineData("transport")]
+    [InlineData("invalid-json")]
+    public async Task FailedPublicationRefreshReconciliationKeepsReviewGate(string failure)
+    {
+        FakeAuthoringClient authoring = new()
+        {
+            GetHandler = (_, _, _) => Task.FromResult(RunResponse(
+                canRetry: false, canSupersede: false, completed: true)),
+            RefreshHandler = (_, sourceRunId, _) =>
+                Task.FromException<AuthoringRunResponse>(
+                    new AuthoringMutationOutcomeUnknownException(
+                        "publication-refresh", "Preparer", sourceRunId, null,
+                        new IOException("response lost"))),
+            ListHandler = (_, limit, _) =>
+            {
+                Assert.Equal(20, limit);
+                Exception error = failure switch
+                {
+                    "timeout" => new TimeoutException("reconciliation timed out"),
+                    "transport" => new HttpRequestException("reconciliation unavailable"),
+                    "invalid-json" => new InvalidOperationException(
+                        "Authoring endpoint returned invalid JSON.",
+                        new JsonException("reconciliation response malformed")),
+                    _ => throw new InvalidOperationException($"Unknown failure '{failure}'."),
+                };
+                return Task.FromException<AuthoringRunListResponse>(error);
+            },
+        };
+        using TicketOperationsService service = CreateService(
+            authoring, siteStore: CreatePublishedStore(ReadyReadiness()));
+
+        TicketPublicationRefreshResult result = await service.RefreshPublicationAsync("prepare", "run-1");
+        TicketPublicationRefreshResult blocked = await service.RefreshPublicationAsync("PREPARE", "run-1");
+
+        Assert.Equal(TicketOperationDisposition.OutcomeUnknown, result.Disposition);
+        Assert.Equal(TicketReconciliationOutcome.Failed, result.Reconciliation?.Outcome);
+        Assert.False(string.IsNullOrWhiteSpace(result.Reconciliation?.Error));
+        Assert.Empty(result.Candidates);
+        Assert.Null(result.Run);
+        Assert.Same(result, blocked);
+        Assert.True(service.RequiresUnknownPublicationRefreshReview("prepare", "run-1"));
+        Assert.Equal(1, authoring.GetCalls);
+        Assert.Equal(1, authoring.RefreshCalls);
+        Assert.Equal(1, authoring.ListCalls);
     }
 
     [Fact]
@@ -964,7 +1181,7 @@ public sealed class TicketOperationsServiceTests : IDisposable
                 new AuthoringRunListResponse([], false));
         };
         FakeSiteStore store =
-            CreatePublishedStore(DegradedReadiness());
+            CreatePublishedStore(ReadyReadiness());
         using TicketOperationsService service =
             CreateService(authoring, siteStore: store);
 
@@ -1406,15 +1623,31 @@ public sealed class TicketOperationsServiceTests : IDisposable
             1,
             1,
             1,
-            new Dictionary<string, long>(),
+            new Dictionary<string, long>
+            {
+                ["tickets"] = 1,
+                ["related_items"] = 0,
+            },
             new TicketSiteManifestFilters(null, null, null),
             coordinates.Workflow.SiteTitle,
             "assets",
             "build",
             coordinates.SiteDirectory,
             DateTimeOffset.Parse("2026-09-14T00:00:00Z"),
-            RendererSchemaVersion: 2,
-            DiscussionReadiness: readiness);
+            DisplayTitle: coordinates.Workflow.SiteTitle,
+            RendererSchemaVersion: readiness is null ? 2 : 3,
+            DiscussionReadiness: readiness,
+            DiscussionCorpus: readiness is null
+                ? null
+                : new DiscussionCorpusSummary(
+                    1, 1, 0, null, DiscussionDateCoverage.None, 0, 0, 0,
+                    [
+                        new("github", 0, 0, 0, 0),
+                        new("jira", 0, 0, 0, 0),
+                        new("jira-xref", 0, 0, 0, 0),
+                        new("repo", 0, 0, 0, 0),
+                        new("zulip", 0, 0, 0, 0),
+                    ]));
         return new ReviewSitePublication(
             coordinates,
             manifest,

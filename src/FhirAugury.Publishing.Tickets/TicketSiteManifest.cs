@@ -105,6 +105,20 @@ public sealed record TicketSiteManifest(
             discussionPresentation?.CorpusSummary);
     }
 
+    public string ComputeBuildIdentity()
+        => ComputeBuildIdentity(
+            SiteKind,
+            new ResolvedFilters(Filters.Spec, Filters.Project, Filters.Wg),
+            Title,
+            RendererAssetsVersion,
+            SnapshotSha256,
+            EmbeddedDbSha256,
+            DisplayTitle,
+            JiraSourceLastSuccessfulRefreshAt,
+            RendererSchemaVersion,
+            DiscussionReadiness,
+            DiscussionCorpus);
+
     internal static string ComputeBuildIdentity(
         string siteKind,
         ResolvedFilters filters,
