@@ -33,6 +33,9 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Tests;
 [Collection(PreparedTicketPublicationTestCollection.Name)]
 public sealed class PreparedTicketPublicationRefreshTests
 {
+    private const string NullableWorkgroupPartitionKey = "unattributed\u001fFHIR\u001fChange Request";
+    private const string AttributedWorkgroupPartitionKey = "FHIRInfrastructure\u001fFHIR\u001fChange Request";
+
     [Fact]
     public async Task StartReturnsLinkedSnapshotProducingRun()
     {
@@ -1068,6 +1071,507 @@ public sealed class PreparedTicketPublicationRefreshTests
         Assert.Equal(protectedBefore, fixture.ReadAuthoredAndGroupingState());
         Assert.Equal(4, fetcher.CallCount);
         Assert.Equal(2, fetcher.ZulipCallCount);
+    }
+
+    [Fact]
+    public async Task NullableWorkgroupRefreshPreservesCumulativeCorpusAndSnapshot()
+    {
+        using Fixture fixture = new(richGraph: true);
+        MixedWorkgroupSource mixed = await CreateMixedWorkgroupSourceAsync(fixture);
+        PreparedTicketPublicationBaseline baseline = await fixture.CreateBaselineReader().ReadAsync(mixed.Source.Run.Id);
+        PreparedTicketPublicationProtectedInventory before = await fixture.ReadCurrentAsync();
+        AssertMixedWorkgroupInventory(mixed, baseline.Inventory);
+        AssertMixedWorkgroupInventory(mixed, before);
+        PreparedTicketPublicationProtectionReader.Compare(baseline, before);
+        string authoredBefore = fixture.ReadAuthoredAndGroupingState();
+        int attemptsBefore = fixture.CountLive("authoring_run_attempts");
+        string sourceSnapshotId = Assert.IsType<string>(mixed.Source.Run.SnapshotId);
+        string sourcePath = Path.Combine(fixture.SnapshotDirectory, mixed.Source.Descriptor.FileName);
+        string sourceDigest = await SqliteReviewSnapshotWriter.ComputeSha256Async(sourcePath);
+        Assert.Equal(sourceSnapshotId, baseline.Source.SnapshotId);
+        Assert.Equal(sourceDigest, baseline.Source.SnapshotSha256);
+        Assert.Equal(3, attemptsBefore);
+        List<string> jiraKeys = [];
+        MetadataFetcher fetcher = MetadataFetcher.For(mixed.ExpectedRevisions);
+        fetcher.OnJiraFetch = jiraKeys.Add;
+        PreparedTicketPublicationRefreshService service = fixture.CreateRefreshService(fetcher);
+        PreparedTicketPublicationMaintenanceController controller = new(service);
+
+        AcceptedResult accepted = Assert.IsType<AcceptedResult>(
+            await controller.Start(mixed.Source.Run.Id, CancellationToken.None));
+
+        Assert.Equal(202, accepted.StatusCode);
+        PreparedTicketPublicationRefreshResult started = Assert.IsType<PreparedTicketPublicationRefreshResult>(accepted.Value);
+        Assert.Equal($"/processing/authoring/runs/{started.Run.RunId}", accepted.Location);
+        PreparedTicketPublicationEnrichmentInput input =
+            await AssertMixedRefreshAdmissionAsync(fixture, mixed, baseline, before, started);
+        Assert.Equal(0, fetcher.CallCount);
+        Assert.Equal(0, fetcher.ZulipCallCount);
+        CountingGroupingDispatcher dispatcher = new(fixture.Database);
+
+        AuthoringSnapshotDescriptor descriptor = Assert.IsType<AuthoringSnapshotDescriptor>(
+            await fixture.CreatePostProcessor(service, dispatcher).FinalizeRunAsync(started.Run.RunId));
+
+        Assert.Equal(0, dispatcher.CallCount);
+        AssertMixedMetadataFetches(mixed, fetcher, jiraKeys);
+        await AssertMixedRefreshCompletedAsync(fixture, mixed, baseline, input, started, descriptor);
+        Assert.Equal(authoredBefore, fixture.ReadAuthoredAndGroupingState());
+        Assert.Equal(attemptsBefore, fixture.CountLive("authoring_run_attempts"));
+        Assert.Equal(sourceSnapshotId,
+            Assert.IsType<AuthoringRunRecord>(await fixture.Store.GetRunAsync(mixed.Source.Run.Id)).SnapshotId);
+        Assert.Equal(sourceDigest, await SqliteReviewSnapshotWriter.ComputeSha256Async(sourcePath));
+    }
+
+    [Fact]
+    public async Task NullableWorkgroupRefreshRecoversCommittedMetadataWithoutRefetch()
+    {
+        using Fixture fixture = new(richGraph: true);
+        MixedWorkgroupSource mixed = await CreateMixedWorkgroupSourceAsync(fixture);
+        PreparedTicketPublicationBaseline baseline = await fixture.CreateBaselineReader().ReadAsync(mixed.Source.Run.Id);
+        PreparedTicketPublicationProtectedInventory before = await fixture.ReadCurrentAsync();
+        AssertMixedWorkgroupInventory(mixed, baseline.Inventory);
+        AssertMixedWorkgroupInventory(mixed, before);
+        PreparedTicketPublicationProtectionReader.Compare(baseline, before);
+        string authoredBefore = fixture.ReadAuthoredAndGroupingState();
+        int attemptsBefore = fixture.CountLive("authoring_run_attempts");
+        string sourcePath = Path.Combine(fixture.SnapshotDirectory, mixed.Source.Descriptor.FileName);
+        string sourceDigest = await SqliteReviewSnapshotWriter.ComputeSha256Async(sourcePath);
+        Assert.Equal(sourceDigest, baseline.Source.SnapshotSha256);
+        List<string> jiraKeys = [];
+        MetadataFetcher firstFetcher = MetadataFetcher.For(mixed.ExpectedRevisions);
+        firstFetcher.OnJiraFetch = jiraKeys.Add;
+        ThrowOnceAfterCommitHook hook = new();
+        PreparedTicketPublicationRefreshService firstService = fixture.CreateRefreshService(firstFetcher, hook);
+        PreparedTicketPublicationRefreshResult started = await firstService.StartAsync(mixed.Source.Run.Id);
+        PreparedTicketPublicationEnrichmentInput input =
+            await AssertMixedRefreshAdmissionAsync(fixture, mixed, baseline, before, started);
+        CountingGroupingDispatcher firstDispatcher = new(fixture.Database);
+
+        InvalidOperationException interruption = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.CreatePostProcessor(firstService, firstDispatcher).FinalizeRunAsync(started.Run.RunId));
+
+        Assert.Equal("Simulated process interruption after metadata commit.", interruption.Message);
+        Assert.Equal(1, hook.CallCount);
+        Assert.Equal(0, firstDispatcher.CallCount);
+        AssertMixedMetadataFetches(mixed, firstFetcher, jiraKeys);
+        AuthoringRunRecord fenced = Assert.IsType<AuthoringRunRecord>(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+        Assert.Equal(started.Run.RunId, fenced.Id);
+        Assert.Equal(AuthoringStatusValues.Runs.Error, fenced.Status);
+        string requestBefore = Assert.IsType<string>(fenced.RequestJson);
+        AuthoringRunStageRecord metadataStage = Assert.Single(
+            await fixture.Store.GetRunStagesAsync(started.Run.RunId),
+            stage => stage.StageName == PreparedTicketPublicationEnrichmentContract.StageName);
+        PreparedTicketPublicationRefreshReceiptRecord committed = Assert.IsType<PreparedTicketPublicationRefreshReceiptRecord>(
+            await fixture.Database.GetMatchingPublicationRefreshReceiptAsync(
+                started.Run.RunId, metadataStage.Id,
+                PreparedTicketPublicationEnrichmentContract.ComputeInputFingerprint(input), input.CorpusFingerprint));
+        Assert.Equal(started.Run.RunId, committed.RunId);
+        Assert.Equal(1, fixture.CountLive("prepared_ticket_publication_refresh_receipts"));
+        Assert.DoesNotContain(await fixture.Store.GetSnapshotRecordsAsync(), record => record.RunId == started.Run.RunId);
+        PreparedTicketPublicationProtectedInventory afterApply = await fixture.ReadCurrentAsync();
+        AssertMixedWorkgroupInventory(mixed, afterApply);
+        PreparedTicketPublicationProtectionReader.Compare(baseline, afterApply);
+        PreparedTicketPublicationProtectionReader.ValidateFrozen(input, afterApply, started.Run.RunId);
+        string metadataAfterApply = fixture.ReadPublicationMetadataState();
+        Assert.Equal(authoredBefore, fixture.ReadAuthoredAndGroupingState());
+        Assert.Equal(attemptsBefore, fixture.CountLive("authoring_run_attempts"));
+
+        MetadataFetcher resumedFetcher = MetadataFetcher.For(mixed.ExpectedRevisions);
+        resumedFetcher.ThrowWhenCalled = true;
+        PreparedTicketPublicationRefreshService resumedService = fixture.CreateRefreshService(resumedFetcher);
+        CountingGroupingDispatcher resumedDispatcher = new(fixture.Database);
+
+        AuthoringSnapshotDescriptor descriptor = Assert.IsType<AuthoringSnapshotDescriptor>(
+            await fixture.CreatePostProcessor(resumedService, resumedDispatcher).FinalizeRunAsync(started.Run.RunId));
+
+        Assert.Equal(0, resumedFetcher.CallCount);
+        Assert.Equal(0, resumedFetcher.ZulipCallCount);
+        Assert.Equal(0, resumedDispatcher.CallCount);
+        Assert.Equal(committed,
+            await fixture.Database.GetPublicationRefreshReceiptAsync(started.Run.RunId, metadataStage.Id));
+        Assert.Equal(requestBefore,
+            Assert.IsType<AuthoringRunRecord>(await fixture.Store.GetRunAsync(started.Run.RunId)).RequestJson);
+        Assert.Equal(metadataAfterApply, fixture.ReadPublicationMetadataState());
+        await AssertMixedRefreshCompletedAsync(fixture, mixed, baseline, input, started, descriptor);
+        Assert.Equal(authoredBefore, fixture.ReadAuthoredAndGroupingState());
+        Assert.Equal(attemptsBefore, fixture.CountLive("authoring_run_attempts"));
+        Assert.Equal(sourceDigest, await SqliteReviewSnapshotWriter.ComputeSha256Async(sourcePath));
+    }
+
+    private sealed record MixedWorkgroupSource(
+        SourceResult NullableSource,
+        SourceResult Source,
+        string NullableTicketKey,
+        string[] AttributedTicketKeys,
+        IReadOnlyDictionary<string, string> ExpectedRevisions,
+        IReadOnlyList<PreparedTicketPublicationCorpusItem> ExpectedCorpus);
+
+    private static async Task<MixedWorkgroupSource> CreateMixedWorkgroupSourceAsync(Fixture fixture)
+    {
+        const string nullableTicketKey = "FHIR-10061";
+        string[] attributedTicketKeys = ["FHIR-10062", "FHIR-10063"];
+        SourceResult nullableSource;
+        try
+        {
+            nullableSource = await CreateNoTopicWorkgroupSourceAsync(fixture, null, null, nullableTicketKey);
+        }
+        finally
+        {
+            fixture.BeforeSourceSnapshot = null;
+        }
+        Assert.Empty(await fixture.Database.GetRunPartitionsAsync(nullableSource.Run.Id));
+        using (SqliteConnection connection = fixture.Database.OpenConnection())
+        {
+            AssertStoredSelfWorkgroups(connection, [nullableTicketKey], null, null);
+            AssertNoStoredTopics(connection);
+        }
+        SourceResult source = await fixture.CreateSourceRunAtAsync(
+            new DateTimeOffset(2026, 9, 2, 0, 0, 0, TimeSpan.Zero), attributedTicketKeys);
+        Assert.Equal(1, nullableSource.Run.TotalItems);
+        Assert.Equal(2, source.Run.TotalItems);
+        Assert.Equal(2, (await fixture.Store.GetRunItemsAsync(source.Run.Id)).Count);
+        Dictionary<string, string> revisions = nullableSource.ExpectedRevisions.Concat(source.ExpectedRevisions)
+            .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, string> receipts = nullableSource.ReceiptIds.Concat(source.ReceiptIds)
+            .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+        AuthoringRunItemRecord[] items = (await fixture.Store.GetRunItemsAsync(nullableSource.Run.Id))
+            .Concat(await fixture.Store.GetRunItemsAsync(source.Run.Id)).ToArray();
+        PreparedTicketPublicationCorpusItem[] expectedCorpus = items
+            .OrderBy(item => item.BusinessKey, StringComparer.Ordinal)
+            .Select(item => new PreparedTicketPublicationCorpusItem(
+                item.BusinessKey, receipts[item.BusinessKey], item.Id, item.RunId, "fhir", revisions[item.BusinessKey]))
+            .ToArray();
+        MixedWorkgroupSource mixed = new(
+            nullableSource, source, nullableTicketKey, attributedTicketKeys, revisions, expectedCorpus);
+        using (SqliteConnection connection = fixture.Database.OpenConnection())
+        {
+            AssertMixedWorkgroupStorage(connection, mixed);
+        }
+        string path = Path.Combine(fixture.SnapshotDirectory, source.Descriptor.FileName);
+        await using (SqliteConnection snapshot = await SqliteReviewSnapshotValidator.OpenReadOnlyAsync(path))
+        {
+            AssertMixedWorkgroupStorage(snapshot, mixed);
+        }
+        await AssertSourceSnapshotUnchangedAsync(fixture, nullableSource);
+        await AssertSourceSnapshotUnchangedAsync(fixture, source);
+        return mixed;
+    }
+
+    private static void AssertMixedWorkgroupInventory(
+        MixedWorkgroupSource mixed,
+        PreparedTicketPublicationProtectedInventory inventory)
+    {
+        Assert.Equal(mixed.ExpectedCorpus, inventory.Corpus.OrderBy(item => item.TicketKey, StringComparer.Ordinal).ToArray());
+        Assert.Equal(PreparedTicketPublicationContract.ComputeCorpusFingerprint(mixed.ExpectedCorpus), inventory.CorpusFingerprint);
+        Assert.Equal(
+            [AttributedWorkgroupPartitionKey, NullableWorkgroupPartitionKey],
+            inventory.Grouping.Select(partition => partition.PartitionKey).Order(StringComparer.Ordinal).ToArray());
+        PreparedTicketPublicationProtectedGrouping nullable = Assert.Single(
+            inventory.Grouping, partition => partition.PartitionKey == NullableWorkgroupPartitionKey);
+        PreparedTicketPublicationCorpusItem expectedNullable = Assert.Single(
+            mixed.ExpectedCorpus, item => item.TicketKey == mixed.NullableTicketKey);
+        Assert.Equal(expectedNullable, Assert.Single(nullable.Corpus));
+        Assert.Empty(nullable.Rows);
+        Assert.Equal(new PreparedTicketPublicationProtectedGroupingFingerprint(
+            NullableWorkgroupPartitionKey,
+            PreparedTicketPublicationContract.ComputeCorpusFingerprint([expectedNullable]),
+            PreparedTicketPublicationContract.ComputeGroupingPartitionFingerprint(new PreparedTicketGroupingPayload
+            {
+                WorkGroupClean = "unattributed",
+                WorkGroupDisplay = "unattributed",
+                Specification = "FHIR",
+                Type = "Change Request",
+                Topics = [],
+            }),
+            PreparedTicketPublicationEnrichmentContract.ComputeProtectedContentFingerprint(
+                Array.Empty<PreparedTicketPublicationProtectedRow>())), nullable.Fingerprint);
+        PreparedTicketPublicationProtectedGrouping attributed = Assert.Single(
+            inventory.Grouping, partition => partition.PartitionKey == AttributedWorkgroupPartitionKey);
+        Assert.Equal(
+            mixed.ExpectedCorpus.Where(item => item.TicketKey != mixed.NullableTicketKey).ToArray(),
+            attributed.Corpus.OrderBy(item => item.TicketKey, StringComparer.Ordinal).ToArray());
+        Assert.Single(attributed.Rows, row => row.Table == "prepared_ticket_topics");
+        Assert.Single(attributed.Rows, row => row.Table == "prepared_ticket_topic_groups");
+        Assert.Equal(2, attributed.Rows.Count(row => row.Table == "prepared_ticket_topic_members"));
+        AssertProtectedSelfWorkgroups(inventory, [mixed.NullableTicketKey], null, null);
+        AssertProtectedSelfWorkgroups(inventory, mixed.AttributedTicketKeys, "FHIR Infrastructure", "FHIRInfrastructure");
+    }
+
+    private static async Task<PreparedTicketPublicationEnrichmentInput> AssertMixedRefreshAdmissionAsync(
+        Fixture fixture,
+        MixedWorkgroupSource mixed,
+        PreparedTicketPublicationBaseline baseline,
+        PreparedTicketPublicationProtectedInventory before,
+        PreparedTicketPublicationRefreshResult started)
+    {
+        Assert.NotEqual(mixed.Source.Run.Id, started.Run.RunId);
+        Assert.NotEqual(mixed.NullableSource.Run.Id, started.Run.RunId);
+        Assert.Equal(mixed.Source.Run.Id, started.Run.SourceRunId);
+        Assert.Equal(AuthoringRunPurposeValues.PublicationRefresh, started.Run.Purpose);
+        Assert.False(started.Run.DatabaseOnly);
+        Assert.Equal(AuthoringStatusValues.Runs.Running, started.Run.Status);
+        Assert.Equal(3, baseline.Source.ExportedTicketCount);
+        Assert.Equal(new AuthoringRunCorpusComparison(mixed.Source.Descriptor.SnapshotId, 3, 3, 0), started.Run.CorpusComparison);
+        Assert.Equal(3, started.Run.TotalItems);
+        Assert.Equal(3, started.Run.CompletedItems);
+        Assert.Equal(3, started.Items.Count);
+        IReadOnlyList<AuthoringRunItemRecord> persistedItems = await fixture.Store.GetRunItemsAsync(started.Run.RunId);
+        Assert.Equal(3, persistedItems.Count);
+        foreach (PreparedTicketPublicationCorpusItem expected in mixed.ExpectedCorpus)
+        {
+            AuthoringRunItemStatus item = Assert.Single(started.Items, item => item.BusinessKey == expected.TicketKey);
+            Assert.Equal(started.Run.RunId, item.RunId);
+            Assert.Equal($"maintenance:{started.Run.RunId}:fhir", item.ItemKind);
+            Assert.Equal(AuthoringStatusValues.Items.Complete, item.Status);
+            Assert.Equal(expected.ReceiptId, item.AcceptedReceiptId);
+            Assert.Equal(expected.ExpectedSourceRevision, item.ExpectedSourceRevision);
+            Assert.Equal(0, item.AttemptCount);
+            AuthoringRunItemRecord persistedItem = Assert.Single(persistedItems, value => value.Id == item.ItemId);
+            Assert.Equal(item.BusinessKey, persistedItem.BusinessKey);
+            Assert.Equal(item.AcceptedReceiptId, persistedItem.AcceptedReceiptId);
+            Assert.Equal(item.ExpectedSourceRevision, persistedItem.ExpectedSourceRevision);
+            Assert.Equal(AuthoringStatusValues.Items.Complete, persistedItem.Status);
+            Assert.Equal(0, persistedItem.AttemptCount);
+        }
+        AuthoringRunRecord fenced = Assert.IsType<AuthoringRunRecord>(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+        Assert.Equal(started.Run.RunId, fenced.Id);
+        PreparedTicketPublicationEnrichmentInput input = Assert.IsType<PreparedTicketPublicationEnrichmentInput>(
+            PreparerDatabase.ReadPublicationEnrichmentInput(fenced));
+        Assert.Equal(PreparedTicketPublicationEnrichmentContract.RecipeName, input.RecipeName);
+        Assert.Equal(1, input.RecipeVersion);
+        Assert.Equal(baseline.Source, input.Source);
+        Assert.Equal(baseline.Inventory.CorpusFingerprint, input.SourceCorpusFingerprint);
+        Assert.Equal(mixed.ExpectedCorpus, input.Corpus.OrderBy(item => item.TicketKey, StringComparer.Ordinal).ToArray());
+        Assert.Equal(before.CorpusFingerprint, input.CorpusFingerprint);
+        Assert.Equal(before.ProtectedContentFingerprint, input.ProtectedContentFingerprint);
+        Assert.Equal(before.RetainedGroupingFingerprint, input.RetainedGroupingFingerprint);
+        Assert.Equal(
+            before.Grouping.Select(partition => partition.Fingerprint).OrderBy(partition => partition.PartitionKey, StringComparer.Ordinal),
+            input.Grouping.OrderBy(partition => partition.PartitionKey, StringComparer.Ordinal));
+        Assert.Equal(6, input.ZulipReferences.Count);
+        Assert.Equal(
+            before.ZulipReferences.OrderBy(reference => reference.AssociationId, StringComparer.Ordinal),
+            input.ZulipReferences.OrderBy(reference => reference.AssociationId, StringComparer.Ordinal));
+        Assert.Empty(input.AdditionalTicketKeys);
+        Assert.Equal(started.Run.CorpusComparison, AuthoringMaintenanceRunRequest.ReadCorpusComparison(fenced.RequestJson));
+        PreparedTicketPublicationProtectionReader.ValidateFrozen(input, before);
+        return input;
+    }
+
+    private static void AssertMixedMetadataFetches(
+        MixedWorkgroupSource mixed,
+        MetadataFetcher fetcher,
+        IReadOnlyList<string> jiraKeys)
+    {
+        Assert.Equal(3, fetcher.CallCount);
+        Assert.Equal(
+            mixed.ExpectedCorpus.Select(item => item.TicketKey).ToArray(),
+            jiraKeys.Order(StringComparer.Ordinal).ToArray());
+        Assert.Equal(2, fetcher.ZulipCallCount);
+        Assert.Equal(
+            ["12345", "stream::topic"],
+            fetcher.ZulipCalls.Select(call => call.Reference).Order(StringComparer.Ordinal).ToArray());
+        Assert.All(fetcher.ZulipCalls, call => Assert.Contains(call.TicketKey, mixed.ExpectedRevisions.Keys));
+    }
+
+    private static async Task AssertMixedRefreshCompletedAsync(
+        Fixture fixture,
+        MixedWorkgroupSource mixed,
+        PreparedTicketPublicationBaseline baseline,
+        PreparedTicketPublicationEnrichmentInput input,
+        PreparedTicketPublicationRefreshResult started,
+        AuthoringSnapshotDescriptor descriptor)
+    {
+        AuthoringRunRecord completed = Assert.IsType<AuthoringRunRecord>(await fixture.Store.GetRunAsync(started.Run.RunId));
+        Assert.Equal(AuthoringStatusValues.Runs.Completed, completed.Status);
+        Assert.Equal(AuthoringRunPurposeValues.PublicationRefresh, completed.Purpose);
+        Assert.Equal(mixed.Source.Run.Id, completed.SourceRunId);
+        Assert.False(completed.DatabaseOnly);
+        Assert.Equal(descriptor.SnapshotId, completed.SnapshotId);
+        Assert.Equal(started.Run.RunId, descriptor.RunId);
+        Assert.NotEqual(mixed.Source.Descriptor.SnapshotId, descriptor.SnapshotId);
+        Assert.True(descriptor.Sequence > mixed.Source.Descriptor.Sequence);
+        Assert.Equal(PreparedTicketSnapshotSchemaV3.Version, descriptor.SchemaVersion);
+        Assert.Null(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+        Assert.Equal(3, fixture.CountLive("authoring_runs"));
+        Assert.Equal(
+            PreparedTicketPublicationEnrichmentContract.SerializeInput(input),
+            PreparedTicketPublicationEnrichmentContract.SerializeInput(
+                Assert.IsType<PreparedTicketPublicationEnrichmentInput>(PreparerDatabase.ReadPublicationEnrichmentInput(completed))));
+        IReadOnlyList<AuthoringRunItemRecord> items = await fixture.Store.GetRunItemsAsync(completed.Id);
+        Assert.Equal(3, items.Count);
+        foreach (AuthoringRunItemStatus original in started.Items)
+        {
+            AuthoringRunItemRecord item = Assert.Single(items, item => item.Id == original.ItemId);
+            Assert.Equal(original.BusinessKey, item.BusinessKey);
+            Assert.Equal(original.ItemKind, item.ItemKind);
+            Assert.Equal(original.AcceptedReceiptId, item.AcceptedReceiptId);
+            Assert.Equal(original.ExpectedSourceRevision, item.ExpectedSourceRevision);
+            Assert.Equal(AuthoringStatusValues.Items.Complete, item.Status);
+            Assert.Equal(0, item.AttemptCount);
+        }
+        PreparedTicketPublicationProtectedInventory current = await fixture.ReadCurrentAsync();
+        AssertMixedWorkgroupInventory(mixed, current);
+        PreparedTicketPublicationProtectionReader.Compare(baseline, current);
+        PreparedTicketPublicationProtectionReader.ValidateFrozen(input, current, completed.Id);
+        AssertGroupingRowsUnchanged(baseline.Inventory, current);
+        Assert.Equal(6, current.ZulipReferences.Count);
+        Assert.All(current.ZulipReferences, reference => Assert.NotNull(reference.HydrationId));
+
+        IReadOnlyList<PreparedTicketRunPartition> partitions = await fixture.Database.GetRunPartitionsAsync(completed.Id);
+        PreparedTicketRunPartition job = Assert.Single(partitions);
+        Assert.Equal(AttributedWorkgroupPartitionKey, job.PartitionKey);
+        Assert.Equal(mixed.AttributedTicketKeys, job.TicketKeys.Order(StringComparer.Ordinal).ToArray());
+        PreparedTicketGroupingCertificationEvidence certification = Assert.Single(
+            await fixture.Database.GetPublicationGroupingCertificationsAsync(completed.Id, partitions));
+        Assert.Equal(completed.Id, certification.RefreshRunId);
+        Assert.Equal(AttributedWorkgroupPartitionKey, certification.PartitionKey);
+        Assert.Equal(mixed.Source.Run.Id, certification.SourceReceipt.RunId);
+        Assert.Equal(certification.PartitionKey, certification.SourceReceipt.PartitionKey);
+        Assert.False(certification.IsLegacyCertification);
+        string originalOutputFingerprint = Assert.Single(
+            baseline.Inventory.Grouping, partition => partition.PartitionKey == AttributedWorkgroupPartitionKey)
+            .Fingerprint.OutputFingerprint;
+        Assert.Equal(originalOutputFingerprint, certification.OutputFingerprint);
+        Assert.Equal(originalOutputFingerprint, certification.SourceReceipt.OutputFingerprint);
+        // Fingerprinted source receipts certify directly; private certification rows are legacy-only.
+        Assert.Equal(0, fixture.CountLive("prepared_ticket_partition_certifications"));
+        Assert.Null(await fixture.Database.GetPartitionCertificationAsync(completed.Id, NullableWorkgroupPartitionKey));
+        Assert.Equal(1, fixture.CountLive("prepared_ticket_partition_receipts"));
+        Assert.Equal(AttributedWorkgroupPartitionKey,
+            fixture.Scalar<string>("SELECT PartitionKey FROM prepared_ticket_partition_receipts"));
+        IReadOnlyList<AuthoringRunStageRecord> stages = await fixture.Store.GetRunStagesAsync(completed.Id);
+        Assert.DoesNotContain(stages, stage => stage.PartitionKey == NullableWorkgroupPartitionKey || stage.StageName == "grouping");
+        AuthoringRunStageRecord certificationStage = Assert.Single(
+            stages, stage => stage.StageName == PreparerDatabase.GroupingCertificationStageName);
+        Assert.Equal(AttributedWorkgroupPartitionKey, certificationStage.PartitionKey);
+        Assert.Equal(job.InputFingerprint, certificationStage.InputFingerprint);
+        Assert.Equal(AuthoringStatusValues.Stages.Complete, certificationStage.Status);
+        AuthoringRunStageRecord metadataStage = Assert.Single(
+            stages, stage => stage.StageName == PreparedTicketPublicationEnrichmentContract.StageName);
+        Assert.Equal(AuthoringStatusValues.Stages.Complete, metadataStage.Status);
+        Assert.NotNull(await fixture.Database.GetMatchingPublicationRefreshReceiptAsync(
+            completed.Id, metadataStage.Id,
+            PreparedTicketPublicationEnrichmentContract.ComputeInputFingerprint(input), input.CorpusFingerprint));
+        Assert.Equal(1, fixture.CountLive("prepared_ticket_publication_refresh_receipts"));
+
+        AuthoringSnapshotPublicationProof proof = Assert.IsType<AuthoringSnapshotPublicationProof>(descriptor.PublicationProof);
+        Assert.Equal(1, proof.ContractVersion);
+        Assert.Equal(PreparedTicketPublicationContract.PublicationRefreshPurpose, proof.Purpose);
+        Assert.Equal(mixed.Source.Run.Id, proof.SourceRunId);
+        Assert.Equal("jira", proof.SourceName);
+        Assert.Equal(901, proof.SourceContentRevision);
+        Assert.Equal(PublicDisplayNamePolicy.CurrentVersion, proof.PublicDisplayNamePolicyVersion);
+        Assert.Equal(current.CorpusFingerprint, proof.CorpusFingerprint);
+        Assert.Equal(PreparedTicketPublicationContract.ComputeGroupingFingerprint(
+            [new PreparedTicketPublicationGroupingPartition(AttributedWorkgroupPartitionKey, originalOutputFingerprint)]),
+            proof.GroupingFingerprint);
+        AuthoringReviewSnapshotRecord record = Assert.IsType<AuthoringReviewSnapshotRecord>(
+            await fixture.Store.GetReadySnapshotRecordAsync(completed.Id));
+        Assert.Equal(AuthoringStatusValues.Snapshots.Ready, record.Status);
+        Assert.Equal(descriptor.SnapshotId, record.Id);
+        Assert.Equal(PreparedTicketSnapshotSchemaV3.Version, record.SchemaVersion);
+        Assert.Equal(3, record.ItemCount);
+        Assert.Equal(3, record.ReceiptCount);
+        IReadOnlyList<AuthoringReviewSnapshotRecord> snapshots = await fixture.Store.GetSnapshotRecordsAsync();
+        Assert.Equal(3, snapshots.Count);
+        Assert.Equal(record.Id, Assert.Single(snapshots, snapshot => snapshot.RunId == completed.Id).Id);
+        SqliteReviewSnapshotValidationResult validation = await SqliteReviewSnapshotValidator.ValidateAsync(record, requireReady: true);
+        Assert.True(validation.IsValid, validation.Error);
+        Assert.Equal(descriptor.Sha256, validation.ChecksumSha256);
+        using (SqliteConnection connection = fixture.Database.OpenConnection())
+        {
+            AssertMixedWorkgroupStorage(connection, mixed);
+            AssertRefreshedMixedMetadata(connection, mixed);
+        }
+        await using (SqliteConnection snapshot = await SqliteReviewSnapshotValidator.OpenReadOnlyAsync(record.Path))
+        {
+            PreparedTicketPublicationProtectedInventory exported =
+                await PreparedTicketPublicationProtectionReader.ReadSnapshotAsync(snapshot, record.SchemaVersion);
+            AssertMixedWorkgroupInventory(mixed, exported);
+            AssertGroupingRowsUnchanged(baseline.Inventory, exported);
+            AssertMixedWorkgroupStorage(snapshot, mixed);
+            AssertRefreshedMixedMetadata(snapshot, mixed);
+        }
+        await AssertSourceSnapshotUnchangedAsync(fixture, mixed.NullableSource);
+        await AssertSourceSnapshotUnchangedAsync(fixture, mixed.Source);
+        Assert.False(File.Exists(record.Path + "-wal"));
+        Assert.False(File.Exists(record.Path + "-shm"));
+    }
+
+    private static void AssertGroupingRowsUnchanged(
+        PreparedTicketPublicationProtectedInventory before,
+        PreparedTicketPublicationProtectedInventory after)
+    {
+        Assert.Equal(before.RetainedGroupingFingerprint, after.RetainedGroupingFingerprint);
+        foreach (PreparedTicketPublicationProtectedGrouping original in before.Grouping)
+        {
+            PreparedTicketPublicationProtectedGrouping retained = Assert.Single(
+                after.Grouping, partition => partition.PartitionKey == original.PartitionKey);
+            Assert.Equal(original.Rows.Count, retained.Rows.Count);
+            foreach (PreparedTicketPublicationProtectedRow row in original.Rows)
+            {
+                PreparedTicketPublicationProtectedRow actual = Assert.Single(
+                    retained.Rows, value => value.Table == row.Table && value.Scope == row.Scope && value.Key == row.Key);
+                Assert.Equal(
+                    row.Values.OrderBy(value => value.Column, StringComparer.Ordinal),
+                    actual.Values.OrderBy(value => value.Column, StringComparer.Ordinal));
+            }
+        }
+    }
+
+    private static void AssertMixedWorkgroupStorage(SqliteConnection connection, MixedWorkgroupSource mixed)
+    {
+        Assert.Equal(3, ScalarInt(connection, "SELECT COUNT(*) FROM prepared_tickets"));
+        AssertStoredSelfWorkgroups(connection, [mixed.NullableTicketKey], null, null);
+        AssertStoredSelfWorkgroups(connection, mixed.AttributedTicketKeys, "FHIR Infrastructure", "FHIRInfrastructure");
+        Assert.Equal(1, ScalarInt(connection, "SELECT COUNT(*) FROM prepared_ticket_topics"));
+        Assert.Equal(1, ScalarInt(connection, "SELECT COUNT(*) FROM prepared_ticket_topic_groups"));
+        Assert.Equal(2, ScalarInt(connection, "SELECT COUNT(*) FROM prepared_ticket_topic_members"));
+        using SqliteCommand membership = connection.CreateCommand();
+        membership.CommandText = "SELECT COUNT(*) FROM prepared_ticket_topic_members WHERE TicketKey = @ticketKey";
+        membership.Parameters.AddWithValue("@ticketKey", mixed.NullableTicketKey);
+        Assert.Equal(0L, membership.ExecuteScalar());
+        foreach (PreparedTicketPublicationCorpusItem expected in mixed.ExpectedCorpus)
+        {
+            Assert.Equal(
+                (expected.ReceiptId, expected.ExpectedSourceRevision, expected.ExpectedSourceRevision, expected.ExpectedSourceRevision),
+                ReadAcceptedRevisionCoordinates(connection, expected.ContributingRunId, expected.TicketKey));
+        }
+    }
+
+    private static void AssertRefreshedMixedMetadata(SqliteConnection connection, MixedWorkgroupSource mixed)
+    {
+        foreach (PreparedTicketPublicationCorpusItem expected in mixed.ExpectedCorpus)
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT p.Reporter, p.Assignee, p.SourceProject, p.SourceContentRevision, p.PublicDisplayNamePolicyVersion,
+                       j.Reporter, j.Assignee, j.PublicDisplayNamePolicyVersion,
+                       r.DisplayName, r.PublicDisplayNamePolicyVersion, p.SourceLastSuccessfulRefreshAt, j.UpdatedAt
+                FROM prepared_ticket_hydration p
+                INNER JOIN prepared_jira_hydration j ON j.TicketKey = p.TicketKey AND j.JiraKey = p.TicketKey
+                INNER JOIN prepared_ticket_in_person_requesters r ON r.TicketKey = p.TicketKey
+                WHERE p.TicketKey = @ticketKey
+                """;
+            command.Parameters.AddWithValue("@ticketKey", expected.TicketKey);
+            using SqliteDataReader reader = command.ExecuteReader();
+            Assert.True(reader.Read());
+            Assert.Equal($"Reporter {expected.TicketKey}", reader.GetString(0));
+            Assert.Equal($"Assignee {expected.TicketKey}", reader.GetString(1));
+            Assert.Equal("FHIR", reader.GetString(2));
+            Assert.Equal(901L, reader.GetInt64(3));
+            Assert.Equal(PublicDisplayNamePolicy.CurrentVersion, reader.GetInt32(4));
+            Assert.Equal($"Reporter {expected.TicketKey}", reader.GetString(5));
+            Assert.Equal($"Assignee {expected.TicketKey}", reader.GetString(6));
+            Assert.Equal(PublicDisplayNamePolicy.CurrentVersion, reader.GetInt32(7));
+            Assert.Equal($"Requester {expected.TicketKey}", reader.GetString(8));
+            Assert.Equal(PublicDisplayNamePolicy.CurrentVersion, reader.GetInt32(9));
+            Assert.Equal("2026-09-14T12:00:00.0000000+00:00", reader.GetString(10));
+            Assert.Equal(expected.ExpectedSourceRevision, reader.GetString(11));
+            Assert.False(reader.Read());
+        }
     }
 
     private static Task<SourceResult> CreateNoTopicWorkgroupSourceAsync(

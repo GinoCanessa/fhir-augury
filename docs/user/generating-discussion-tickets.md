@@ -363,6 +363,22 @@ active, and `publication-refresh` source runs remain ineligible in this UI.
    `/review-sites/prepare/<refreshRunId>/discussion/`. Snapshot download and
    site publication remain separate from processor completion.
 
+Null or blank workgroup attribution in a valid accepted partition with no
+stored topics is not corruption and does not need to be backfilled to read
+its protection evidence. When the workgroup coordinate is missing,
+`unattributed` is an internal comparison projection, not a Jira assignment or
+a persisted replacement. Publication refresh retains the accepted tickets and
+their original SQL NULL/blank values; it does not infer attribution or regroup
+them. Changing a stored NULL to empty text, whitespace, or literal
+`unattributed` is still protected-value drift, even if the comparison display
+would look the same.
+
+This does not guarantee completion for every nullable-data shape. An
+attributed clean workgroup coordinate with a missing display still has
+separate canonical grouping-certification requirements. Source-run and
+snapshot eligibility, stable accepted Jira revisions and source generation,
+and all exact protected-output checks continue to apply.
+
 The new schema-v3 descriptor retains publication-proof contract v1:
 `publicationProof` binds the source
 run, stable Jira generation and freshness, current people policy, accepted
@@ -581,6 +597,12 @@ and renders the verified pair supplied after processor completion.
   protection, source-revision, or source-generation conflict supersedes the
   refresh run and releases the fence. Retain the original publication, inspect
   the refusal, and do not override it or substitute authoring/grouping.
+- The generic **Processor state changed** conflict heading is not proof of
+  contention or a concurrent run. Inspect the returned error code and detail
+  rather than treating every conflict as a race. Valid missing workgroup
+  attribution does not waive another refusal; keep the original verified
+  pair usable and do not delete accepted output, re-author, or regroup to
+  bypass the check.
 - Existing pre-cutover rows remain `legacy-unverified` until the processor's
   initial revalidation run accepts real receipts. Ordinary runs and the first
   canonical snapshot remain blocked until that gate clears.
