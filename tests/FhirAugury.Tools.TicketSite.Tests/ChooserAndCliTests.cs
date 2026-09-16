@@ -93,14 +93,19 @@ public sealed class ChooserAndCliTests
                     TicketSiteManifest.FileName));
             Assert.Equal("Tickets for Discussion", preparerManifest.Title);
             Assert.Equal(
-                "Tickets for Discussion",
+                "Tickets for Discussion - Sept 5, 2026",
                 preparerManifest.DisplayTitle);
             Assert.Null(
                 preparerManifest.JiraSourceLastSuccessfulRefreshAt);
+            Assert.Equal(1, preparerManifest.SnapshotSchemaVersion);
+            Assert.Equal(3, preparerManifest.RendererSchemaVersion);
+            Assert.Equal(DiscussionDateCoverage.Complete, preparerManifest.DiscussionCorpus?.DateCoverage);
+            Assert.Equal(1, preparerManifest.DiscussionCorpus?.TicketCount);
+            Assert.Equal(0, preparerManifest.DiscussionCorpus?.TicketsWithPublicReporter);
             string chooser = await File.ReadAllTextAsync(
                 Path.Combine(preparerOutput, "index.html"));
             Assert.Contains(
-                "Tickets for Discussion",
+                "Tickets for Discussion - Sept 5, 2026",
                 chooser,
                 StringComparison.Ordinal);
             Assert.DoesNotContain(
@@ -128,6 +133,8 @@ public sealed class ChooserAndCliTests
             Assert.Null(
                 plannerManifest.JiraSourceLastSuccessfulRefreshAt);
             Assert.Null(plannerManifest.RendererSchemaVersion);
+            Assert.Null(plannerManifest.DiscussionReadiness);
+            Assert.Null(plannerManifest.DiscussionCorpus);
         }
         finally
         {
@@ -135,8 +142,11 @@ public sealed class ChooserAndCliTests
         }
     }
 
-    [Fact]
-    public async Task ExplicitPreparerTitleRemainsBaseTitle()
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public async Task ExplicitPreparerTitleRemainsBaseTitle(int schemaVersion)
     {
         string root = Path.Combine(
             Path.GetTempPath(),
@@ -147,10 +157,11 @@ public sealed class ChooserAndCliTests
             TicketSnapshotFixture snapshot =
                 await TicketSnapshotFixture.CreatePreparerAsync(
                     root,
-                    schemaVersion: 2);
+                    schemaVersion: schemaVersion,
+                    firstJiraUpdatedAt: "2026-09-15T01:00:00+00:00");
             string output = Path.Combine(root, "site");
 
-            (int exit, _, string error) = await RunAsync(
+            (int exit, string stdout, string error) = await RunAsync(
                 "--preparer-snapshot", snapshot.DatabasePath,
                 "--snapshot-descriptor", snapshot.DescriptorPath,
                 "--out", output,
@@ -164,8 +175,58 @@ public sealed class ChooserAndCliTests
                     TicketSiteManifest.FileName));
             Assert.Equal("FHIR review", manifest.Title);
             Assert.Equal(
-                "FHIR review - Built September 08, 2026",
+                "FHIR review - Sept 15, 2026",
                 manifest.DisplayTitle);
+            Assert.Equal(schemaVersion, manifest.SnapshotSchemaVersion);
+            Assert.Equal(3, manifest.RendererSchemaVersion);
+            Assert.Equal(DiscussionDateCoverage.Complete, manifest.DiscussionCorpus?.DateCoverage);
+            Assert.Equal(1, manifest.DiscussionCorpus?.ValidJiraUpdatedAtCount);
+            Assert.Equal(1, manifest.DiscussionCorpus?.ExportedProjectCount);
+            Assert.Contains(TicketSiteManifest.ToSummaryJson(manifest), stdout, StringComparison.Ordinal);
+            string chooser = await File.ReadAllTextAsync(Path.Combine(output, "index.html"));
+            Assert.Contains(
+                "<div class=\"card-title\">FHIR review - Sept 15, 2026</div>",
+                chooser, StringComparison.Ordinal);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteDirectory(root);
+        }
+    }
+
+    [Fact]
+    public async Task CliRejectsAmbiguousSelfDateWithoutReplacingPublication()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"ticket-site-date-refusal-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            TicketSnapshotFixture snapshot = await TicketSnapshotFixture.CreatePreparerAsync(root);
+            string output = Path.Combine(root, "site");
+            string[] args =
+            [
+                "--preparer-snapshot", snapshot.DatabasePath,
+                "--snapshot-descriptor", snapshot.DescriptorPath,
+                "--out", output,
+            ];
+            (int firstExit, _, string firstError) = await RunAsync(args);
+            Assert.True(firstExit == 0, firstError);
+            string index = Path.Combine(output, "discussion", "index.html");
+            string manifest = Path.Combine(output, "discussion", TicketSiteManifest.FileName);
+            byte[] originalHtml = await File.ReadAllBytesAsync(index);
+            byte[] originalManifest = await File.ReadAllBytesAsync(manifest);
+            await snapshot.SetTicketJiraUpdatedAtAsync("FHIR-1001", "2026-09-15T01:00:00");
+            byte[] sourceBytes = await File.ReadAllBytesAsync(snapshot.DatabasePath);
+            byte[] descriptorBytes = await File.ReadAllBytesAsync(snapshot.DescriptorPath);
+
+            (int exit, _, string error) = await RunAsync(args);
+
+            Assert.Equal(1, exit);
+            Assert.Contains("UpdatedAt", error, StringComparison.Ordinal);
+            Assert.Equal(originalHtml, await File.ReadAllBytesAsync(index));
+            Assert.Equal(originalManifest, await File.ReadAllBytesAsync(manifest));
+            Assert.Equal(sourceBytes, await File.ReadAllBytesAsync(snapshot.DatabasePath));
+            Assert.Equal(descriptorBytes, await File.ReadAllBytesAsync(snapshot.DescriptorPath));
         }
         finally
         {

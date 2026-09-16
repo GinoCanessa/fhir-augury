@@ -11,6 +11,9 @@ namespace FhirAugury.Publishing.Tickets.Tests;
 
 internal sealed class TicketSnapshotFixture
 {
+    public const string FirstJiraUpdatedAt = "2026-09-05T12:00:00.0000000+00:00";
+    public const string SecondJiraUpdatedAt = "2026-09-06T15:30:00.0000000+00:00";
+
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web)
         {
@@ -242,7 +245,11 @@ internal sealed class TicketSnapshotFixture
         bool useMultipleRuns = false,
         bool includeRendererEvidence = false,
         bool includeNullProvenance = false,
-        bool includeUntrustedPeople = false)
+        bool includeUntrustedPeople = false,
+        string? firstJiraUpdatedAt = FirstJiraUpdatedAt,
+        string? secondJiraUpdatedAt = SecondJiraUpdatedAt,
+        DateTimeOffset? ticketSavedAt = null,
+        DateTimeOffset? snapshotCreatedAt = null)
     {
         AuthoringSnapshotSchemaCatalog catalog =
             PreparedTicketSnapshotSchemaResolver.Resolve(schemaVersion);
@@ -269,8 +276,10 @@ internal sealed class TicketSnapshotFixture
             : runId;
         int currentRunItemCount =
             includeSecondTicket && !useMultipleRuns ? 2 : 1;
-        DateTimeOffset createdAt =
+        DateTimeOffset createdAt = snapshotCreatedAt ??
             new(2026, 9, 11, 12, 30, 0, TimeSpan.Zero);
+        DateTimeOffset savedAt = ticketSavedAt ??
+            new(2026, 9, 11, 9, 0, 0, TimeSpan.Zero);
         DateTimeOffset firstRefresh =
             new(2026, 9, 7, 18, 0, 0, TimeSpan.Zero);
         DateTimeOffset firstHydrationRefresh =
@@ -318,7 +327,7 @@ internal sealed class TicketSnapshotFixture
                 ProposalCJustification, Recommendation, RecommendationJustification, SavedAt)
             VALUES('prepared-1', 'FHIR-1001', 'Request', '', '', '', '', '', '',
                 'A', 'A because', 'Non-substantive', 'B', 'B because',
-                'Compatible, substantive', 'C', 'C because', 'A', 'Because', @createdAt);
+                'Compatible, substantive', 'C', 'C because', 'A', 'Because', @savedAt);
             INSERT INTO prepared_ticket_hydration(
                 Id, TicketKey, Priority, Resolution, ResolutionDescriptionPlain,
                 Specification, RaisedInVersion, SelectedBallot, ChangeCategory,
@@ -337,7 +346,8 @@ internal sealed class TicketSnapshotFixture
                 Id, TicketKey, JiraKey, Title, Status, Type, Priority,
                 Resolution, ResolutionDescriptionPlain, WorkGroup,
                 WorkGroupClean, Specification, Url, Reporter, Assignee,
-                HydratedAt, HydrationStatus, PublicDisplayNamePolicyVersion)
+                HydratedAt, HydrationStatus, PublicDisplayNamePolicyVersion,
+                UpdatedAt)
             VALUES(
                 'jira-1', 'FHIR-1001', 'FHIR-1001', 'Snapshot title', 'Open',
                 'Change Request', 'Self priority', 'Self resolution',
@@ -345,7 +355,7 @@ internal sealed class TicketSnapshotFixture
                 'FHIRInfrastructure', 'FHIR',
                 'https://jira.hl7.org/browse/FHIR-1001', 'Legacy Reporter',
                 'Legacy Assignee', @createdAt, 'resolved',
-                @peoplePolicyVersion);
+                @peoplePolicyVersion, @jiraUpdatedAt);
             INSERT INTO prepared_ticket_jira_content(
                 TicketKey, DescriptionHtml, ResolutionDescriptionHtml)
             VALUES('FHIR-1001', '<p>request html</p>', '<p>resolution html</p>');
@@ -366,6 +376,8 @@ internal sealed class TicketSnapshotFixture
             ("@currentRunItemCount", currentRunItemCount),
             ("@snapshotId", id),
             ("@createdAt", createdAt.ToString("O")),
+            ("@savedAt", savedAt.ToString("O")),
+            ("@jiraUpdatedAt", firstJiraUpdatedAt),
             ("@firstHydrationRefresh", firstHydrationRefresh.ToString("O")),
             ("@peoplePolicyVersion", peoplePolicyVersion));
 
@@ -393,7 +405,7 @@ internal sealed class TicketSnapshotFixture
                     ProposalCJustification, Recommendation, RecommendationJustification, SavedAt)
                 VALUES('prepared-2', 'CDS-2001', 'CDS request', '', '', '', '', '', '',
                     'A', 'A because', 'Non-substantive', 'B', 'B because',
-                    'Compatible, substantive', 'C', 'C because', 'A', 'Because', @createdAt);
+                    'Compatible, substantive', 'C', 'C because', 'A', 'Because', @savedAt);
                 INSERT INTO prepared_ticket_hydration(
                     Id, TicketKey, Priority, Resolution,
                     ResolutionDescriptionPlain, Specification, DescriptionPlain,
@@ -411,7 +423,8 @@ internal sealed class TicketSnapshotFixture
                     Id, TicketKey, JiraKey, Title, Status, Type, Priority,
                     Resolution, ResolutionDescriptionPlain, WorkGroup,
                     WorkGroupClean, Specification, Url, HydratedAt,
-                    HydrationStatus, PublicDisplayNamePolicyVersion)
+                    HydrationStatus, PublicDisplayNamePolicyVersion,
+                    UpdatedAt)
                 VALUES(
                     'jira-2', 'CDS-2001', 'CDS-2001', 'CDS title', 'Open',
                     'Change Request', 'Self CDS priority',
@@ -419,7 +432,7 @@ internal sealed class TicketSnapshotFixture
                     'Clinical Decision Support', 'ClinicalDecisionSupport',
                     'CDS Hooks',
                     'https://jira.hl7.org/browse/CDS-2001', @createdAt,
-                    'resolved', @peoplePolicyVersion);
+                    'resolved', @peoplePolicyVersion, @jiraUpdatedAt);
                 INSERT INTO prepared_ticket_partition_receipts(
                     RunId, StageId, PartitionKey, InputFingerprint, TopicRows,
                     TopicGroupRows, MemberRows, PersistedAt)
@@ -430,6 +443,8 @@ internal sealed class TicketSnapshotFixture
                 """,
                 ("@runId", runId),
                 ("@createdAt", createdAt.ToString("O")),
+                ("@savedAt", savedAt.ToString("O")),
+                ("@jiraUpdatedAt", secondJiraUpdatedAt),
                 ("@secondHydrationRefresh", secondHydrationRefresh.ToString("O")),
                 ("@peoplePolicyVersion", peoplePolicyVersion));
         }
@@ -526,13 +541,14 @@ internal sealed class TicketSnapshotFixture
                 INSERT INTO prepared_jira_hydration(
                     Id, TicketKey, JiraKey, Title, Status, Type, Resolution,
                     Url, Reporter, Assignee, HydratedAt, HydrationStatus,
-                    PublicDisplayNamePolicyVersion)
+                    PublicDisplayNamePolicyVersion, UpdatedAt)
                 VALUES(
                     'jira-related-1', 'FHIR-1001', 'FHIR-2002',
                     'Related title', 'Resolved', 'Change Request',
                     'Persuasive', 'https://jira.example/FHIR-2002',
                     'Related Reporter', 'Related Assignee',
-                    @createdAt, 'resolved', @peoplePolicyVersion);
+                    @createdAt, 'resolved', @peoplePolicyVersion,
+                    '2026-09-20T10:00:00.0000000+00:00');
 
                 INSERT INTO prepared_ticket_related_zulip(
                     Id, TicketKey, ZulipThreadId, Justification)
@@ -832,6 +848,28 @@ internal sealed class TicketSnapshotFixture
             ("@ticketKey", ticketKey));
         await connection.CloseAsync();
         await connection.DisposeAsync();
+        await RefreshDescriptorHashAsync();
+    }
+
+    public async Task SetTicketJiraUpdatedAtAsync(
+        string ticketKey,
+        string? updatedAt)
+    {
+        await using (SqliteConnection connection = new(
+            $"Data Source={DatabasePath};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await ExecuteAsync(
+                connection,
+                """
+                UPDATE prepared_jira_hydration
+                SET UpdatedAt = @updatedAt
+                WHERE TicketKey = @ticketKey COLLATE NOCASE
+                  AND JiraKey = TicketKey COLLATE NOCASE
+                """,
+                ("@updatedAt", updatedAt),
+                ("@ticketKey", ticketKey));
+        }
         await RefreshDescriptorHashAsync();
     }
 

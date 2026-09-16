@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -222,6 +223,7 @@ internal static class OutputDirGuard
         ReadinessMatches(
             actual.DiscussionReadiness,
             expected.DiscussionReadiness) &&
+        CorpusMatches(actual.DiscussionCorpus, expected.DiscussionCorpus) &&
         actual.TableCounts.Count == expected.TableCounts.Count &&
         actual.TableCounts.All(pair =>
             expected.TableCounts.TryGetValue(pair.Key, out long value) &&
@@ -345,7 +347,8 @@ internal static class OutputDirGuard
 
         if (expected.RendererSchemaVersion is not int rendererSchemaVersion ||
             string.IsNullOrWhiteSpace(expected.DisplayTitle) ||
-            expected.DiscussionReadiness is null)
+            expected.DiscussionReadiness is null ||
+            expected.DiscussionCorpus is null)
         {
             throw new InvalidOperationException(
                 "Staged preparer manifest is missing discussion presentation metadata.");
@@ -359,7 +362,8 @@ internal static class OutputDirGuard
                 expected.Filters.Spec,
                 expected.Filters.Project,
                 expected.Filters.Wg),
-            expected.DiscussionReadiness);
+            expected.DiscussionReadiness,
+            expected.DiscussionCorpus);
         TicketSitePresentation injectedPresentation =
             ReadInjectedPresentation(html);
         string expectedPresentationJson =
@@ -375,6 +379,20 @@ internal static class OutputDirGuard
         {
             throw new InvalidOperationException(
                 "Staged preparer presentation does not match its renderer database and manifest.");
+        }
+        string encodedTitle = WebUtility.HtmlEncode(manifestPresentation.SiteName);
+        foreach (string tag in new[] { "title", "h1" })
+        {
+            string opener = $"<{tag}>";
+            string element = $"{opener}{encodedTitle}</{tag}>";
+            int start = html.IndexOf(opener, StringComparison.Ordinal);
+            if (start < 0 ||
+                html.IndexOf(opener, start + opener.Length, StringComparison.Ordinal) >= 0 ||
+                !html.AsSpan(start).StartsWith(element, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Staged preparer initial {tag} does not match its discussion presentation.");
+            }
         }
     }
 
@@ -398,6 +416,16 @@ internal static class OutputDirGuard
     private static bool ReadinessMatches(
         DiscussionPublicationReadiness? actual,
         DiscussionPublicationReadiness? expected)
+        => actual is null || expected is null
+            ? actual is null && expected is null
+            : string.Equals(
+                TicketSitePresentationJson.Serialize(actual),
+                TicketSitePresentationJson.Serialize(expected),
+                StringComparison.Ordinal);
+
+    private static bool CorpusMatches(
+        DiscussionCorpusSummary? actual,
+        DiscussionCorpusSummary? expected)
         => actual is null || expected is null
             ? actual is null && expected is null
             : string.Equals(
@@ -453,7 +481,18 @@ internal static class OutputDirGuard
         }
         try
         {
-            return TicketSitePresentationJson.Deserialize(html[start..end]);
+            string json = html[start..end];
+            TicketSitePresentation presentation =
+                TicketSitePresentationJson.Deserialize(json);
+            if (!string.Equals(
+                json,
+                TicketSitePresentationJson.Serialize(presentation),
+                StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "Staged preparer presentation JSON is not canonical.");
+            }
+            return presentation;
         }
         catch (JsonException ex)
         {

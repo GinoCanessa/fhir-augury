@@ -224,31 +224,11 @@ internal static class DiscussionSiteDatabaseBuilder
                 tickets,
                 capabilities,
                 ct).ConfigureAwait(false);
-        TicketSitePresentation presentation =
-            TicketSitePresentation.CreateDiscussion(
-                baseTitle,
-                freshness,
-                filters,
-                readiness);
-
         Dictionary<string, List<object?[]>> rows =
             DiscussionRendererSchema.Tables.ToDictionary(
                 table => table.Name,
                 _ => new List<object?[]>(),
                 StringComparer.Ordinal);
-        rows["site_metadata"].Add(
-        [
-            DiscussionRendererSchema.Version,
-            presentation.BaseTitle,
-            presentation.SiteName,
-            presentation.JiraSourceLastSuccessfulRefreshAt?.ToString(
-                "O",
-                CultureInfo.InvariantCulture),
-            TicketSitePresentationJson.Serialize(presentation.Readiness),
-            filters.Specification,
-            filters.Project,
-            filters.WorkGroup,
-        ]);
         foreach (DiscussionFacetDimension dimension in
                  DiscussionFacetCatalog.Dimensions)
         {
@@ -295,12 +275,85 @@ internal static class DiscussionSiteDatabaseBuilder
             rows["topic_members"],
             ct).ConfigureAwait(false);
 
+        DiscussionCorpusSummary corpusSummary = CreateCorpusSummary(
+            tickets,
+            rows["ticket_people"],
+            rows["related_items"]);
+        TicketSitePresentation presentation =
+            TicketSitePresentation.CreateDiscussion(
+                baseTitle,
+                freshness,
+                filters,
+                corpusSummary,
+                readiness);
+        rows["site_metadata"].Add(
+        [
+            DiscussionRendererSchema.Version,
+            presentation.BaseTitle,
+            presentation.SiteName,
+            presentation.JiraSourceLastSuccessfulRefreshAt?.ToString(
+                "O",
+                CultureInfo.InvariantCulture),
+            TicketSitePresentationJson.Serialize(presentation.Readiness),
+            TicketSitePresentationJson.Serialize(corpusSummary),
+            filters.Specification,
+            filters.Project,
+            filters.WorkGroup,
+        ]);
+
         ReadOnlyDictionary<string, IReadOnlyList<object?[]>> readOnlyRows =
             new(rows.ToDictionary(
                 pair => pair.Key,
                 pair => (IReadOnlyList<object?[]>)pair.Value.AsReadOnly(),
                 StringComparer.Ordinal));
         return new DiscussionSiteProjection(presentation, readOnlyRows);
+    }
+
+    private static DiscussionCorpusSummary CreateCorpusSummary(
+        IReadOnlyList<SourceTicket> tickets,
+        IReadOnlyList<object?[]> people,
+        IReadOnlyList<object?[]> relatedItems)
+    {
+        long CountPeople(string role) => people
+            .Where(row => row[1] is string rowRole && rowRole == role &&
+                row[3] is DiscussionRendererSchema.PersonAvailable &&
+                PublicDisplayNamePolicy.Normalize(row[2] as string) is not null)
+            .Select(row => (string?)row[0])
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .LongCount();
+
+        DiscussionLinkCoverage[] links = DiscussionLinkCoverage.Kinds
+            .Select(kind =>
+            {
+                object?[][] items = relatedItems
+                    .Where(row => row[1] is string rowKind && rowKind == kind)
+                    .ToArray();
+                long safe = items.LongCount(row =>
+                    DiscussionRendererSchema.IsSafeExternalUrl(row[6] as string));
+                long resolved = items.LongCount(row =>
+                    DiscussionRendererSchema.IsSafeExternalUrl(row[6] as string) &&
+                    string.Equals(
+                        row[9] as string,
+                        "resolved",
+                        StringComparison.OrdinalIgnoreCase));
+                return new DiscussionLinkCoverage(
+                    kind, items.LongLength, resolved, safe - resolved,
+                    items.LongLength - safe);
+            })
+            .ToArray();
+        long validDateCount = tickets.LongCount(ticket =>
+            ticket.JiraUpdatedAt is not null);
+        return new DiscussionCorpusSummary(
+            tickets.Count,
+            tickets.Select(ticket => ticket.Project)
+                .Distinct(StringComparer.OrdinalIgnoreCase).LongCount(),
+            validDateCount,
+            tickets.Select(ticket => ticket.JiraUpdatedAt).Max(),
+            DiscussionDateCoverage.FromCounts(tickets.Count, validDateCount),
+            CountPeople("reporter"),
+            CountPeople("assignee"),
+            CountPeople("in-person-requester"),
+            Array.AsReadOnly(links));
     }
 
     internal static string ProjectFromTicketKey(string key)
@@ -445,7 +498,8 @@ internal static class DiscussionSiteDatabaseBuilder
                    {peoplePolicyVersion} AS PublicDisplayNamePolicyVersion,
                    {sourceProject} AS SourceProject,
                    {sourceRefresh} AS SourceLastSuccessfulRefreshAt,
-                   {sourceRevision} AS SourceContentRevision
+                   {sourceRevision} AS SourceContentRevision,
+                   self.UpdatedAt AS JiraUpdatedAt
             FROM prepared_tickets ticket
             INNER JOIN prepared_ticket_hydration parent
                 ON parent.TicketKey = ticket.Key COLLATE NOCASE
@@ -514,6 +568,11 @@ internal static class DiscussionSiteDatabaseBuilder
             SourceProject = ReadNullableString(reader, 38),
             SourceLastSuccessfulRefreshAt = ReadNullableString(reader, 39),
             SourceContentRevision = ReadNullableInt64(reader, 40),
+            JiraUpdatedAt = reader.IsDBNull(41)
+                ? null
+                : DiscussionJiraTimestamp.Parse(
+                    reader.GetString(41),
+                    $"prepared_jira_hydration[{key}/{key}].UpdatedAt"),
         };
         if (string.IsNullOrWhiteSpace(ticket.Project))
         {
@@ -1909,6 +1968,7 @@ internal static class DiscussionSiteDatabaseBuilder
                 HydrationCoordinate(ticketKey, itemKey),
                 out ZulipHydration? hydrated);
             string label = ZulipLabel(itemKey, hydrated);
+            (string status, string? reason) = DescribeZulipHydration(hydrated);
             if (relatedCoordinates.Add(
                 RelatedCoordinate(ticketKey, "zulip", itemKey, string.Empty)))
             {
@@ -1922,8 +1982,8 @@ internal static class DiscussionSiteDatabaseBuilder
                     SafeUrl(hydrated?.Url),
                     ZulipDetail(hydrated),
                     ReadNullableString(reader, 2),
-                    hydrated?.HydrationStatus,
-                    hydrated?.HydrationReason);
+                    status,
+                    reason);
             }
 
             if (string.IsNullOrWhiteSpace(ticket.RelatedZulipSummary) ||
@@ -2580,6 +2640,96 @@ internal static class DiscussionSiteDatabaseBuilder
         return JoinDetail(parts.ToArray());
     }
 
+    private static (string Status, string? Reason) DescribeZulipHydration(
+        ZulipHydration? hydration)
+    {
+        ZulipReferenceHydrationReasonReadResult outcome =
+            ZulipReferenceHydrationReason.Read(hydration?.HydrationReason);
+        bool safeUrl = DiscussionRendererSchema.IsSafeExternalUrl(hydration?.Url);
+        bool legacyBacking = outcome.Metadata is null &&
+            outcome.MetadataFailure is null &&
+            !string.IsNullOrWhiteSpace(hydration?.StreamName) &&
+            !string.IsNullOrWhiteSpace(hydration?.Topic) &&
+            hydration?.MessageCount is > 0;
+        bool backed = safeUrl && (outcome.HasSourceBacking || legacyBacking);
+        bool statusResolved = string.Equals(
+            hydration?.HydrationStatus,
+            "resolved",
+            StringComparison.OrdinalIgnoreCase);
+        bool resolved = backed && statusResolved &&
+            (outcome.Metadata is null ||
+             outcome.Metadata.LatestOutcome == ZulipReferenceLookupOutcome.Resolved);
+
+        List<string> reasons = [];
+        if (outcome.MetadataFailure is { } failure)
+        {
+            reasons.Add("Zulip lookup metadata failure: " +
+                DescribeZulipDiagnostic(failure) + ".");
+        }
+        else if (outcome.Metadata is { } tagged)
+        {
+            if (tagged.LatestOutcome != ZulipReferenceLookupOutcome.Resolved)
+            {
+                reasons.Add("Zulip lookup failed: " +
+                    DescribeZulipOutcome(tagged.LatestOutcome) + ".");
+            }
+            else if (!statusResolved)
+            {
+                reasons.Add(
+                    "Zulip hydration status does not confirm the recorded resolved outcome.");
+            }
+            reasons.AddRange(tagged.Diagnostics.Distinct().Order()
+                .Select(code => "Zulip diagnostic: " +
+                    DescribeZulipDiagnostic(code) + "."));
+        }
+        else if (!string.IsNullOrWhiteSpace(outcome.LegacyReason))
+        {
+            reasons.Add(outcome.LegacyReason.Trim());
+        }
+
+        if (!resolved)
+        {
+            reasons.Add(backed
+                ? "Last-known source-backed link and context retained; the latest lookup is unresolved."
+                : safeUrl
+                    ? "Unverified link and context retained; source backing is not established."
+                    : "No usable URL is available.");
+        }
+        return (
+            resolved ? "resolved" : "unresolved",
+            reasons.Count == 0 ? null : string.Join(" ", reasons));
+    }
+
+    private static string DescribeZulipOutcome(ZulipReferenceLookupOutcome outcome)
+        => outcome switch
+        {
+            ZulipReferenceLookupOutcome.Resolved => "resolved",
+            ZulipReferenceLookupOutcome.InvalidReference => "invalid reference",
+            ZulipReferenceLookupOutcome.UnsupportedReference => "unsupported reference",
+            ZulipReferenceLookupOutcome.NotFound => "reference not found",
+            ZulipReferenceLookupOutcome.AmbiguousReference => "ambiguous reference",
+            ZulipReferenceLookupOutcome.InvalidSourceContext => "invalid source context",
+            ZulipReferenceLookupOutcome.SourceUnavailable => "source unavailable",
+            ZulipReferenceLookupOutcome.AuthenticationFailed => "authentication failed",
+            ZulipReferenceLookupOutcome.TransientFailure => "transient source failure",
+            ZulipReferenceLookupOutcome.Timeout => "lookup timed out",
+            ZulipReferenceLookupOutcome.InvalidEnvelope => "invalid response envelope",
+            ZulipReferenceLookupOutcome.InvalidJson => "invalid response JSON",
+            ZulipReferenceLookupOutcome.HttpFailure => "HTTP failure",
+            _ => throw new InvalidOperationException("Unknown Zulip lookup outcome."),
+        };
+
+    private static string DescribeZulipDiagnostic(ZulipReferenceDiagnosticCode code)
+        => code switch
+        {
+            ZulipReferenceDiagnosticCode.InvalidTimestamp => "invalid optional source timestamp",
+            ZulipReferenceDiagnosticCode.MissingStreamContext => "missing stream context",
+            ZulipReferenceDiagnosticCode.InvalidSourceUrl => "invalid source URL",
+            ZulipReferenceDiagnosticCode.MalformedOutcomeMetadata => "malformed outcome metadata",
+            ZulipReferenceDiagnosticCode.UnknownOutcomeMetadataVersion => "unknown outcome metadata version",
+            _ => throw new InvalidOperationException("Unknown Zulip diagnostic code."),
+        };
+
     private static string GitHubDetail(
         string itemKey,
         GitHubHydration? hydration)
@@ -2793,6 +2943,7 @@ internal static class DiscussionSiteDatabaseBuilder
         public string? Recommendation { get; init; }
         public string? RecommendationJustification { get; init; }
         public string? SavedAt { get; init; }
+        public DateTimeOffset? JiraUpdatedAt { get; init; }
         public string? RequestHtml { get; init; }
         public string? RequestPlain { get; init; }
         public string? ResolutionHtml { get; init; }
@@ -2838,6 +2989,7 @@ internal static class DiscussionSiteDatabaseBuilder
             Recommendation,
             RecommendationJustification,
             SavedAt,
+            JiraUpdatedAt?.ToString("O", CultureInfo.InvariantCulture),
             RequestHtml,
             RequestPlain,
             ResolutionHtml,

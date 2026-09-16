@@ -81,6 +81,9 @@ internal static class TicketSitePresentationJson
     public static string Serialize(DiscussionPublicationReadiness readiness)
         => JsonSerializer.Serialize(readiness, SerializerOptions);
 
+    public static string Serialize(DiscussionCorpusSummary summary)
+        => JsonSerializer.Serialize(summary, SerializerOptions);
+
     public static TicketSitePresentation Deserialize(string json)
         => JsonSerializer.Deserialize<TicketSitePresentation>(
             json,
@@ -95,4 +98,11 @@ internal static class TicketSitePresentationJson
             SerializerOptions)
         ?? throw new InvalidOperationException(
             "The discussion publication-readiness payload is empty.");
+
+    public static DiscussionCorpusSummary DeserializeCorpusSummary(string json)
+        => JsonSerializer.Deserialize<DiscussionCorpusSummary>(
+            json,
+            SerializerOptions)
+        ?? throw new InvalidOperationException(
+            "The discussion corpus-summary payload is empty.");
 }

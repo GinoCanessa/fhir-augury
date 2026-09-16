@@ -109,30 +109,43 @@ internal sealed record TicketSitePresentation(
     string SiteName,
     DateTimeOffset? JiraSourceLastSuccessfulRefreshAt,
     ResolvedFilters Filters,
-    DiscussionPublicationReadiness Readiness)
+    DiscussionPublicationReadiness Readiness,
+    DiscussionCorpusSummary CorpusSummary)
 {
+    private static readonly string[] MonthLabels =
+        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"];
+
     public static TicketSitePresentation CreateDiscussion(
         string baseTitle,
         DateTimeOffset? jiraSourceLastSuccessfulRefreshAt,
         ResolvedFilters filters,
+        DiscussionCorpusSummary corpusSummary,
         DiscussionPublicationReadiness? readiness = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(baseTitle);
         ArgumentNullException.ThrowIfNull(filters);
+        ArgumentNullException.ThrowIfNull(corpusSummary);
 
         DateTimeOffset? utcRefresh =
             jiraSourceLastSuccessfulRefreshAt?.ToUniversalTime();
-        string freshnessSuffix = utcRefresh is null
-            ? string.Empty
-            : $" - Built {utcRefresh.Value.ToString(
-                "MMMM dd, yyyy",
-                CultureInfo.InvariantCulture)}";
+        string dateSuffix = string.Empty;
+        if (corpusSummary.TicketCount > 0 &&
+            corpusSummary.ValidJiraUpdatedAtCount == corpusSummary.TicketCount &&
+            corpusSummary.DateCoverage == DiscussionDateCoverage.Complete &&
+            corpusSummary.MaxJiraUpdatedAt is DateTimeOffset maximum)
+        {
+            DateTimeOffset utcDate = maximum.ToUniversalTime();
+            dateSuffix = $" - {MonthLabels[utcDate.Month - 1]} " +
+                utcDate.Day.ToString(CultureInfo.InvariantCulture) + ", " +
+                utcDate.Year.ToString("D4", CultureInfo.InvariantCulture);
+        }
         return new TicketSitePresentation(
             DiscussionRendererSchema.Version,
             baseTitle,
-            $"{baseTitle}{freshnessSuffix}{filters.ToTitleSuffix()}",
+            $"{baseTitle}{dateSuffix}{filters.ToTitleSuffix()}",
             utcRefresh,
             filters,
-            readiness ?? DiscussionPublicationReadiness.Unqualified);
+            readiness ?? DiscussionPublicationReadiness.Unqualified,
+            corpusSummary);
     }
 }

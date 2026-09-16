@@ -20,7 +20,7 @@ internal readonly record struct DiscussionFacetValue(
 
 internal static class DiscussionRendererSchema
 {
-    public const int Version = 2;
+    public const int Version = 3;
     public const string UnknownValueKey = "__unknown__";
     public const string UnknownDisplayValue = "(unknown)";
     public const string NamedValueKeyPrefix = "value:";
@@ -33,11 +33,12 @@ internal static class DiscussionRendererSchema
             "site_metadata",
             """
             CREATE TABLE site_metadata(
-                RendererSchemaVersion INTEGER PRIMARY KEY CHECK(RendererSchemaVersion = 2),
+                RendererSchemaVersion INTEGER PRIMARY KEY CHECK(RendererSchemaVersion = 3),
                 BaseTitle TEXT NOT NULL,
                 SiteName TEXT NOT NULL,
                 JiraSourceLastSuccessfulRefreshAt TEXT NULL,
                 ReadinessJson TEXT NOT NULL,
+                CorpusSummaryJson TEXT NOT NULL,
                 FilterSpecification TEXT NULL,
                 FilterProject TEXT NULL,
                 FilterWorkGroup TEXT NULL
@@ -49,6 +50,7 @@ internal static class DiscussionRendererSchema
                 "SiteName",
                 "JiraSourceLastSuccessfulRefreshAt",
                 "ReadinessJson",
+                "CorpusSummaryJson",
                 "FilterSpecification",
                 "FilterProject",
                 "FilterWorkGroup",
@@ -88,6 +90,7 @@ internal static class DiscussionRendererSchema
                 Recommendation TEXT NULL,
                 RecommendationJustification TEXT NULL,
                 SavedAt TEXT NULL,
+                JiraUpdatedAt TEXT NULL,
                 RequestHtml TEXT NULL,
                 RequestPlain TEXT NULL,
                 ResolutionHtml TEXT NULL,
@@ -127,6 +130,7 @@ internal static class DiscussionRendererSchema
                 "Recommendation",
                 "RecommendationJustification",
                 "SavedAt",
+                "JiraUpdatedAt",
                 "RequestHtml",
                 "RequestPlain",
                 "ResolutionHtml",

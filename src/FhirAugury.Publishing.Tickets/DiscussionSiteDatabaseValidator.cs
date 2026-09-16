@@ -82,6 +82,8 @@ internal static class DiscussionSiteDatabaseValidator
         await ValidateRelatedItemsAsync(connection, ct).ConfigureAwait(false);
         await ValidateSummarySourcesAsync(connection, ct).ConfigureAwait(false);
         await ValidateTopicsAsync(connection, ct).ConfigureAwait(false);
+        await ValidateCorpusSummaryAsync(connection, presentation.CorpusSummary, ct)
+            .ConfigureAwait(false);
         IReadOnlyDictionary<string, long> counts =
             await ReadTableCountsAsync(connection, ct).ConfigureAwait(false);
         return new ValidationResult(presentation, counts);
@@ -273,7 +275,7 @@ internal static class DiscussionSiteDatabaseValidator
             """
             SELECT RendererSchemaVersion, BaseTitle, SiteName,
                    JiraSourceLastSuccessfulRefreshAt,
-                   ReadinessJson,
+                   ReadinessJson, CorpusSummaryJson,
                    FilterSpecification, FilterProject, FilterWorkGroup
             FROM site_metadata
             """,
@@ -337,20 +339,47 @@ internal static class DiscussionSiteDatabaseValidator
                 "Renderer publication-readiness metadata is not canonical.");
         }
 
+        string corpusJson = RequireString(
+            row[5],
+            "site_metadata.CorpusSummaryJson");
+        DiscussionCorpusSummary corpusSummary;
+        try
+        {
+            corpusSummary = TicketSitePresentationJson.DeserializeCorpusSummary(
+                corpusJson);
+        }
+        catch (Exception exception) when (
+            exception is System.Text.Json.JsonException or
+            InvalidOperationException or NotSupportedException)
+        {
+            throw new InvalidOperationException(
+                "Renderer corpus-summary metadata is invalid.",
+                exception);
+        }
+        if (!string.Equals(
+            corpusJson,
+            TicketSitePresentationJson.Serialize(corpusSummary),
+            StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Renderer corpus-summary metadata is not canonical.");
+        }
+
         ResolvedFilters filters = new(
-            OptionalNonWhiteSpace(row[5], "site_metadata.FilterSpecification"),
-            OptionalNonWhiteSpace(row[6], "site_metadata.FilterProject"),
-            OptionalNonWhiteSpace(row[7], "site_metadata.FilterWorkGroup"));
+            OptionalNonWhiteSpace(row[6], "site_metadata.FilterSpecification"),
+            OptionalNonWhiteSpace(row[7], "site_metadata.FilterProject"),
+            OptionalNonWhiteSpace(row[8], "site_metadata.FilterWorkGroup"));
         TicketSitePresentation expected =
             TicketSitePresentation.CreateDiscussion(
                 baseTitle,
                 refresh,
                 filters,
+                corpusSummary,
                 readiness);
         if (!string.Equals(siteName, expected.SiteName, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
-                "Renderer site name does not match its provenance and filter metadata.");
+                "Renderer site name does not match its corpus-summary and filter metadata.");
         }
         return expected;
     }
@@ -415,7 +444,7 @@ internal static class DiscussionSiteDatabaseValidator
     {
         IReadOnlyList<IReadOnlyList<object?>> rows = await QueryAsync(
             connection,
-            "SELECT Key, Project, SavedAt FROM tickets",
+            "SELECT Key, Project, SavedAt, JiraUpdatedAt FROM tickets",
             ct).ConfigureAwait(false);
         foreach (IReadOnlyList<object?> row in rows)
         {
@@ -435,6 +464,102 @@ internal static class DiscussionSiteDatabaseValidator
             {
                 ParseTimestamp(savedAt, $"tickets[{key}].SavedAt");
             }
+            if (row[3] is not null)
+            {
+                string jiraUpdatedAt = RequireString(
+                    row[3],
+                    $"tickets[{key}].JiraUpdatedAt");
+                DateTimeOffset timestamp = ParseUtcTimestamp(
+                    jiraUpdatedAt,
+                    $"tickets[{key}].JiraUpdatedAt");
+                if (!string.Equals(
+                    jiraUpdatedAt,
+                    timestamp.ToString("O", CultureInfo.InvariantCulture),
+                    StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        $"Renderer ticket '{key}' JiraUpdatedAt is not canonical UTC.");
+                }
+            }
+        }
+    }
+
+    private static async Task ValidateCorpusSummaryAsync(
+        SqliteConnection connection,
+        DiscussionCorpusSummary summary,
+        CancellationToken ct)
+    {
+        IReadOnlyList<object?> ticketCounts = (await QueryAsync(
+            connection,
+            """
+            SELECT COUNT(*), COUNT(DISTINCT Project COLLATE NOCASE),
+                   COUNT(JiraUpdatedAt), MAX(JiraUpdatedAt)
+            FROM tickets
+            """,
+            ct).ConfigureAwait(false))[0];
+        long ticketCount = Convert.ToInt64(ticketCounts[0], CultureInfo.InvariantCulture);
+        long projectCount = Convert.ToInt64(ticketCounts[1], CultureInfo.InvariantCulture);
+        long validDateCount = Convert.ToInt64(ticketCounts[2], CultureInfo.InvariantCulture);
+        DateTimeOffset? maximum = ticketCounts[3] is string maximumText
+            ? ParseUtcTimestamp(maximumText, "tickets.MAX(JiraUpdatedAt)")
+            : null;
+
+        IReadOnlyList<IReadOnlyList<object?>> people = await QueryAsync(
+            connection,
+            """
+            SELECT Role, COUNT(DISTINCT TicketKey COLLATE NOCASE)
+            FROM ticket_people
+            WHERE Availability = 'available' AND DisplayName IS NOT NULL
+            GROUP BY Role
+            """,
+            ct).ConfigureAwait(false);
+        Dictionary<string, long> peopleCounts = people.ToDictionary(
+            row => RequireString(row[0], "ticket_people.Role"),
+            row => Convert.ToInt64(row[1], CultureInfo.InvariantCulture),
+            StringComparer.Ordinal);
+
+        IReadOnlyList<IReadOnlyList<object?>> links = await QueryAsync(
+            connection,
+            """
+            SELECT Kind, COUNT(*),
+                   SUM(CASE WHEN Url IS NOT NULL
+                                 AND HydrationStatus = 'resolved' COLLATE NOCASE
+                            THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN Url IS NOT NULL
+                                 AND COALESCE(HydrationStatus, '') <> 'resolved' COLLATE NOCASE
+                            THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN Url IS NULL THEN 1 ELSE 0 END)
+            FROM related_items
+            GROUP BY Kind
+            """,
+            ct).ConfigureAwait(false);
+        Dictionary<string, DiscussionLinkCoverage> linkCounts = links
+            .Select(row => new DiscussionLinkCoverage(
+                RequireString(row[0], "related_items.Kind"),
+                Convert.ToInt64(row[1], CultureInfo.InvariantCulture),
+                Convert.ToInt64(row[2], CultureInfo.InvariantCulture),
+                Convert.ToInt64(row[3], CultureInfo.InvariantCulture),
+                Convert.ToInt64(row[4], CultureInfo.InvariantCulture)))
+            .ToDictionary(coverage => coverage.Kind, StringComparer.Ordinal);
+        DiscussionCorpusSummary actual = new(
+            ticketCount,
+            projectCount,
+            validDateCount,
+            maximum,
+            DiscussionDateCoverage.FromCounts(ticketCount, validDateCount),
+            peopleCounts.GetValueOrDefault("reporter"),
+            peopleCounts.GetValueOrDefault("assignee"),
+            peopleCounts.GetValueOrDefault("in-person-requester"),
+            DiscussionLinkCoverage.Kinds.Select(kind =>
+                linkCounts.GetValueOrDefault(kind) ??
+                new DiscussionLinkCoverage(kind, 0, 0, 0, 0)).ToArray());
+        if (!string.Equals(
+            TicketSitePresentationJson.Serialize(summary),
+            TicketSitePresentationJson.Serialize(actual),
+            StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Renderer corpus-summary metadata does not match the projected ticket, people, and link rows.");
         }
     }
 
@@ -897,6 +1022,16 @@ internal static class DiscussionSiteDatabaseValidator
             {
                 throw new InvalidOperationException(
                     $"Renderer related item '{ticketKey}/{kind}/{itemKey}' has an empty hydration reason.");
+            }
+            if (kind == "zulip")
+            {
+                ZulipReferenceHydrationReasonReadResult reason =
+                    ZulipReferenceHydrationReason.Read(hydrationReason);
+                if (reason.Metadata is not null || reason.MetadataFailure is not null)
+                {
+                    throw new InvalidOperationException(
+                        "Renderer Zulip hydration reasons must contain decoded diagnostics, not tagged metadata.");
+                }
             }
         }
     }

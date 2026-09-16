@@ -1,5 +1,8 @@
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json.Nodes;
+using FhirAugury.Common.Api;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using Microsoft.Data.Sqlite;
@@ -18,8 +21,20 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
     public void Dispose()
         => TestFileCleanup.SafeDeleteDirectory(_root);
 
-    [Fact]
-    public void PresentationUsesUtcDateAndInvariantEnglish()
+    [Theory]
+    [InlineData(1, "Jan")]
+    [InlineData(2, "Feb")]
+    [InlineData(3, "Mar")]
+    [InlineData(4, "Apr")]
+    [InlineData(5, "May")]
+    [InlineData(6, "Jun")]
+    [InlineData(7, "Jul")]
+    [InlineData(8, "Aug")]
+    [InlineData(9, "Sept")]
+    [InlineData(10, "Oct")]
+    [InlineData(11, "Nov")]
+    [InlineData(12, "Dec")]
+    public async Task Title_UsesUtcAndFixedEnglishMonths(int month, string label)
     {
         CultureInfo previousCulture = CultureInfo.CurrentCulture;
         CultureInfo previousUiCulture = CultureInfo.CurrentUICulture;
@@ -28,37 +43,753 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
             CultureInfo.CurrentCulture = new CultureInfo("fr-FR");
             CultureInfo.CurrentUICulture = new CultureInfo("fr-FR");
 
-            TicketSitePresentation presentation =
-                TicketSitePresentation.CreateDiscussion(
-                    "Tickets",
-                    new DateTimeOffset(
-                        2026,
-                        9,
-                        8,
-                        1,
-                        0,
-                        0,
-                        TimeSpan.FromHours(2)),
-                    new ResolvedFilters("FHIR", null, null));
-
-            Assert.Equal(
-                new DateTimeOffset(
-                    2026,
-                    9,
-                    7,
-                    23,
-                    0,
-                    0,
-                    TimeSpan.Zero),
-                presentation.JiraSourceLastSuccessfulRefreshAt);
-            Assert.Equal(
-                "Tickets - Built September 07, 2026 (filtered: spec=FHIR)",
-                presentation.SiteName);
+            DateTimeOffset local = new(
+                2026, month, 1, 23, 30, 0, TimeSpan.FromHours(-2));
+            TicketSnapshotFixture fixture =
+                await TicketSnapshotFixture.CreatePreparerAsync(
+                    _root,
+                    schemaVersion: 3,
+                    firstJiraUpdatedAt: local.ToString("O"));
+            ResolvedFilters filters = new("FHIR", null, null);
+            DiscussionSiteDatabaseBuilder.BuildResult built =
+                await DiscussionSiteDatabaseBuilder.BuildAsync(
+                    fixture.DatabasePath, fixture.Descriptor,
+                    "Custom & Review", filters);
+            try
+            {
+                Assert.Equal(
+                    $"Custom & Review - {label} 2, 2026 (filtered: spec=FHIR)",
+                    built.Presentation.SiteName);
+                Assert.Equal("Custom & Review", built.Presentation.BaseTitle);
+                Assert.Equal(
+                    local.ToUniversalTime(),
+                    built.Presentation.CorpusSummary.MaxJiraUpdatedAt);
+                Assert.Equal(
+                    TimeSpan.Zero,
+                    built.Presentation.CorpusSummary.MaxJiraUpdatedAt?.Offset);
+                await DiscussionSiteDatabaseValidator.ValidateAsync(
+                    built.TempDbPath, fixture.DatabasePath, fixture.Descriptor,
+                    "Custom & Review", filters);
+            }
+            finally
+            {
+                TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+            }
         }
         finally
         {
             CultureInfo.CurrentCulture = previousCulture;
             CultureInfo.CurrentUICulture = previousUiCulture;
+        }
+    }
+
+    [Theory]
+    [InlineData(null, null, null, 2, 15)]
+    [InlineData("FHIR", null, null, 1, 14)]
+    [InlineData(null, "FHIR", null, 1, 14)]
+    [InlineData(null, null, "FHIR Infrastructure", 1, 14)]
+    [InlineData("FHIR", "FHIR", "FHIR Infrastructure", 1, 14)]
+    [InlineData(null, "CDS", null, 1, 15)]
+    public async Task Title_UsesOnlyExportedSelfJiraUpdatedAt(
+        string? specification, string? project, string? workGroup,
+        int ticketCount, int day)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root, includeSecondTicket: true, schemaVersion: 3,
+                useMultipleRuns: true, includeRendererEvidence: true,
+                firstJiraUpdatedAt: "2026-09-14T06:00:00Z",
+                secondJiraUpdatedAt: "2026-09-15T06:00:00Z");
+        await ExecuteAsync(
+            fixture.DatabasePath,
+            """
+            INSERT INTO prepared_jira_hydration(
+                Id, TicketKey, JiraKey, Title, UpdatedAt)
+            VALUES('unrelated', 'FHIR-9999', 'FHIR-9999',
+                   'Later unrelated ticket', '2031-11-27T12:00:00Z');
+            """);
+        byte[] sourceBytes = await File.ReadAllBytesAsync(fixture.DatabasePath);
+        byte[] descriptorBytes = await File.ReadAllBytesAsync(fixture.DescriptorPath);
+        ResolvedFilters filters = new(specification, project, workGroup);
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath, fixture.Descriptor,
+                "Tickets for Discussion", filters);
+        try
+        {
+            DiscussionCorpusSummary summary = built.Presentation.CorpusSummary;
+            Assert.Equal(ticketCount, summary.TicketCount);
+            Assert.Equal(ticketCount, summary.ExportedProjectCount);
+            Assert.Equal(ticketCount, summary.ValidJiraUpdatedAtCount);
+            Assert.Equal(ticketCount, summary.TicketsWithPublicReporter);
+            Assert.Equal(ticketCount, summary.TicketsWithPublicAssignee);
+            Assert.Equal(project == "CDS" ? 0 : 1, summary.TicketsWithPublicRequester);
+            Assert.Equal(project == "CDS" ? 0 : 7, summary.LinksByKind.Sum(link => link.TotalRows));
+            Assert.Equal(DiscussionDateCoverage.Complete, summary.DateCoverage);
+            Assert.Equal(new DateTimeOffset(2026, 9, day, 6, 0, 0, TimeSpan.Zero),
+                summary.MaxJiraUpdatedAt);
+            Assert.Equal(
+                $"Tickets for Discussion - Sept {day}, 2026{filters.ToTitleSuffix()}",
+                built.Presentation.SiteName);
+            await DiscussionSiteDatabaseValidator.ValidateAsync(
+                built.TempDbPath, fixture.DatabasePath, fixture.Descriptor,
+                "Tickets for Discussion", filters);
+            Assert.Equal(sourceBytes, await File.ReadAllBytesAsync(fixture.DatabasePath));
+            Assert.Equal(descriptorBytes, await File.ReadAllBytesAsync(fixture.DescriptorPath));
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Fact]
+    public async Task Title_IgnoresEveryOtherClock()
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root, includeSecondTicket: true, schemaVersion: 3,
+                includeRendererEvidence: true,
+                firstJiraUpdatedAt: "2026-09-15T01:00:00Z",
+                secondJiraUpdatedAt: "2026-09-14T03:00:00Z",
+                ticketSavedAt: new DateTimeOffset(2030, 1, 17, 8, 0, 0, TimeSpan.Zero),
+                snapshotCreatedAt: new DateTimeOffset(2032, 2, 18, 9, 0, 0, TimeSpan.Zero));
+        await ExecuteAsync(
+            fixture.DatabasePath,
+            """
+            UPDATE prepared_ticket_hydration
+            SET SourceLastSuccessfulRefreshAt = '2028-03-19T10:00:00+00:00',
+                HydratedAt = '2029-04-20T11:00:00+00:00';
+            UPDATE authoring_run_input_provenance
+            SET LatestSuccessfulRefreshAt = '2028-05-21T12:00:00+00:00';
+            UPDATE authoring_run_items
+            SET ExpectedSourceRevision = 'jira-revision-2033-06-22T13:00:00Z';
+            UPDATE authoring_result_receipts
+            SET ExpectedSourceRevision = 'jira-revision-2033-06-22T13:00:00Z',
+                ObservedSourceRevision = 'jira-revision-2033-06-22T13:00:00Z',
+                PersistedAt = '2034-07-23T14:00:00+00:00';
+            UPDATE prepared_jira_hydration
+            SET UpdatedAt = '2035-08-24T15:00:00Z'
+            WHERE JiraKey <> TicketKey;
+            """);
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath, fixture.Descriptor,
+                "Tickets for Discussion", ResolvedFilters.None);
+        try
+        {
+            Assert.Equal(
+                "Tickets for Discussion - Sept 15, 2026",
+                built.Presentation.SiteName);
+            Assert.Equal(
+                new DateTimeOffset(2028, 5, 21, 12, 0, 0, TimeSpan.Zero),
+                built.Presentation.JiraSourceLastSuccessfulRefreshAt);
+            Assert.Equal(
+                "2030-01-17T08:00:00.0000000+00:00",
+                await ScalarAsync<string>(built.TempDbPath,
+                    "SELECT SavedAt FROM tickets WHERE Key = 'FHIR-1001'"));
+            await DiscussionSiteDatabaseValidator.ValidateAsync(
+                built.TempDbPath, fixture.DatabasePath, fixture.Descriptor,
+                "Tickets for Discussion", ResolvedFilters.None);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Theory]
+    [InlineData(TicketSnapshotFixture.FirstJiraUpdatedAt, TicketSnapshotFixture.SecondJiraUpdatedAt, false, "complete", 2, 6)]
+    [InlineData(null, TicketSnapshotFixture.SecondJiraUpdatedAt, false, "partial", 1, 6)]
+    [InlineData(TicketSnapshotFixture.FirstJiraUpdatedAt, null, false, "partial", 1, 5)]
+    [InlineData(null, null, false, "none", 0, 0)]
+    [InlineData(TicketSnapshotFixture.FirstJiraUpdatedAt, TicketSnapshotFixture.SecondJiraUpdatedAt, true, "empty", 0, 0)]
+    public async Task Title_RequiresCompleteDateCoverage(
+        string? first, string? second, bool empty,
+        string coverage, int validCount, int maximumDay)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root, includeSecondTicket: true, schemaVersion: 3,
+                firstJiraUpdatedAt: first, secondJiraUpdatedAt: second);
+        ResolvedFilters filters = empty
+            ? new("FHIR", "CDS", null)
+            : ResolvedFilters.None;
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath, fixture.Descriptor, "Tickets", filters);
+        try
+        {
+            DiscussionCorpusSummary summary = built.Presentation.CorpusSummary;
+            Assert.Equal(empty ? 0 : 2, summary.TicketCount);
+            Assert.Equal(empty ? 0 : 2, summary.ExportedProjectCount);
+            Assert.Equal(validCount, summary.ValidJiraUpdatedAtCount);
+            Assert.Equal(coverage, summary.DateCoverage);
+            Assert.Equal(
+                maximumDay == 0 ? (int?)null : maximumDay,
+                summary.MaxJiraUpdatedAt?.Day);
+            Assert.Equal(
+                "Tickets" + (coverage == "complete" ? " - Sept 6, 2026" : "") +
+                filters.ToTitleSuffix(),
+                built.Presentation.SiteName);
+            if (empty)
+            {
+                Assert.Equal(0, summary.TicketsWithPublicReporter);
+                Assert.Equal(0, summary.TicketsWithPublicAssignee);
+                Assert.Equal(0, summary.TicketsWithPublicRequester);
+                Assert.All(summary.LinksByKind, links => Assert.Equal(0, links.TotalRows));
+            }
+            await DiscussionSiteDatabaseValidator.ValidateAsync(
+                built.TempDbPath, fixture.DatabasePath, fixture.Descriptor,
+                "Tickets", filters);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Theory]
+    [InlineData("2026-09-15T00:30:00Z")]
+    [InlineData("2026-09-14T19:30:00-05:00")]
+    [InlineData("2026-09-15T02:30:00.0000000+02:00")]
+    [InlineData("2026-09-15 02:30:00+02:00")]
+    [InlineData("2026-09-15 02:30:00.0000000 +02:00")]
+    [InlineData("2026-09-15 00:30:00.000Z")]
+    public async Task JiraDates_NormalizeEquivalentOffsetBearingInstants(string date)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root, includeSecondTicket: true,
+                firstJiraUpdatedAt: date,
+                secondJiraUpdatedAt: "2026-09-14T17:30:00-07:00");
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath, fixture.Descriptor, "Tickets", ResolvedFilters.None);
+        try
+        {
+            Assert.Equal("Tickets - Sept 15, 2026", built.Presentation.SiteName);
+            Assert.Equal(
+                ["2026-09-15T00:30:00.0000000+00:00"],
+                await ReadStringsAsync(built.TempDbPath,
+                    "SELECT DISTINCT JiraUpdatedAt FROM tickets"));
+            Assert.Equal(TimeSpan.Zero, built.Presentation.CorpusSummary.MaxJiraUpdatedAt?.Offset);
+            await DiscussionSiteDatabaseValidator.ValidateAsync(
+                built.TempDbPath, fixture.DatabasePath, fixture.Descriptor,
+                "Tickets", ResolvedFilters.None);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Fact]
+    public async Task JiraDates_PreserveTickPrecisionWhenSelectingMaximum()
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root, includeSecondTicket: true,
+                firstJiraUpdatedAt: "2026-09-15T02:30:00.1234567+02:00",
+                secondJiraUpdatedAt: "2026-09-14T19:30:00.1234566-05:00");
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath, fixture.Descriptor, "Tickets", ResolvedFilters.None);
+        try
+        {
+            const string maximum = "2026-09-15T00:30:00.1234567+00:00";
+            Assert.Equal(maximum,
+                built.Presentation.CorpusSummary.MaxJiraUpdatedAt?.ToString("O", CultureInfo.InvariantCulture));
+            Assert.Equal(maximum, await ScalarAsync<string>(
+                built.TempDbPath, "SELECT MAX(JiraUpdatedAt) FROM tickets"));
+            await DiscussionSiteDatabaseValidator.ValidateAsync(
+                built.TempDbPath, fixture.DatabasePath, fixture.Descriptor,
+                "Tickets", ResolvedFilters.None);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Theory]
+    [InlineData("blob")]
+    [InlineData("non-utc")]
+    [InlineData("noncanonical")]
+    [InlineData("invalid")]
+    public async Task RendererDates_RejectNonTextOrNonCanonicalUtcValues(string mutation)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(_root);
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath, fixture.Descriptor, "Tickets", ResolvedFilters.None);
+        try
+        {
+            object date = mutation switch
+            {
+                "blob" => Encoding.UTF8.GetBytes(TicketSnapshotFixture.FirstJiraUpdatedAt),
+                "non-utc" => "2026-09-05T14:00:00.0000000+02:00",
+                "noncanonical" => "2026-09-05T12:00:00Z",
+                "invalid" => "not a date",
+                _ => throw new ArgumentOutOfRangeException(nameof(mutation)),
+            };
+            await ExecuteAsync(built.TempDbPath, "UPDATE tickets SET JiraUpdatedAt = @date",
+                ("@date", date));
+            if (mutation == "blob")
+            {
+                await RewriteCorpusSummaryAsync(built,
+                    built.Presentation.CorpusSummary with { MaxJiraUpdatedAt = null });
+            }
+            InvalidOperationException exception =
+                await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                    DiscussionSiteDatabaseValidator.ValidateAsync(built.TempDbPath));
+            Assert.Contains("JiraUpdatedAt", exception.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("not a date")]
+    [InlineData("2026-09-15")]
+    [InlineData("2026-09-15T12:30:00")]
+    [InlineData("2026-09-15 12:30:00.1234567")]
+    [InlineData("09/15/2026 12:30:00+00:00")]
+    [InlineData("2026-02-29T12:30:00Z")]
+    [InlineData("2026-09-15T12:30:00+25:00")]
+    public async Task JiraDates_RejectMalformedOrTimezoneAmbiguousNonNullValues(string date)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root, firstJiraUpdatedAt: date);
+        InvalidOperationException exception =
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                DiscussionSiteDatabaseBuilder.BuildAsync(
+                    fixture.DatabasePath, fixture.Descriptor,
+                    "Tickets", ResolvedFilters.None));
+        Assert.Contains("UpdatedAt", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("explicit time zone", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task JiraDates_IgnoreMalformedUnexportedAndLinkedValues()
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root, includeSecondTicket: true, includeRendererEvidence: true,
+                secondJiraUpdatedAt: "timezone-ambiguous");
+        await ExecuteAsync(fixture.DatabasePath,
+            "UPDATE prepared_jira_hydration SET UpdatedAt = 'malformed linked date' WHERE JiraKey <> TicketKey");
+        ResolvedFilters filters = new(null, "FHIR", null);
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath, fixture.Descriptor, "Tickets", filters);
+        try
+        {
+            Assert.Equal("Tickets - Sept 5, 2026 (filtered: project=FHIR)",
+                built.Presentation.SiteName);
+            Assert.Equal(1, built.Presentation.CorpusSummary.ValidJiraUpdatedAtCount);
+            await DiscussionSiteDatabaseValidator.ValidateAsync(
+                built.TempDbPath, fixture.DatabasePath, fixture.Descriptor, "Tickets", filters);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task LegacySnapshot_DatesDoNotUpgradePeopleOrReadiness(int schemaVersion)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root, schemaVersion: schemaVersion,
+                firstJiraUpdatedAt: "2026-09-15T01:00:00Z");
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath, fixture.Descriptor,
+                "Tickets for Discussion", ResolvedFilters.None);
+        try
+        {
+            Assert.Equal("Tickets for Discussion - Sept 15, 2026", built.Presentation.SiteName);
+            Assert.False(built.Presentation.Readiness.IsReady);
+            Assert.Contains(built.Presentation.Readiness.Reasons, reason =>
+                reason.Code == DiscussionPublicationReadinessReasonCodes.LegacySnapshotSchema);
+            Assert.Equal(DiscussionDateCoverage.Complete, built.Presentation.CorpusSummary.DateCoverage);
+            Assert.Equal(0, built.Presentation.CorpusSummary.TicketsWithPublicReporter);
+            Assert.Equal(0, built.Presentation.CorpusSummary.TicketsWithPublicAssignee);
+            Assert.Equal(0, built.Presentation.CorpusSummary.TicketsWithPublicRequester);
+            Assert.Equal(0, await ScalarAsync<long>(
+                built.TempDbPath, "SELECT COUNT(*) FROM ticket_people WHERE DisplayName IS NOT NULL"));
+            await DiscussionSiteDatabaseValidator.ValidateAsync(
+                built.TempDbPath, fixture.DatabasePath, fixture.Descriptor,
+                "Tickets for Discussion", ResolvedFilters.None);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Theory]
+    [InlineData("ticket-count")]
+    [InlineData("project-count")]
+    [InlineData("valid-date-count")]
+    [InlineData("maximum")]
+    [InlineData("coverage")]
+    [InlineData("reporter")]
+    [InlineData("assignee")]
+    [InlineData("requester")]
+    [InlineData("link-total")]
+    [InlineData("link-resolved")]
+    [InlineData("link-unresolved")]
+    [InlineData("link-no-url")]
+    [InlineData("link-kind")]
+    public async Task CorpusSummary_IsValidatedAgainstProjectedRows(string fact)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root, includeSecondTicket: true, schemaVersion: 3,
+                includeRendererEvidence: true, includeUntrustedPeople: true);
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath, fixture.Descriptor, "Tickets", ResolvedFilters.None);
+        try
+        {
+            DiscussionCorpusSummary summary = built.Presentation.CorpusSummary;
+            Assert.Equal(2, summary.TicketCount);
+            Assert.Equal(2, summary.ExportedProjectCount);
+            Assert.Equal(2, summary.ValidJiraUpdatedAtCount);
+            Assert.Equal(1, summary.TicketsWithPublicReporter);
+            Assert.Equal(1, summary.TicketsWithPublicAssignee);
+            Assert.Equal(1, summary.TicketsWithPublicRequester);
+            Assert.Equal(
+                [
+                    new DiscussionLinkCoverage("github", 1, 0, 0, 1),
+                    new DiscussionLinkCoverage("jira", 3, 2, 1, 0),
+                    new DiscussionLinkCoverage("jira-xref", 1, 1, 0, 0),
+                    new DiscussionLinkCoverage("repo", 1, 1, 0, 0),
+                    new DiscussionLinkCoverage("zulip", 1, 1, 0, 0),
+                ],
+                summary.LinksByKind);
+            Assert.Equal(
+                TicketSitePresentationJson.Serialize(summary),
+                await ScalarAsync<string>(built.TempDbPath,
+                    "SELECT CorpusSummaryJson FROM site_metadata"));
+            await DiscussionSiteDatabaseValidator.ValidateAsync(built.TempDbPath);
+
+            DiscussionLinkCoverage[] ChangeLink(
+                Func<DiscussionLinkCoverage, DiscussionLinkCoverage> change)
+                => summary.LinksByKind.Select(link =>
+                    link.Kind == "zulip" ? change(link) : link).ToArray();
+            DiscussionCorpusSummary forged = fact switch
+            {
+                "ticket-count" => summary with { TicketCount = 3 },
+                "project-count" => summary with { ExportedProjectCount = 1 },
+                "valid-date-count" => summary with { ValidJiraUpdatedAtCount = 1 },
+                "maximum" => summary with { MaxJiraUpdatedAt = summary.MaxJiraUpdatedAt?.AddHours(1) },
+                "coverage" => summary with { DateCoverage = DiscussionDateCoverage.Partial },
+                "reporter" => summary with { TicketsWithPublicReporter = 2 },
+                "assignee" => summary with { TicketsWithPublicAssignee = 0 },
+                "requester" => summary with { TicketsWithPublicRequester = 3 },
+                "link-total" => summary with { LinksByKind = ChangeLink(link => link with { TotalRows = 2 }) },
+                "link-resolved" => summary with { LinksByKind = ChangeLink(link =>
+                    link with { ResolvedSafeLinks = 0, UnresolvedWithRetainedSafeLinks = 1 }) },
+                "link-unresolved" => summary with { LinksByKind = ChangeLink(link =>
+                    link with { UnresolvedWithRetainedSafeLinks = 1 }) },
+                "link-no-url" => summary with { LinksByKind = ChangeLink(link =>
+                    link with { ResolvedSafeLinks = 0, WithoutUsableUrl = 1 }) },
+                "link-kind" => summary with { LinksByKind = summary.LinksByKind
+                    .Where(link => link.Kind != "repo").ToArray() },
+                _ => throw new ArgumentOutOfRangeException(nameof(fact)),
+            };
+            await RewriteCorpusSummaryAsync(built, forged);
+            InvalidOperationException exception =
+                await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                    DiscussionSiteDatabaseValidator.ValidateAsync(built.TempDbPath));
+            Assert.Contains("projected ticket, people, and link rows",
+                exception.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Theory]
+    [InlineData("whitespace")]
+    [InlineData("missing-field")]
+    [InlineData("unknown-field")]
+    [InlineData("duplicate-field")]
+    [InlineData("null")]
+    [InlineData("non-utc-maximum")]
+    public async Task CorpusSummary_RequiresCanonicalCompleteJson(string mutation)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(_root);
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath, fixture.Descriptor, "Tickets", ResolvedFilters.None);
+        try
+        {
+            string json = TicketSitePresentationJson.Serialize(built.Presentation.CorpusSummary);
+            JsonObject value = JsonNode.Parse(json)!.AsObject();
+            if (mutation == "missing-field")
+                Assert.True(value.Remove("ticketsWithPublicRequester"));
+            if (mutation == "unknown-field")
+                value["unknown"] = 0;
+            if (mutation == "non-utc-maximum")
+                value["maxJiraUpdatedAt"] = "2026-09-05T14:00:00+02:00";
+            string forged = mutation switch
+            {
+                "whitespace" => json + "\n",
+                "duplicate-field" => json.Insert(1, "\"ticketCount\":1,"),
+                "null" => "null",
+                _ => value.ToJsonString(),
+            };
+            await ExecuteAsync(built.TempDbPath,
+                "UPDATE site_metadata SET CorpusSummaryJson = @json", ("@json", forged));
+            InvalidOperationException exception =
+                await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                    DiscussionSiteDatabaseValidator.ValidateAsync(built.TempDbPath));
+            Assert.Contains("corpus-summary", exception.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public async Task CorpusSummary_RejectsPlausibleWrongSourceMaximum(int schemaVersion)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root, includeSecondTicket: true, schemaVersion: schemaVersion,
+                includeRendererEvidence: true);
+        string originalHash = await ComputeHashAsync(fixture.DatabasePath);
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath, fixture.Descriptor, "Tickets", ResolvedFilters.None);
+        try
+        {
+            string linkedDate = await ScalarAsync<string>(fixture.DatabasePath,
+                "SELECT UpdatedAt FROM prepared_jira_hydration WHERE JiraKey = 'FHIR-2002'");
+            await ExecuteAsync(built.TempDbPath,
+                "UPDATE tickets SET JiraUpdatedAt = @date WHERE Key = 'FHIR-1001'",
+                ("@date", linkedDate));
+            await RewriteCorpusSummaryAsync(built,
+                built.Presentation.CorpusSummary with
+                {
+                    MaxJiraUpdatedAt = DateTimeOffset.Parse(linkedDate, CultureInfo.InvariantCulture),
+                });
+
+            DiscussionSiteDatabaseValidator.ValidationResult internallyConsistent =
+                await DiscussionSiteDatabaseValidator.ValidateAsync(built.TempDbPath);
+            Assert.Equal("Tickets - Sept 20, 2026", internallyConsistent.Presentation.SiteName);
+            InvalidOperationException exception =
+                await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                    DiscussionSiteDatabaseValidator.ValidateAsync(
+                        built.TempDbPath, fixture.DatabasePath, fixture.Descriptor,
+                        "Tickets", ResolvedFilters.None));
+            Assert.Contains("immutable source projection", exception.Message, StringComparison.Ordinal);
+            Assert.Equal(originalHash, await ComputeHashAsync(fixture.DatabasePath));
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Theory]
+    [InlineData(ZulipReferenceBacking.TypedResolver, ZulipReferenceLookupOutcome.NotFound, true, "resolved")]
+    [InlineData(ZulipReferenceBacking.LegacyIndexedContext, ZulipReferenceLookupOutcome.Timeout, true, "resolved")]
+    [InlineData(ZulipReferenceBacking.Unverified, ZulipReferenceLookupOutcome.HttpFailure, false, "resolved")]
+    [InlineData(ZulipReferenceBacking.None, ZulipReferenceLookupOutcome.SourceUnavailable, false, "resolved")]
+    [InlineData(ZulipReferenceBacking.TypedResolver, ZulipReferenceLookupOutcome.Resolved, true, "resolved")]
+    [InlineData(ZulipReferenceBacking.TypedResolver, ZulipReferenceLookupOutcome.Resolved, true, "unresolved")]
+    [InlineData(ZulipReferenceBacking.TypedResolver, ZulipReferenceLookupOutcome.Resolved, true, null)]
+    public async Task ZulipProjection_DecodesOutcomesAndDistinguishesBacking(
+        ZulipReferenceBacking backing, ZulipReferenceLookupOutcome outcome,
+        bool sourceBacked, string? status)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root, includeSecondTicket: true, schemaVersion: 3,
+                includeRendererEvidence: true);
+        const string suppliedUrl = "http://chat.example/review?view=compact#message-123";
+        string metadata = ZulipReferenceHydrationReason.Serialize(new()
+        {
+            Backing = backing,
+            LatestOutcome = outcome,
+            Diagnostics = [ZulipReferenceDiagnosticCode.InvalidTimestamp],
+        });
+        await ExecuteAsync(fixture.DatabasePath,
+            """
+            UPDATE prepared_zulip_hydration
+            SET Url = @url, HydrationReason = @reason, HydrationStatus = @status
+            """,
+            ("@url", suppliedUrl), ("@reason", metadata), ("@status", status));
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath, fixture.Descriptor, "Tickets", ResolvedFilters.None);
+        try
+        {
+            bool resolved = outcome == ZulipReferenceLookupOutcome.Resolved && status == "resolved";
+            string reason = await ScalarAsync<string>(built.TempDbPath,
+                "SELECT HydrationReason FROM related_items WHERE Kind = 'zulip'");
+            Assert.Contains("invalid optional source timestamp", reason, StringComparison.Ordinal);
+            Assert.DoesNotContain("zulip-reference-", reason, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"backing\"", reason, StringComparison.Ordinal);
+            if (!resolved)
+            {
+                Assert.Contains(
+                    outcome == ZulipReferenceLookupOutcome.Resolved
+                        ? "does not confirm the recorded resolved outcome"
+                        : "Zulip lookup failed:",
+                    reason, StringComparison.Ordinal);
+                Assert.Contains(sourceBacked ? "Last-known source-backed" : "Unverified link",
+                    reason, StringComparison.Ordinal);
+            }
+            Assert.Equal(resolved ? "resolved" : "unresolved",
+                await ScalarAsync<string>(built.TempDbPath,
+                    "SELECT HydrationStatus FROM related_items WHERE Kind = 'zulip'"));
+            Assert.Equal(suppliedUrl, await ScalarAsync<string>(built.TempDbPath,
+                "SELECT Url FROM related_items WHERE Kind = 'zulip'"));
+            Assert.Equal(suppliedUrl, await ScalarAsync<string>(built.TempDbPath,
+                "SELECT Url FROM summary_sources WHERE SummaryKind = 'related-zulip'"));
+            Assert.Equal(new DiscussionLinkCoverage("zulip", 1, resolved ? 1 : 0, resolved ? 0 : 1, 0),
+                built.Presentation.CorpusSummary.LinksByKind.Single(link => link.Kind == "zulip"));
+            await DiscussionSiteDatabaseValidator.ValidateAsync(
+                built.TempDbPath, fixture.DatabasePath, fixture.Descriptor,
+                "Tickets", ResolvedFilters.None);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Theory]
+    [InlineData("zulip-reference-v9:{}", "unknown outcome metadata version")]
+    [InlineData("zulip-reference-v1:{bad", "malformed outcome metadata")]
+    [InlineData("zulip-reference-v1:{\"backing\":\"future\",\"latestOutcome\":\"resolved\",\"diagnostics\":[]}", "malformed outcome metadata")]
+    public async Task ZulipProjection_ReportsMalformedTaggedMetadataAsUnverifiedFailure(
+        string metadata, string diagnostic)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root, includeSecondTicket: true, includeRendererEvidence: true);
+        await ExecuteAsync(fixture.DatabasePath,
+            "UPDATE prepared_zulip_hydration SET HydrationReason = @reason",
+            ("@reason", metadata));
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath, fixture.Descriptor, "Tickets", ResolvedFilters.None);
+        try
+        {
+            string reason = await ScalarAsync<string>(built.TempDbPath,
+                "SELECT HydrationReason FROM related_items WHERE Kind = 'zulip'");
+            Assert.Contains(diagnostic, reason, StringComparison.Ordinal);
+            Assert.Contains("Unverified link", reason, StringComparison.Ordinal);
+            Assert.DoesNotContain("Last-known source-backed", reason, StringComparison.Ordinal);
+            Assert.DoesNotContain("zulip-reference-", reason, StringComparison.Ordinal);
+            Assert.Equal("unresolved", await ScalarAsync<string>(built.TempDbPath,
+                "SELECT HydrationStatus FROM related_items WHERE Kind = 'zulip'"));
+            Assert.Equal(new DiscussionLinkCoverage("zulip", 1, 0, 1, 0),
+                built.Presentation.CorpusSummary.LinksByKind.Single(link => link.Kind == "zulip"));
+            await DiscussionSiteDatabaseValidator.ValidateAsync(
+                built.TempDbPath, fixture.DatabasePath, fixture.Descriptor,
+                "Tickets", ResolvedFilters.None);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Theory]
+    [InlineData(0, "resolved", false)]
+    [InlineData(0, "unresolved", false)]
+    [InlineData(4, "unresolved", true)]
+    [InlineData(4, "resolved", true)]
+    public async Task ZulipProjection_LegacyResolvedFlagAloneIsNotBacking(
+        int messageCount, string status, bool backed)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root, includeSecondTicket: true, includeRendererEvidence: true);
+        await ExecuteAsync(fixture.DatabasePath,
+            "UPDATE prepared_zulip_hydration SET MessageCount = @count, HydrationStatus = @status",
+            ("@count", messageCount), ("@status", status));
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath, fixture.Descriptor, "Tickets", ResolvedFilters.None);
+        try
+        {
+            bool resolved = backed && status == "resolved";
+            Assert.Equal(resolved ? "resolved" : "unresolved",
+                await ScalarAsync<string>(built.TempDbPath,
+                    "SELECT HydrationStatus FROM related_items WHERE Kind = 'zulip'"));
+            if (!resolved)
+            {
+                string reason = await ScalarAsync<string>(built.TempDbPath,
+                    "SELECT HydrationReason FROM related_items WHERE Kind = 'zulip'");
+                Assert.Contains(backed ? "Last-known source-backed" : "Unverified link",
+                    reason, StringComparison.Ordinal);
+            }
+            await DiscussionSiteDatabaseValidator.ValidateAsync(
+                built.TempDbPath, fixture.DatabasePath, fixture.Descriptor,
+                "Tickets", ResolvedFilters.None);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Theory]
+    [InlineData("javascript:alert(1)")]
+    [InlineData("file:///private/path")]
+    [InlineData(null)]
+    public async Task CorpusSummary_CountsOnlyUsableProjectedUrls(string? url)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root, includeSecondTicket: true, includeRendererEvidence: true);
+        await ExecuteAsync(fixture.DatabasePath,
+            """
+            UPDATE prepared_zulip_hydration SET Url = @url;
+            UPDATE prepared_repo_hydration SET Url = @url;
+            """,
+            ("@url", url));
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath, fixture.Descriptor, "Tickets", ResolvedFilters.None);
+        try
+        {
+            foreach (string kind in new[] { "zulip", "repo", "github" })
+            {
+                Assert.Equal(new DiscussionLinkCoverage(kind, 1, 0, 0, 1),
+                    built.Presentation.CorpusSummary.LinksByKind.Single(link => link.Kind == kind));
+            }
+            await DiscussionSiteDatabaseValidator.ValidateAsync(
+                built.TempDbPath, fixture.DatabasePath, fixture.Descriptor,
+                "Tickets", ResolvedFilters.None);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
         }
     }
 
@@ -92,7 +823,7 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
             Assert.Null(
                 validation.Presentation.JiraSourceLastSuccessfulRefreshAt);
             Assert.Equal(
-                "Tickets for Discussion",
+                "Tickets for Discussion - Sept 6, 2026",
                 validation.Presentation.SiteName);
             Assert.False(validation.Presentation.Readiness.IsReady);
             Assert.Equal(
@@ -207,7 +938,7 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
                 expectedRefresh,
                 validation.Presentation.JiraSourceLastSuccessfulRefreshAt);
             Assert.Equal(
-                "Tickets for Discussion - Built September 10, 2026",
+                "Tickets for Discussion - Sept 6, 2026",
                 validation.Presentation.SiteName);
             Assert.Equal(
                 "2026-09-10T23:30:00.0000000+00:00",
@@ -462,6 +1193,9 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
         try
         {
             Assert.False(degraded.Presentation.Readiness.IsReady);
+            Assert.Equal("Tickets - Sept 5, 2026", degraded.Presentation.SiteName);
+            Assert.Equal(DiscussionDateCoverage.Complete,
+                degraded.Presentation.CorpusSummary.DateCoverage);
             Assert.Null(
                 degraded.Presentation.JiraSourceLastSuccessfulRefreshAt);
             Assert.Contains(
@@ -821,7 +1555,7 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
     }
 
     [Fact]
-    public async Task V2ProjectionSuppressesFreshnessWhenAnyCoordinateIsNull()
+    public async Task V2ProjectionKeepsTicketDateWhenProvenanceCoordinateIsNull()
     {
         TicketSnapshotFixture fixture =
             await TicketSnapshotFixture.CreatePreparerAsync(
@@ -840,7 +1574,7 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
             Assert.Null(
                 built.Presentation.JiraSourceLastSuccessfulRefreshAt);
             Assert.Equal(
-                "Tickets for Discussion",
+                "Tickets for Discussion - Sept 5, 2026",
                 built.Presentation.SiteName);
             await DiscussionSiteDatabaseValidator.ValidateAsync(
                 built.TempDbPath,
@@ -890,7 +1624,7 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
                     TimeSpan.Zero),
                 built.Presentation.JiraSourceLastSuccessfulRefreshAt);
             Assert.Equal(
-                "Tickets for Discussion - Built September 08, 2026 " +
+                "Tickets for Discussion - Sept 5, 2026 " +
                 "(filtered: spec=FHIR, project=FHIR, wg=FHIR Infrastructure)",
                 built.Presentation.SiteName);
             Assert.Equal(
@@ -1019,6 +1753,8 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
                     WHERE TopicGroupRowId IS NULL
                     ORDER BY OrderInContainer
                     """));
+            Assert.Equal(2, built.Presentation.CorpusSummary.TicketCount);
+            Assert.Equal(1, built.Presentation.CorpusSummary.ExportedProjectCount);
             Assert.Equal(
                 0,
                 await ScalarAsync<long>(
@@ -1475,15 +2211,37 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
             : Convert.ToString(value, CultureInfo.InvariantCulture);
     }
 
+    private static Task RewriteCorpusSummaryAsync(
+        DiscussionSiteDatabaseBuilder.BuildResult built,
+        DiscussionCorpusSummary summary)
+    {
+        TicketSitePresentation presentation = TicketSitePresentation.CreateDiscussion(
+            built.Presentation.BaseTitle,
+            built.Presentation.JiraSourceLastSuccessfulRefreshAt,
+            built.Presentation.Filters,
+            summary,
+            built.Presentation.Readiness);
+        return ExecuteAsync(
+            built.TempDbPath,
+            "UPDATE site_metadata SET CorpusSummaryJson = @json, SiteName = @name",
+            ("@json", TicketSitePresentationJson.Serialize(summary)),
+            ("@name", presentation.SiteName));
+    }
+
     private static async Task ExecuteAsync(
         string databasePath,
-        string sql)
+        string sql,
+        params (string Name, object? Value)[] parameters)
     {
         await using SqliteConnection connection = new(
             $"Data Source={databasePath};Pooling=False");
         await connection.OpenAsync();
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText = sql;
+        foreach ((string name, object? value) in parameters)
+        {
+            command.Parameters.AddWithValue(name, value ?? DBNull.Value);
+        }
         await command.ExecuteNonQueryAsync();
     }
 

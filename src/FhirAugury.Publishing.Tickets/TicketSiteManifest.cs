@@ -36,7 +36,8 @@ public sealed record TicketSiteManifest(
     string? DisplayTitle = null,
     DateTimeOffset? JiraSourceLastSuccessfulRefreshAt = null,
     int? RendererSchemaVersion = null,
-    DiscussionPublicationReadiness? DiscussionReadiness = null)
+    DiscussionPublicationReadiness? DiscussionReadiness = null,
+    DiscussionCorpusSummary? DiscussionCorpus = null)
 {
     public const string FileName = "site-manifest.json";
 
@@ -71,7 +72,8 @@ public sealed record TicketSiteManifest(
             discussionPresentation?.SiteName,
             discussionPresentation?.JiraSourceLastSuccessfulRefreshAt,
             discussionPresentation?.RendererSchemaVersion,
-            discussionPresentation?.Readiness);
+            discussionPresentation?.Readiness,
+            discussionPresentation?.CorpusSummary);
         return new(
             siteKind,
             descriptor.ProcessorKind,
@@ -99,7 +101,8 @@ public sealed record TicketSiteManifest(
             discussionPresentation?.SiteName,
             discussionPresentation?.JiraSourceLastSuccessfulRefreshAt,
             discussionPresentation?.RendererSchemaVersion,
-            discussionPresentation?.Readiness);
+            discussionPresentation?.Readiness,
+            discussionPresentation?.CorpusSummary);
     }
 
     internal static string ComputeBuildIdentity(
@@ -112,7 +115,8 @@ public sealed record TicketSiteManifest(
         string? displayTitle = null,
         DateTimeOffset? jiraSourceLastSuccessfulRefreshAt = null,
         int? rendererSchemaVersion = null,
-        DiscussionPublicationReadiness? discussionReadiness = null)
+        DiscussionPublicationReadiness? discussionReadiness = null,
+        DiscussionCorpusSummary? discussionCorpus = null)
     {
         List<string> coordinates =
         [
@@ -128,7 +132,8 @@ public sealed record TicketSiteManifest(
         if (displayTitle is not null ||
             jiraSourceLastSuccessfulRefreshAt is not null ||
             rendererSchemaVersion is not null ||
-            discussionReadiness is not null)
+            discussionReadiness is not null ||
+            discussionCorpus is not null)
         {
             coordinates.Add("display-title=" + (displayTitle ?? string.Empty));
             coordinates.Add(
@@ -146,6 +151,12 @@ public sealed record TicketSiteManifest(
                     ? string.Empty
                     : TicketSitePresentationJson.Serialize(
                         discussionReadiness)));
+        }
+        if (discussionCorpus is not null)
+        {
+            coordinates.Add(
+                "discussion-corpus=" +
+                TicketSitePresentationJson.Serialize(discussionCorpus));
         }
         string input = string.Join("\n", coordinates);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(input)))

@@ -61,12 +61,15 @@ public sealed class TicketSitePublisherTests : IDisposable
             result.Manifest.EmbeddedDbSha256);
         Assert.Equal(pair.Descriptor.ReceiptCount, result.Manifest.IncludedReceiptCount);
         Assert.Equal("Tickets for Discussion", result.Manifest.Title);
-        Assert.Equal("Tickets for Discussion", result.Manifest.DisplayTitle);
+        Assert.Equal("Tickets for Discussion - Sept 5, 2026", result.Manifest.DisplayTitle);
         Assert.Null(result.Manifest.JiraSourceLastSuccessfulRefreshAt);
         Assert.Equal(
             DiscussionRendererSchema.Version,
             result.Manifest.RendererSchemaVersion);
         Assert.NotNull(result.Manifest.DiscussionReadiness);
+        Assert.NotNull(result.Manifest.DiscussionCorpus);
+        Assert.Equal(DiscussionDateCoverage.Complete, result.Manifest.DiscussionCorpus.DateCoverage);
+        Assert.Equal(1, result.Manifest.DiscussionCorpus.ValidJiraUpdatedAtCount);
         Assert.False(result.Manifest.DiscussionReadiness.IsReady);
         Assert.Contains(
             result.Manifest.DiscussionReadiness.Reasons,
@@ -334,6 +337,12 @@ public sealed class TicketSitePublisherTests : IDisposable
         VerifiedAuthoringSnapshotPair pair =
             await fixture.CreateVerifiedPairAsync("Preparer");
         string output = Path.Combine(_root, "qualified-discussion");
+        byte[] originalDatabase = await File.ReadAllBytesAsync(pair.DatabasePath);
+        byte[] originalDescriptor = await File.ReadAllBytesAsync(pair.DescriptorPath);
+        string pairManifestPath = Path.Combine(
+            Assert.IsType<string>(Path.GetDirectoryName(pair.DatabasePath)),
+            AuthoringSnapshotPairManifest.ReadyFileName);
+        byte[] originalPairManifest = await File.ReadAllBytesAsync(pairManifestPath);
 
         TicketSitePublishResult result =
             await new TicketSitePublisher().PublishAsync(
@@ -346,7 +355,7 @@ public sealed class TicketSitePublisherTests : IDisposable
         DateTimeOffset expectedRefresh =
             new(2026, 9, 10, 23, 30, 0, TimeSpan.Zero);
         const string expectedTitle =
-            "Tickets for Discussion - Built September 10, 2026";
+            "Tickets for Discussion - Sept 6, 2026";
         Assert.Equal("Tickets for Discussion", result.Manifest.Title);
         Assert.Equal(expectedTitle, result.Manifest.DisplayTitle);
         Assert.Equal(
@@ -356,6 +365,17 @@ public sealed class TicketSitePublisherTests : IDisposable
         Assert.Equal(DiscussionRendererSchema.Version, result.Manifest.RendererSchemaVersion);
         Assert.Equal(2, result.Manifest.IncludedItemCount);
         Assert.Equal(2, result.Manifest.IncludedReceiptCount);
+        DiscussionCorpusSummary corpus = Assert.IsType<DiscussionCorpusSummary>(
+            result.Manifest.DiscussionCorpus);
+        Assert.Equal(2, corpus.TicketCount);
+        Assert.Equal(2, corpus.ExportedProjectCount);
+        Assert.Equal(2, corpus.ValidJiraUpdatedAtCount);
+        Assert.Equal(DiscussionDateCoverage.Complete, corpus.DateCoverage);
+        Assert.Equal(0, corpus.TicketsWithPublicReporter);
+        Assert.NotEqual(result.Manifest.GeneratedAt.Date, corpus.MaxJiraUpdatedAt?.Date);
+        Assert.Equal(originalDatabase, await File.ReadAllBytesAsync(pair.DatabasePath));
+        Assert.Equal(originalDescriptor, await File.ReadAllBytesAsync(pair.DescriptorPath));
+        Assert.Equal(originalPairManifest, await File.ReadAllBytesAsync(pairManifestPath));
 
         string discussionHtml = await File.ReadAllTextAsync(Path.Combine(
             output,
@@ -365,6 +385,29 @@ public sealed class TicketSitePublisherTests : IDisposable
             $"<h1>{expectedTitle}</h1>",
             discussionHtml,
             StringComparison.Ordinal);
+        Assert.Contains($"<title>{expectedTitle}</title>", discussionHtml, StringComparison.Ordinal);
+        TicketSitePresentation injected = ReadPresentation(discussionHtml);
+        Assert.Equal(expectedTitle, injected.SiteName);
+        Assert.Equal(
+            TicketSitePresentationJson.Serialize(corpus),
+            TicketSitePresentationJson.Serialize(injected.CorpusSummary));
+        string rendererPath = Path.Combine(_root, "qualified-renderer.db");
+        try
+        {
+            await File.WriteAllBytesAsync(rendererPath, await ExtractEmbeddedDatabaseAsync(discussionHtml));
+            Assert.Equal(3L, await ScalarAsync<long>(rendererPath,
+                "SELECT RendererSchemaVersion FROM site_metadata"));
+            Assert.Equal(expectedTitle, await ScalarAsync<string>(rendererPath,
+                "SELECT SiteName FROM site_metadata"));
+            Assert.Equal(TicketSitePresentationJson.Serialize(corpus),
+                await ScalarAsync<string>(rendererPath, "SELECT CorpusSummaryJson FROM site_metadata"));
+            Assert.Equal(TicketSnapshotFixture.SecondJiraUpdatedAt,
+                await ScalarAsync<string>(rendererPath, "SELECT MAX(JiraUpdatedAt) FROM tickets"));
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(rendererPath);
+        }
         Assert.Contains(
             JsonEncodedText.Encode(expectedTitle).ToString(),
             discussionHtml,
@@ -391,7 +434,7 @@ public sealed class TicketSitePublisherTests : IDisposable
     [InlineData(1, false)]
     [InlineData(2, true)]
     [InlineData(3, true)]
-    public async Task UnprovenancedDiscussionUsesUnsuffixedTitle(
+    public async Task UnprovenancedDiscussionStillUsesCompleteTicketDates(
         int schemaVersion,
         bool includeNullProvenance)
     {
@@ -414,9 +457,11 @@ public sealed class TicketSitePublisherTests : IDisposable
                     "Tickets for Discussion"));
 
         Assert.Equal(
-            "Tickets for Discussion",
+            "Tickets for Discussion - Sept 5, 2026",
             result.Manifest.DisplayTitle);
         Assert.Null(result.Manifest.JiraSourceLastSuccessfulRefreshAt);
+        Assert.Equal(DiscussionDateCoverage.Complete, result.Manifest.DiscussionCorpus?.DateCoverage);
+        Assert.False(result.Manifest.DiscussionReadiness?.IsReady);
     }
 
     [Fact]
@@ -472,6 +517,10 @@ public sealed class TicketSitePublisherTests : IDisposable
                     "Tickets"));
         Assert.False(degraded.Manifest.DiscussionReadiness?.IsReady);
         Assert.Null(degraded.Manifest.JiraSourceLastSuccessfulRefreshAt);
+        Assert.Equal("Tickets - Sept 5, 2026", ready.Manifest.DisplayTitle);
+        Assert.Equal(ready.Manifest.DisplayTitle, degraded.Manifest.DisplayTitle);
+        Assert.Equal(TicketSitePresentationJson.Serialize(ready.Manifest.DiscussionCorpus!),
+            TicketSitePresentationJson.Serialize(degraded.Manifest.DiscussionCorpus!));
         Assert.Contains(
             degraded.Manifest.DiscussionReadiness!.Reasons,
             reason => reason.Code ==
@@ -483,6 +532,156 @@ public sealed class TicketSitePublisherTests : IDisposable
                 DiscussionPublicationReadinessReasonCodes
                     .InvalidRefreshProof,
                 StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(null, null, "none", 0)]
+    [InlineData(TicketSnapshotFixture.FirstJiraUpdatedAt, null, "partial", 1)]
+    [InlineData(null, TicketSnapshotFixture.SecondJiraUpdatedAt, "partial", 1)]
+    public async Task IncompleteTicketDatesPublishCoverageWithoutDateSuffix(
+        string? firstDate, string? secondDate, string coverage, int validDates)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root, includeSecondTicket: true, schemaVersion: 3,
+                firstJiraUpdatedAt: firstDate, secondJiraUpdatedAt: secondDate);
+        VerifiedAuthoringSnapshotPair pair = await fixture.CreateVerifiedPairAsync("Preparer");
+        TicketSitePublishResult result = await new TicketSitePublisher().PublishAsync(
+            new(pair, TicketSiteKind.Discussion, Path.Combine(_root, "incomplete-dates"), "Tickets"));
+
+        Assert.Equal("Tickets", result.Manifest.DisplayTitle);
+        Assert.Equal(coverage, result.Manifest.DiscussionCorpus?.DateCoverage);
+        Assert.Equal(validDates, result.Manifest.DiscussionCorpus?.ValidJiraUpdatedAtCount);
+        Assert.Equal(2, result.Manifest.DiscussionCorpus?.TicketCount);
+        Assert.NotNull(result.Manifest.JiraSourceLastSuccessfulRefreshAt);
+        Assert.Contains(result.Warnings, warning => warning.Contains(
+            $"update-date coverage is {coverage}", StringComparison.Ordinal));
+        string html = await File.ReadAllTextAsync(Path.Combine(result.SiteOutputPath, "index.html"));
+        Assert.Equal(TicketSitePresentationJson.Serialize(result.Manifest.DiscussionCorpus!),
+            TicketSitePresentationJson.Serialize(ReadPresentation(html).CorpusSummary));
+        Assert.Contains("<title>Tickets</title>", html, StringComparison.Ordinal);
+        Assert.Contains("<h1>Tickets</h1>", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DiscussionBuildIdentityBindsCorpusSummaryIndependentlyOfDatabaseDigest()
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(_root, schemaVersion: 3);
+        VerifiedAuthoringSnapshotPair pair = await fixture.CreateVerifiedPairAsync("Preparer");
+        TicketSitePublishResult result = await new TicketSitePublisher().PublishAsync(
+            new(pair, TicketSiteKind.Discussion, Path.Combine(_root, "corpus-identity"), "Tickets"));
+        TicketSiteManifest manifest = result.Manifest;
+        DiscussionCorpusSummary corpus = Assert.IsType<DiscussionCorpusSummary>(manifest.DiscussionCorpus);
+
+        string Identity(DiscussionCorpusSummary? summary) =>
+            TicketSiteManifest.ComputeBuildIdentity(
+                manifest.SiteKind, ResolvedFilters.None, manifest.Title,
+                manifest.RendererAssetsVersion, manifest.SnapshotSha256,
+                manifest.EmbeddedDbSha256, manifest.DisplayTitle,
+                manifest.JiraSourceLastSuccessfulRefreshAt,
+                manifest.RendererSchemaVersion, manifest.DiscussionReadiness, summary);
+        Assert.Equal(manifest.BuildIdentity, Identity(corpus));
+        Assert.NotEqual(manifest.BuildIdentity, Identity(null));
+        Assert.NotEqual(manifest.BuildIdentity, Identity(corpus with { TicketsWithPublicReporter = 0 }));
+        Assert.NotEqual(manifest.BuildIdentity, Identity(corpus with
+        {
+            MaxJiraUpdatedAt = corpus.MaxJiraUpdatedAt?.AddTicks(1),
+        }));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("2026-09-15T01:00:00")]
+    [InlineData("invalid-date")]
+    public async Task MalformedSelfDateAbortsAndPreservesPublishedSiteAndInputPair(string date)
+    {
+        string output = Path.Combine(_root, "date-refusal");
+        TicketSnapshotFixture original =
+            await TicketSnapshotFixture.CreatePreparerAsync(_root, schemaVersion: 3);
+        VerifiedAuthoringSnapshotPair originalPair =
+            await original.CreateVerifiedPairAsync("Preparer");
+        TicketSitePublishResult published = await new TicketSitePublisher().PublishAsync(
+            new(originalPair, TicketSiteKind.Discussion, output, "Tickets"));
+        string indexPath = Path.Combine(published.SiteOutputPath, "index.html");
+        string manifestPath = Path.Combine(published.SiteOutputPath, TicketSiteManifest.FileName);
+        byte[] originalHtml = await File.ReadAllBytesAsync(indexPath);
+        byte[] originalManifest = await File.ReadAllBytesAsync(manifestPath);
+
+        TicketSnapshotFixture invalid =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root, sequence: 2, schemaVersion: 3, firstJiraUpdatedAt: date);
+        VerifiedAuthoringSnapshotPair invalidPair = await invalid.CreateVerifiedPairAsync("Preparer");
+        byte[] inputDatabase = await File.ReadAllBytesAsync(invalidPair.DatabasePath);
+        byte[] inputDescriptor = await File.ReadAllBytesAsync(invalidPair.DescriptorPath);
+        TicketSitePublishException exception =
+            await Assert.ThrowsAsync<TicketSitePublishException>(() =>
+                new TicketSitePublisher().PublishAsync(
+                    new(invalidPair, TicketSiteKind.Discussion, output, "Tickets")));
+        Assert.Contains("UpdatedAt", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(originalHtml, await File.ReadAllBytesAsync(indexPath));
+        Assert.Equal(originalManifest, await File.ReadAllBytesAsync(manifestPath));
+        Assert.Equal(inputDatabase, await File.ReadAllBytesAsync(invalidPair.DatabasePath));
+        Assert.Equal(inputDescriptor, await File.ReadAllBytesAsync(invalidPair.DescriptorPath));
+    }
+
+    [Theory]
+    [InlineData("heading")]
+    [InlineData("html-title")]
+    [InlineData("injected-summary")]
+    [InlineData("manifest-summary")]
+    [InlineData("missing-summary")]
+    public async Task StageValidationRejectsDiscussionSurfaceDriftAndPreservesPreviousPublication(string surface)
+    {
+        string output = Path.Combine(_root, "surface-drift");
+        TicketSnapshotFixture original =
+            await TicketSnapshotFixture.CreatePreparerAsync(_root, schemaVersion: 3);
+        VerifiedAuthoringSnapshotPair originalPair = await original.CreateVerifiedPairAsync("Preparer");
+        TicketSitePublishResult published = await new TicketSitePublisher().PublishAsync(
+            new(originalPair, TicketSiteKind.Discussion, output, "Tickets"));
+        string indexPath = Path.Combine(published.SiteOutputPath, "index.html");
+        string manifestPath = Path.Combine(published.SiteOutputPath, TicketSiteManifest.FileName);
+        string chooserPath = Path.Combine(output, "index.html");
+        byte[] originalHtml = await File.ReadAllBytesAsync(indexPath);
+        byte[] originalManifest = await File.ReadAllBytesAsync(manifestPath);
+        byte[] originalChooser = await File.ReadAllBytesAsync(chooserPath);
+        TicketSnapshotFixture next =
+            await TicketSnapshotFixture.CreatePreparerAsync(_root, sequence: 2, schemaVersion: 3);
+        VerifiedAuthoringSnapshotPair nextPair = await next.CreateVerifiedPairAsync("Preparer");
+        TicketSitePublisher publisher = new(new TicketSitePublisherTestHooks(
+            BeforeStageValidationAsync: async (staging, token) =>
+            {
+                if (surface is "manifest-summary" or "missing-summary")
+                {
+                    TicketSiteManifest manifest = await TicketSiteManifest.ReadAsync(
+                        Path.Combine(staging, TicketSiteManifest.FileName), token);
+                    DiscussionCorpusSummary corpus = Assert.IsType<DiscussionCorpusSummary>(manifest.DiscussionCorpus);
+                    await TicketSiteManifest.WriteAsync(staging, manifest with
+                    {
+                        DiscussionCorpus = surface == "missing-summary"
+                            ? null
+                            : corpus with { TicketsWithPublicReporter = 0 },
+                    }, token);
+                    return;
+                }
+                string path = Path.Combine(staging, "index.html");
+                string html = await File.ReadAllTextAsync(path, token);
+                (string before, string after) = surface switch
+                {
+                    "heading" => ("<h1>Tickets - Sept 5, 2026</h1>", "<h1>Wrong heading</h1>"),
+                    "html-title" => ("<title>Tickets - Sept 5, 2026</title>", "<title>Wrong title</title>"),
+                    "injected-summary" => ("\"ticketsWithPublicReporter\":1", "\"ticketsWithPublicReporter\":0"),
+                    _ => throw new ArgumentOutOfRangeException(nameof(surface)),
+                };
+                Assert.Contains(before, html, StringComparison.Ordinal);
+                await File.WriteAllTextAsync(path, html.Replace(before, after, StringComparison.Ordinal), token);
+            }));
+        TicketSitePublishException exception = await Assert.ThrowsAsync<TicketSitePublishException>(() =>
+            publisher.PublishAsync(new(nextPair, TicketSiteKind.Discussion, output, "Tickets")));
+        Assert.Equal(TicketSitePublishFailure.Publication, exception.Failure);
+        Assert.Equal(originalHtml, await File.ReadAllBytesAsync(indexPath));
+        Assert.Equal(originalManifest, await File.ReadAllBytesAsync(manifestPath));
+        Assert.Equal(originalChooser, await File.ReadAllBytesAsync(chooserPath));
     }
 
     [Fact]
@@ -506,6 +705,22 @@ public sealed class TicketSitePublisherTests : IDisposable
         Assert.Null(result.Manifest.DisplayTitle);
         Assert.Null(result.Manifest.JiraSourceLastSuccessfulRefreshAt);
         Assert.Null(result.Manifest.RendererSchemaVersion);
+        Assert.Null(result.Manifest.DiscussionReadiness);
+        Assert.Null(result.Manifest.DiscussionCorpus);
+        Assert.Equal(1, result.Manifest.SnapshotSchemaVersion);
+        Assert.Equal("Tickets for Applying", result.Manifest.Title);
+        Assert.DoesNotContain("discussionCorpus", TicketSiteManifest.ToSummaryJson(result.Manifest),
+            StringComparison.Ordinal);
+        string applyingIdentityInput = string.Join("\n",
+            "site-kind=planner", "spec=", "project=", "wg=",
+            "title=Tickets for Applying",
+            "renderer-assets=" + result.Manifest.RendererAssetsVersion,
+            "source=" + result.Manifest.SnapshotSha256,
+            "embedded-db=" + result.Manifest.EmbeddedDbSha256);
+        Assert.Equal(
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(applyingIdentityInput)))
+                .ToLowerInvariant(),
+            result.Manifest.BuildIdentity);
         Assert.True(File.Exists(Path.Combine(
             output,
             "applying",
@@ -721,8 +936,7 @@ public sealed class TicketSitePublisherTests : IDisposable
                     string path = Path.Combine(staging, "index.html");
                     string html = await File.ReadAllTextAsync(path, token);
                     const string expected =
-                        "\"siteName\":\"Tickets for Discussion - Built " +
-                        "September 08, 2026\"";
+                        "\"siteName\":\"Tickets for Discussion - Sept 5, 2026\"";
                     Assert.Contains(expected, html, StringComparison.Ordinal);
                     await File.WriteAllTextAsync(
                         path,
@@ -774,7 +988,7 @@ public sealed class TicketSitePublisherTests : IDisposable
         string chooserPath = Path.Combine(output, "index.html");
         string chooser = await File.ReadAllTextAsync(chooserPath);
         Assert.Contains(
-            "&lt;Tickets &amp; Discussion&gt; - Built September 08, 2026",
+            "&lt;Tickets &amp; Discussion&gt; - Sept 5, 2026",
             chooser,
             StringComparison.Ordinal);
         Assert.DoesNotContain(
@@ -793,6 +1007,7 @@ public sealed class TicketSitePublisherTests : IDisposable
         Assert.True(oldManifest.Remove("jiraSourceLastSuccessfulRefreshAt"));
         Assert.True(oldManifest.Remove("rendererSchemaVersion"));
         Assert.True(oldManifest.Remove("discussionReadiness"));
+        Assert.True(oldManifest.Remove("discussionCorpus"));
         await File.WriteAllTextAsync(
             discussionManifestPath,
             oldManifest.ToJsonString(JsonOptions));
@@ -802,6 +1017,7 @@ public sealed class TicketSitePublisherTests : IDisposable
         Assert.Null(deserializedOldManifest.JiraSourceLastSuccessfulRefreshAt);
         Assert.Null(deserializedOldManifest.RendererSchemaVersion);
         Assert.Null(deserializedOldManifest.DiscussionReadiness);
+        Assert.Null(deserializedOldManifest.DiscussionCorpus);
         await new TicketSitePublisher().PublishAsync(
             new TicketSitePublishRequest(
                 plannerPair,
@@ -902,6 +1118,9 @@ public sealed class TicketSitePublisherTests : IDisposable
             Assert.Contains(rendererTable, appScript, StringComparison.Ordinal);
         }
         Assert.DoesNotContain("prepared_", appScript, StringComparison.Ordinal);
+        Assert.Contains("rendererSchemaVersion !== 3", appScript, StringComparison.Ordinal);
+        Assert.Contains("CorpusSummaryJson", appScript, StringComparison.Ordinal);
+        Assert.Contains("JSON.stringify(presentation.corpusSummary)", appScript, StringComparison.Ordinal);
         Assert.Contains(
             "resolveFacetValueKey",
             appScript,
@@ -1699,6 +1918,17 @@ public sealed class TicketSitePublisherTests : IDisposable
                 cancellation.Token));
 
         Assert.False(Directory.Exists(output));
+    }
+
+    private static TicketSitePresentation ReadPresentation(string html)
+    {
+        const string marker = "<script id=\"site-presentation\" type=\"application/json\">";
+        int start = html.IndexOf(marker, StringComparison.Ordinal);
+        Assert.True(start >= 0);
+        start += marker.Length;
+        int end = html.IndexOf("</script>", start, StringComparison.Ordinal);
+        Assert.True(end > start);
+        return TicketSitePresentationJson.Deserialize(html[start..end]);
     }
 
     private static async Task<string> ReadEmbeddedResourceAsync(string name)

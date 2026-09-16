@@ -1,4 +1,4 @@
-// Tickets for Discussion SPA. The browser reads only renderer schema v2.
+// Tickets for Discussion SPA. The browser reads only renderer schema v3.
 (function () {
   'use strict';
 
@@ -24,7 +24,7 @@
     var element = document.getElementById('site-presentation');
     if (!element) throw new Error('Discussion presentation data is missing.');
     var value = JSON.parse(element.textContent || '');
-    if (!value || value.rendererSchemaVersion !== 2 ||
+    if (!value || value.rendererSchemaVersion !== 3 ||
         typeof value.siteName !== 'string' ||
         typeof value.baseTitle !== 'string') {
       throw new Error('Discussion presentation data is invalid.');
@@ -35,6 +35,15 @@
     if (!value.readiness || typeof value.readiness !== 'object' ||
         !Array.isArray(value.readiness.reasons)) {
       throw new Error('Discussion publication readiness is missing.');
+    }
+    if (!value.corpusSummary || typeof value.corpusSummary !== 'object' ||
+        !Array.isArray(value.corpusSummary.linksByKind) ||
+        typeof value.corpusSummary.ticketCount !== 'number' ||
+        typeof value.corpusSummary.exportedProjectCount !== 'number' ||
+        typeof value.corpusSummary.validJiraUpdatedAtCount !== 'number' ||
+        ['empty', 'none', 'partial', 'complete'].indexOf(
+          value.corpusSummary.dateCoverage) < 0) {
+      throw new Error('Discussion corpus summary is missing or invalid.');
     }
     return value;
   }
@@ -212,7 +221,7 @@
         loadFacetCatalog();
         var metadata = query(
           'SELECT RendererSchemaVersion, BaseTitle, SiteName, ' +
-          'JiraSourceLastSuccessfulRefreshAt, ReadinessJson, FilterSpecification, ' +
+          'JiraSourceLastSuccessfulRefreshAt, ReadinessJson, CorpusSummaryJson, FilterSpecification, ' +
           'FilterProject, FilterWorkGroup FROM site_metadata',
           null).rows;
         if (metadata.length !== 1 ||
@@ -221,7 +230,17 @@
             String(metadata[0].BaseTitle) !== presentation.baseTitle ||
             String(metadata[0].SiteName) !== presentation.siteName ||
             JSON.stringify(JSON.parse(String(metadata[0].ReadinessJson))) !==
-              JSON.stringify(presentation.readiness)) {
+              JSON.stringify(presentation.readiness) ||
+            JSON.stringify(JSON.parse(String(metadata[0].CorpusSummaryJson))) !==
+              JSON.stringify(presentation.corpusSummary) ||
+            metadata[0].FilterSpecification !== (presentation.filters.specification || null) ||
+            metadata[0].FilterProject !== (presentation.filters.project || null) ||
+            metadata[0].FilterWorkGroup !== (presentation.filters.workGroup || null) ||
+            (metadata[0].JiraSourceLastSuccessfulRefreshAt == null
+              ? presentation.jiraSourceLastSuccessfulRefreshAt != null
+              : presentation.jiraSourceLastSuccessfulRefreshAt == null ||
+                Date.parse(metadata[0].JiraSourceLastSuccessfulRefreshAt) !==
+                  Date.parse(presentation.jiraSourceLastSuccessfulRefreshAt))) {
           throw new Error(
             'The embedded discussion database does not match its presentation.');
         }

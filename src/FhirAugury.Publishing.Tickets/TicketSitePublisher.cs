@@ -153,6 +153,42 @@ public sealed class TicketSitePublisher : ITicketSitePublisher
                                 .Select(reason => reason.Code)) +
                         ".");
                 }
+                DiscussionCorpusSummary corpus =
+                    rendererValidation.Presentation.CorpusSummary;
+                if (corpus.DateCoverage != DiscussionDateCoverage.Complete)
+                {
+                    RecordWarning(
+                        warnings,
+                        $"Warning: discussion Jira update-date coverage is {corpus.DateCoverage}: " +
+                        $"{corpus.ValidJiraUpdatedAtCount}/{corpus.TicketCount} tickets have valid self-ticket dates. " +
+                        "The ticket-date title suffix is omitted.");
+                }
+                if (corpus.TicketsWithPublicReporter < corpus.TicketCount ||
+                    corpus.TicketsWithPublicAssignee < corpus.TicketCount ||
+                    corpus.TicketsWithPublicRequester < corpus.TicketCount)
+                {
+                    RecordWarning(
+                        warnings,
+                        "Warning: discussion public-name coverage: " +
+                        $"reporter={corpus.TicketsWithPublicReporter}/{corpus.TicketCount}, " +
+                        $"assignee={corpus.TicketsWithPublicAssignee}/{corpus.TicketCount}, " +
+                        $"in-person requester={corpus.TicketsWithPublicRequester}/{corpus.TicketCount}. " +
+                        "Missing names do not establish that a role is absent.");
+                }
+                foreach (DiscussionLinkCoverage links in corpus.LinksByKind)
+                {
+                    if (links.UnresolvedWithRetainedSafeLinks > 0 ||
+                        links.WithoutUsableUrl > 0)
+                    {
+                        RecordWarning(
+                            warnings,
+                            $"Warning: discussion {links.Kind} link coverage: " +
+                            $"{links.ResolvedSafeLinks}/{links.TotalRows} resolved safe links, " +
+                            $"{links.UnresolvedWithRetainedSafeLinks} unresolved with retained safe URLs, " +
+                            $"{links.WithoutUsableUrl} without usable URLs. " +
+                            "A safe URL alone does not establish source backing.");
+                    }
+                }
             }
             else
             {
