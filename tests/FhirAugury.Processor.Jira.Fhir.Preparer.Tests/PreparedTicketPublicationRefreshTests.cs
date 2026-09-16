@@ -681,6 +681,323 @@ public sealed class PreparedTicketPublicationRefreshTests
     }
 
     [Theory]
+    [InlineData(1, null, null, "unattributed", "unattributed")]
+    [InlineData(2, null, null, "unattributed", "unattributed")]
+    [InlineData(3, null, null, "unattributed", "unattributed")]
+    [InlineData(3, "", "", "unattributed", "unattributed")]
+    [InlineData(3, "   ", "   ", "unattributed", "unattributed")]
+    [InlineData(3, null, "fhir-i", "fhir-i", "fhir-i")]
+    [InlineData(3, "   ", " fhir-i ", "fhir-i", "fhir-i")]
+    [InlineData(3, " FHIR Infrastructure ", "fhir-i", "fhir-i", "FHIR Infrastructure")]
+    public async Task ProtectionReadsNullableNoTopicWorkgroups(
+        int schemaVersion,
+        string? workGroup,
+        string? workGroupClean,
+        string expectedClean,
+        string expectedDisplay)
+    {
+        string[] ticketKeys = ["FHIR-10041", "FHIR-10042"];
+        using Fixture fixture = new(schemaVersion: schemaVersion);
+        SourceResult source = string.IsNullOrEmpty(workGroupClean)
+            ? await CreateNoTopicWorkgroupSourceAsync(fixture, workGroup, workGroupClean, ticketKeys)
+            : await CreateNoTopicReaderSourceAsync(fixture, schemaVersion, workGroup, workGroupClean, ticketKeys);
+        string path = Path.Combine(fixture.SnapshotDirectory, source.Descriptor.FileName);
+        string digest = await SqliteReviewSnapshotWriter.ComputeSha256Async(path);
+        Assert.Equal(source.Descriptor.Sha256, digest);
+        Assert.False(File.Exists(path + "-wal"));
+        Assert.False(File.Exists(path + "-shm"));
+        using (SqliteConnection connection = fixture.Database.OpenConnection())
+        {
+            AssertStoredSelfWorkgroups(connection, ticketKeys, workGroup, workGroupClean);
+            AssertNoStoredTopics(connection);
+        }
+        await using (SqliteConnection snapshot = await SqliteReviewSnapshotValidator.OpenReadOnlyAsync(path))
+        {
+            AssertStoredSelfWorkgroups(snapshot, ticketKeys, workGroup, workGroupClean);
+            AssertNoStoredTopics(snapshot);
+        }
+
+        PreparedTicketPublicationBaseline? baseline = null;
+        Exception? readError = await Record.ExceptionAsync(async () =>
+        {
+            baseline = await fixture.CreateBaselineReader().ReadAsync(source.Run.Id);
+        });
+        Assert.True(readError is null, readError is PreparedTicketPublicationProtectionException protectionError
+            ? $"{protectionError.FailureCode}: {protectionError}"
+            : readError?.ToString());
+        Assert.NotNull(baseline);
+        PreparedTicketPublicationProtectedInventory current = await fixture.ReadCurrentAsync();
+        PreparedTicketPublicationProtectedInventory reverse = await fixture.ReadCurrentAsync(reverseEnumeration: true);
+
+        Assert.Equal(source.Run.Id, baseline.Source.RunId);
+        Assert.Equal(source.Descriptor.SnapshotId, baseline.Source.SnapshotId);
+        Assert.Equal(digest, baseline.Source.SnapshotSha256);
+        Assert.Equal(schemaVersion, baseline.Source.SchemaVersion);
+        Assert.Equal(schemaVersion, baseline.Inventory.SchemaVersion);
+        Assert.Equal(2, baseline.Source.ExportedTicketCount);
+        IReadOnlyList<AuthoringRunItemRecord> sourceItems = await fixture.Store.GetRunItemsAsync(source.Run.Id);
+        Assert.Equal(2, sourceItems.Count);
+        PreparedTicketPublicationCorpusItem[] expectedCorpus = ticketKeys.Select(key =>
+            new PreparedTicketPublicationCorpusItem(
+                key, source.ReceiptIds[key],
+                Assert.Single(sourceItems, item => item.BusinessKey == key).Id,
+                source.Run.Id, "fhir", source.ExpectedRevisions[key])).ToArray();
+        string expectedCorpusFingerprint = PreparedTicketPublicationContract.ComputeCorpusFingerprint(expectedCorpus);
+        string expectedPartitionKey = $"{expectedClean}\u001fFHIR\u001fChange Request";
+        PreparedTicketGroupingPayload expectedPayload = new()
+        {
+            WorkGroupClean = expectedClean,
+            WorkGroupDisplay = expectedDisplay,
+            Specification = "FHIR",
+            Type = "Change Request",
+            Topics = [],
+        };
+        PreparedTicketPublicationProtectedGroupingFingerprint expectedGrouping = new(
+            expectedPartitionKey,
+            expectedCorpusFingerprint,
+            PreparedTicketPublicationContract.ComputeGroupingPartitionFingerprint(expectedPayload),
+            PreparedTicketPublicationEnrichmentContract.ComputeProtectedContentFingerprint(
+                Array.Empty<PreparedTicketPublicationProtectedRow>()));
+        foreach (PreparedTicketPublicationProtectedInventory inventory in new[] { baseline.Inventory, current, reverse })
+        {
+            Assert.Equal(expectedCorpus, inventory.Corpus.OrderBy(item => item.TicketKey, StringComparer.Ordinal).ToArray());
+            Assert.Equal(expectedCorpusFingerprint, inventory.CorpusFingerprint);
+            PreparedTicketPublicationProtectedGrouping partition = Assert.Single(inventory.Grouping);
+            Assert.Equal(expectedPartitionKey, partition.PartitionKey);
+            Assert.Equal(expectedCorpus, partition.Corpus.OrderBy(item => item.TicketKey, StringComparer.Ordinal).ToArray());
+            Assert.Empty(partition.Rows);
+            Assert.Equal(expectedGrouping, partition.Fingerprint);
+            AssertProtectedSelfWorkgroups(inventory, ticketKeys, workGroup, workGroupClean);
+        }
+        PreparedTicketPublicationPreservationComparison comparison =
+            PreparedTicketPublicationProtectionReader.Compare(baseline, current);
+        Assert.Equal(new AuthoringRunCorpusComparison(source.Descriptor.SnapshotId, 2, 2, 0), comparison.CorpusComparison);
+        Assert.Empty(comparison.AdditionalTicketKeys);
+        Assert.Empty(comparison.AdditionalGroupingPartitions);
+        Assert.Equal(current.CorpusFingerprint, reverse.CorpusFingerprint);
+        Assert.Equal(current.ProtectedContentFingerprint, reverse.ProtectedContentFingerprint);
+        Assert.Equal(current.RetainedGroupingFingerprint, reverse.RetainedGroupingFingerprint);
+        Assert.Equal(
+            PreparedTicketPublicationEnrichmentContract.SerializeInput(
+                PreparedTicketPublicationProtectionReader.CreateRecipeInput(baseline, current)),
+            PreparedTicketPublicationEnrichmentContract.SerializeInput(
+                PreparedTicketPublicationProtectionReader.CreateRecipeInput(baseline, reverse)));
+
+        using (SqliteConnection connection = fixture.Database.OpenConnection())
+        {
+            AssertStoredSelfWorkgroups(connection, ticketKeys, workGroup, workGroupClean);
+            AssertNoStoredTopics(connection);
+        }
+        Assert.Equal(digest, await SqliteReviewSnapshotWriter.ComputeSha256Async(path));
+        Assert.False(File.Exists(path + "-wal"));
+        Assert.False(File.Exists(path + "-shm"));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("unattributed")]
+    public async Task NullableWorkgroupDriftStillRefusesProtectionAndAdmission(string workGroup)
+    {
+        string[] ticketKeys = ["FHIR-10043", "FHIR-10044"];
+        using Fixture fixture = new();
+        SourceResult source = await CreateNoTopicWorkgroupSourceAsync(fixture, null, null, ticketKeys);
+        PreparedTicketPublicationBaseline baseline = await fixture.CreateBaselineReader().ReadAsync(source.Run.Id);
+        PreparedTicketPublicationProtectedInventory before = await fixture.ReadCurrentAsync();
+        PreparedTicketPublicationEnrichmentInput input =
+            PreparedTicketPublicationProtectionReader.CreateRecipeInput(baseline, before);
+        PreparedTicketPublicationProtectionReader.ValidateFrozen(input, before);
+        AssertProtectedSelfWorkgroups(baseline.Inventory, ticketKeys, null, null);
+        AssertProtectedSelfWorkgroups(before, ticketKeys, null, null);
+
+        Assert.Equal(1, fixture.Execute(
+            """
+            UPDATE prepared_jira_hydration SET WorkGroup = @workGroup
+            WHERE TicketKey = @ticketKey AND JiraKey = TicketKey
+            """,
+            ("@workGroup", workGroup), ("@ticketKey", ticketKeys[0])));
+        string metadataBefore = fixture.ReadPublicationMetadataState();
+        PreparedTicketPublicationProtectedInventory current = await fixture.ReadCurrentAsync();
+
+        Assert.Equal(before.CorpusFingerprint, current.CorpusFingerprint);
+        Assert.Equal(
+            Assert.Single(baseline.Inventory.Grouping).Fingerprint,
+            Assert.Single(current.Grouping).Fingerprint);
+        Assert.Equal(before.RetainedGroupingFingerprint, current.RetainedGroupingFingerprint);
+        Assert.NotEqual(before.ProtectedContentFingerprint, current.ProtectedContentFingerprint);
+        AssertProtectedSelfWorkgroups(current, [ticketKeys[0]], workGroup, null);
+        AssertProtectedSelfWorkgroups(current, [ticketKeys[1]], null, null);
+        using (SqliteConnection connection = fixture.Database.OpenConnection())
+        {
+            AssertStoredSelfWorkgroups(connection, [ticketKeys[0]], workGroup, null);
+            AssertStoredSelfWorkgroups(connection, [ticketKeys[1]], null, null);
+            AssertNoStoredTopics(connection);
+        }
+        PreparedTicketPublicationProtectionException comparisonError =
+            Assert.Throws<PreparedTicketPublicationProtectionException>(() =>
+                PreparedTicketPublicationProtectionReader.Compare(baseline, current));
+        Assert.Equal(PreparedTicketPublicationRefreshFailureCodes.OriginalOutputChanged, comparisonError.FailureCode);
+        PreparedTicketPublicationProtectionException frozenError =
+            Assert.Throws<PreparedTicketPublicationProtectionException>(() =>
+                PreparedTicketPublicationProtectionReader.ValidateFrozen(input, current));
+        Assert.Equal(PreparedTicketPublicationRefreshFailureCodes.FrozenProtectionDrift, frozenError.FailureCode);
+        Assert.Equal(metadataBefore, fixture.ReadPublicationMetadataState());
+        await AssertAdmissionRefusedWithoutMutationAsync(
+            fixture, source, PreparedTicketPublicationRefreshFailureCodes.OriginalOutputChanged);
+        await AssertSourceSnapshotUnchangedAsync(fixture, source);
+    }
+
+    [Theory]
+    [InlineData("empty-type")]
+    [InlineData("whitespace-type")]
+    [InlineData("blob-display")]
+    [InlineData("disagreeing-displays")]
+    public async Task NullableNoTopicProjectionStillRejectsInvalidGraph(string change)
+    {
+        string[] ticketKeys = ["FHIR-10045", "FHIR-10046"];
+        using Fixture fixture = new();
+        SourceResult source = await CreateNoTopicWorkgroupSourceAsync(fixture, null, null, ticketKeys);
+        PreparedTicketPublicationBaseline baseline = await fixture.CreateBaselineReader().ReadAsync(source.Run.Id);
+        PreparedTicketPublicationProtectionReader.Compare(baseline, await fixture.ReadCurrentAsync());
+        AssertProtectedSelfWorkgroups(baseline.Inventory, ticketKeys, null, null);
+        (string column, object value, string detail) = change switch
+        {
+            "empty-type" => ("Type", "", "Grouping has invalid partition coordinates."),
+            "whitespace-type" => ("Type", "   ", "Grouping has invalid partition coordinates."),
+            "blob-display" => ("WorkGroup", (object)new byte[] { 70, 72, 73, 82 },
+                "Coordinate 'prepared_jira_hydration.WorkGroup' is not text."),
+            "disagreeing-displays" => ("WorkGroup", "FHIR Infrastructure",
+                "Grouping has no unique workgroup display value."),
+            _ => throw new InvalidOperationException("Unknown invalid-graph mutation."),
+        };
+        Assert.Equal(1, fixture.Execute(
+            $"""
+            UPDATE prepared_jira_hydration SET {column} = @value
+            WHERE TicketKey = @ticketKey AND JiraKey = TicketKey
+            """,
+            ("@value", value), ("@ticketKey", ticketKeys[0])));
+        using (SqliteConnection connection = fixture.Database.OpenConnection())
+        {
+            AssertNoStoredTopics(connection);
+            AssertStoredSelfWorkgroups(connection, [ticketKeys[1]], null, null);
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                $"""
+                SELECT typeof({column}) FROM prepared_jira_hydration
+                WHERE TicketKey = @ticketKey AND JiraKey = TicketKey
+                """;
+            command.Parameters.AddWithValue("@ticketKey", ticketKeys[0]);
+            Assert.Equal(change == "blob-display" ? "blob" : "text", command.ExecuteScalar());
+        }
+        string metadataBefore = fixture.ReadPublicationMetadataState();
+
+        PreparedTicketPublicationProtectionException error =
+            await Assert.ThrowsAsync<PreparedTicketPublicationProtectionException>(() => fixture.ReadCurrentAsync());
+
+        Assert.Equal(PreparedTicketPublicationRefreshFailureCodes.InvalidAcceptedGraph, error.FailureCode);
+        Assert.Equal(detail, error.Message);
+        Assert.Equal(metadataBefore, fixture.ReadPublicationMetadataState());
+        await AssertAdmissionRefusedWithoutMutationAsync(
+            fixture, source, PreparedTicketPublicationRefreshFailureCodes.InvalidAcceptedGraph);
+        await AssertSourceSnapshotUnchangedAsync(fixture, source);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task StoredTopicDisplaysRemainStrictAndAuthoritative(string? topicDisplay)
+    {
+        string[] ticketKeys = ["FHIR-10047", "FHIR-10048"];
+        using Fixture fixture = new(richGraph: true);
+        SourceResult source = await fixture.CreateSourceRunAsync(ticketKeys);
+        PreparedTicketPublicationBaseline baseline = await fixture.CreateBaselineReader().ReadAsync(source.Run.Id);
+        PreparedTicketPublicationProtectedInventory before = await fixture.ReadCurrentAsync();
+        PreparedTicketPublicationProtectionReader.Compare(baseline, before);
+        PreparedTicketPublicationProtectedGrouping partition = Assert.Single(before.Grouping);
+        Assert.Equal(Assert.Single(baseline.Inventory.Grouping).Fingerprint, partition.Fingerprint);
+        Assert.Equal(2, partition.Corpus.Count);
+        Assert.Single(partition.Rows, row => row.Table == "prepared_ticket_topics");
+        Assert.Single(partition.Rows, row => row.Table == "prepared_ticket_topic_groups");
+        Assert.Equal(2, partition.Rows.Count(row => row.Table == "prepared_ticket_topic_members"));
+        Assert.Equal(1, fixture.CountLive("prepared_ticket_topics"));
+        Assert.Equal(1, fixture.CountLive("prepared_ticket_topic_groups"));
+        Assert.Equal(2, fixture.CountLive("prepared_ticket_topic_members"));
+        AssertProtectedSelfWorkgroups(before, ticketKeys, "FHIR Infrastructure", "FHIRInfrastructure");
+        string groupingBefore = fixture.ReadAuthoredAndGroupingState();
+
+        Assert.Equal(1, fixture.Execute(
+            """
+            UPDATE prepared_jira_hydration SET WorkGroup = NULL
+            WHERE TicketKey = @ticketKey AND JiraKey = TicketKey
+            """,
+            ("@ticketKey", ticketKeys[0])));
+        PreparedTicketPublicationProtectedInventory withoutSelfDisplay = await fixture.ReadCurrentAsync();
+        Assert.Equal(partition.Fingerprint, Assert.Single(withoutSelfDisplay.Grouping).Fingerprint);
+        Assert.Equal(before.RetainedGroupingFingerprint, withoutSelfDisplay.RetainedGroupingFingerprint);
+        AssertProtectedSelfWorkgroups(withoutSelfDisplay, [ticketKeys[0]], null, "FHIRInfrastructure");
+        AssertProtectedSelfWorkgroups(withoutSelfDisplay, [ticketKeys[1]], "FHIR Infrastructure", "FHIRInfrastructure");
+        Assert.Equal(groupingBefore, fixture.ReadAuthoredAndGroupingState());
+        PreparedTicketPublicationProtectionException selfDrift =
+            Assert.Throws<PreparedTicketPublicationProtectionException>(() =>
+                PreparedTicketPublicationProtectionReader.Compare(baseline, withoutSelfDisplay));
+        Assert.Equal(PreparedTicketPublicationRefreshFailureCodes.OriginalOutputChanged, selfDrift.FailureCode);
+        await AssertAdmissionRefusedWithoutMutationAsync(
+            fixture, source, PreparedTicketPublicationRefreshFailureCodes.OriginalOutputChanged);
+
+        // Restore the self row so the independent refusal changes only actual stored topic output.
+        Assert.Equal(1, fixture.Execute(
+            """
+            UPDATE prepared_jira_hydration SET WorkGroup = @workGroup
+            WHERE TicketKey = @ticketKey AND JiraKey = TicketKey
+            """,
+            ("@workGroup", "FHIR Infrastructure"), ("@ticketKey", ticketKeys[0])));
+        Assert.Equal(before.ProtectedContentFingerprint, (await fixture.ReadCurrentAsync()).ProtectedContentFingerprint);
+        long topicRowId = fixture.Scalar<long>("SELECT RowId FROM prepared_ticket_topics");
+        if (topicDisplay is null && fixture.Scalar<int>(
+            """
+            SELECT "notnull" FROM pragma_table_info('prepared_ticket_topics')
+            WHERE name = 'WorkGroupDisplay'
+            """) == 1)
+        {
+            // The current schema rejects NULL before a reader can see it; do not relax that schema.
+            string metadataBeforeNull = fixture.ReadPublicationMetadataState();
+            SqliteException constraint = Assert.Throws<SqliteException>(() => fixture.Execute(
+                "UPDATE prepared_ticket_topics SET WorkGroupDisplay = @display WHERE RowId = @rowId",
+                ("@display", topicDisplay), ("@rowId", topicRowId)));
+            Assert.Equal(19, constraint.SqliteErrorCode);
+            Assert.Equal(1299, constraint.SqliteExtendedErrorCode);
+            Assert.Contains("prepared_ticket_topics.WorkGroupDisplay", constraint.Message, StringComparison.Ordinal);
+            Assert.Equal(metadataBeforeNull, fixture.ReadPublicationMetadataState());
+            Assert.Equal(groupingBefore, fixture.ReadAuthoredAndGroupingState());
+            PreparedTicketPublicationProtectedInventory unchanged = await fixture.ReadCurrentAsync();
+            PreparedTicketPublicationProtectionReader.Compare(baseline, unchanged);
+            Assert.Equal(before.ProtectedContentFingerprint, unchanged.ProtectedContentFingerprint);
+            Assert.Equal(before.RetainedGroupingFingerprint, unchanged.RetainedGroupingFingerprint);
+            await AssertSourceSnapshotUnchangedAsync(fixture, source);
+            return;
+        }
+        Assert.Equal(1, fixture.Execute(
+            "UPDATE prepared_ticket_topics SET WorkGroupDisplay = @display WHERE RowId = @rowId",
+            ("@display", topicDisplay), ("@rowId", topicRowId)));
+        Assert.Equal(topicDisplay is null ? "null" : "text",
+            fixture.Scalar<string>("SELECT typeof(WorkGroupDisplay) FROM prepared_ticket_topics"));
+        string metadataBefore = fixture.ReadPublicationMetadataState();
+
+        PreparedTicketPublicationProtectionException topicError =
+            await Assert.ThrowsAsync<PreparedTicketPublicationProtectionException>(() => fixture.ReadCurrentAsync());
+
+        Assert.Equal(PreparedTicketPublicationRefreshFailureCodes.InvalidAcceptedGraph, topicError.FailureCode);
+        Assert.Equal(topicDisplay is null
+            ? "Required coordinate 'prepared_ticket_topics.WorkGroupDisplay' is null."
+            : "Grouping has no unique workgroup display value.", topicError.Message);
+        Assert.Equal(metadataBefore, fixture.ReadPublicationMetadataState());
+        await AssertAdmissionRefusedWithoutMutationAsync(
+            fixture, source, PreparedTicketPublicationRefreshFailureCodes.InvalidAcceptedGraph);
+        await AssertSourceSnapshotUnchangedAsync(fixture, source);
+    }
+
+    [Theory]
     [InlineData("protected-value", PreparedTicketPublicationRefreshFailureCodes.OriginalOutputChanged)]
     [InlineData("grouping", PreparedTicketPublicationRefreshFailureCodes.OriginalGroupingChanged)]
     [InlineData("missing-parent", PreparedTicketPublicationRefreshFailureCodes.InvalidAcceptedGraph)]
@@ -751,6 +1068,207 @@ public sealed class PreparedTicketPublicationRefreshTests
         Assert.Equal(protectedBefore, fixture.ReadAuthoredAndGroupingState());
         Assert.Equal(4, fetcher.CallCount);
         Assert.Equal(2, fetcher.ZulipCallCount);
+    }
+
+    private static Task<SourceResult> CreateNoTopicWorkgroupSourceAsync(
+        Fixture fixture,
+        string? workGroup,
+        string? workGroupClean,
+        params string[] ticketKeys)
+    {
+        fixture.BeforeSourceSnapshot = _ => SetSelfWorkgroups(fixture, workGroup, workGroupClean, ticketKeys);
+        return fixture.CreateSourceRunAsync(ticketKeys);
+    }
+
+    private static async Task<SourceResult> CreateNoTopicReaderSourceAsync(
+        Fixture fixture,
+        int schemaVersion,
+        string? workGroup,
+        string? workGroupClean,
+        params string[] ticketKeys)
+    {
+        // These reader-only shapes hit ordinary grouping's separate canonical-clean boundary.
+        // Accept real outputs and write their first verified snapshot directly, without grouping
+        // stages, receipts, or certification. Null/null still uses ordinary finalization above.
+        AuthoringRunRecord run = await fixture.Store.CreateRunAsync(
+            "jira-fhir",
+            ticketKeys.Select(key => new AuthoringRunItemDefinition(
+                key, "fhir", "2026-09-01T00:00:00.0000000+00:00")).ToArray(),
+            databaseOnly: false);
+        Assert.True(await fixture.Store.TryAcquireMutationFenceAsync("jira-fhir", run.Id));
+        IReadOnlyList<AuthoringRunItemRecord> items = await fixture.Store.GetRunItemsAsync(run.Id);
+        Dictionary<string, string> receiptIds = new(StringComparer.OrdinalIgnoreCase);
+        foreach (AuthoringRunItemRecord item in items)
+        {
+            AuthoringOperationClaim claim = Assert.IsType<AuthoringOperationClaim>(
+                await fixture.Store.ClaimItemAsync(run.Id, item.Id));
+            PreparedTicketPayload payload = new()
+            {
+                Key = item.BusinessKey,
+                RequestSummary = "Request",
+                ProposalA = "A",
+                ProposalAImpact = PreparedTicketImpactValues.NonSubstantive,
+                ProposalB = "B",
+                ProposalBImpact = PreparedTicketImpactValues.NonSubstantive,
+                ProposalC = "C",
+                Recommendation = PreparedTicketRecommendationValues.ProposalA,
+                RecommendationJustification = "Because",
+            };
+            string hash = PreparedTicketAuthoringDtos.ComputeContentHash(payload);
+            AuthoringReceiptAcceptance acceptance = await fixture.Store.AcceptResultAsync(
+                new(run.Id, item.Id, claim.OperationId, item.ExpectedSourceRevision, hash),
+                claim.OperationToken,
+                (connection, ct) => fixture.Database.SavePreparedTicketForAuthoringAsync(
+                    connection, payload, hash, run.Id, item.Id, claim.OperationId, ct));
+            receiptIds.Add(item.BusinessKey, acceptance.Receipt.ReceiptId);
+            DateTimeOffset hydratedAt = new(2002, 2, 2, 0, 0, 0, TimeSpan.Zero);
+            await fixture.Database.SaveHydrationAsync(new PreparedTicketHydrationBatch(
+                item.BusinessKey,
+                new(item.BusinessKey, null, null, null, "FHIR", null, null, null, null, null,
+                    0, "Description", hydratedAt, "resolved", null),
+                [
+                    new(item.BusinessKey, item.BusinessKey, $"Title {item.BusinessKey}", "Triaged",
+                        "Change Request", null, null, null, workGroup, "FHIR", hydratedAt, null,
+                        hydratedAt, "resolved", null),
+                ],
+                [], [], [], []));
+            await fixture.Store.MarkItemCompleteAsync(item.Id, acceptance.Receipt.ReceiptId);
+        }
+        SetSelfWorkgroups(fixture, workGroup, workGroupClean, ticketKeys);
+        await fixture.Store.MarkRunFinalizingAsync(run.Id);
+        SqliteReviewSnapshotWriter writer = new(fixture.Database.OpenConnection, fixture.Store);
+        AuthoringSnapshotDescriptor descriptor = await writer.WriteAsync(new SqliteReviewSnapshotRequest(
+            "jira-fhir", run.Id, fixture.SnapshotDirectory, schemaVersion, items.Count,
+            await fixture.Database.GetSnapshotReceiptCountAsync(run.Id),
+            await fixture.Database.GetSnapshotTableCountsAsync(schemaVersion),
+            new PreparedTicketSnapshotSanitizer(run.Id, schemaVersion)));
+        await fixture.Store.CompleteRunAsync(run.Id, descriptor.SnapshotId);
+        Assert.Equal(0, fixture.CountLive("prepared_ticket_partition_receipts"));
+        Assert.Equal(0, fixture.CountLive("prepared_ticket_partition_certifications"));
+        Assert.Null(descriptor.PublicationProof);
+        return new(
+            Assert.IsType<AuthoringRunRecord>(await fixture.Store.GetRunAsync(run.Id)),
+            descriptor,
+            items.ToDictionary(item => item.BusinessKey, item => item.ExpectedSourceRevision, StringComparer.OrdinalIgnoreCase),
+            receiptIds);
+    }
+
+    private static void SetSelfWorkgroups(
+        Fixture fixture,
+        string? workGroup,
+        string? workGroupClean,
+        IReadOnlyList<string> ticketKeys)
+    {
+        foreach (string ticketKey in ticketKeys)
+        {
+            Assert.Equal(1, fixture.Execute(
+                """
+                UPDATE prepared_jira_hydration
+                SET WorkGroup = @workGroup, WorkGroupClean = @workGroupClean
+                WHERE TicketKey = @ticketKey AND JiraKey = TicketKey
+                """,
+                ("@workGroup", workGroup), ("@workGroupClean", workGroupClean), ("@ticketKey", ticketKey)));
+        }
+    }
+
+    private static async Task AssertAdmissionRefusedWithoutMutationAsync(
+        Fixture fixture,
+        SourceResult source,
+        string expectedCode)
+    {
+        int runs = fixture.CountLive("authoring_runs");
+        int requests = fixture.Scalar<int>("SELECT COUNT(*) FROM authoring_runs WHERE RequestJson IS NOT NULL");
+        int attempts = fixture.CountLive("authoring_run_attempts");
+        int snapshots = fixture.CountLive("authoring_review_snapshots");
+        string metadataBefore = fixture.ReadPublicationMetadataState();
+        string authoredBefore = fixture.ReadAuthoredAndGroupingState();
+        Assert.Null(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+        MetadataFetcher fetcher = MetadataFetcher.For(source.ExpectedRevisions);
+        fetcher.ThrowWhenCalled = true;
+        PreparedTicketPublicationMaintenanceController controller = new(fixture.CreateRefreshService(fetcher));
+
+        ConflictObjectResult response = Assert.IsType<ConflictObjectResult>(
+            await controller.Start(source.Run.Id, CancellationToken.None));
+
+        Assert.Equal(409, response.StatusCode);
+        PreparedTicketPublicationRefreshFailure failure = Assert.IsType<PreparedTicketPublicationRefreshFailure>(response.Value);
+        Assert.Equal(expectedCode, failure.Error);
+        Assert.Equal(runs, fixture.CountLive("authoring_runs"));
+        Assert.Equal(requests, fixture.Scalar<int>("SELECT COUNT(*) FROM authoring_runs WHERE RequestJson IS NOT NULL"));
+        Assert.Equal(attempts, fixture.CountLive("authoring_run_attempts"));
+        Assert.Equal(snapshots, fixture.CountLive("authoring_review_snapshots"));
+        Assert.Equal(metadataBefore, fixture.ReadPublicationMetadataState());
+        Assert.Equal(authoredBefore, fixture.ReadAuthoredAndGroupingState());
+        Assert.Null(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+        Assert.Equal(0, fetcher.CallCount);
+        Assert.Equal(0, fetcher.ZulipCallCount);
+    }
+
+    private static async Task AssertSourceSnapshotUnchangedAsync(Fixture fixture, SourceResult source)
+    {
+        string path = Path.Combine(fixture.SnapshotDirectory, source.Descriptor.FileName);
+        Assert.Equal(source.Descriptor.Sha256, await SqliteReviewSnapshotWriter.ComputeSha256Async(path));
+        Assert.Equal(source.Descriptor.SnapshotId,
+            Assert.IsType<AuthoringRunRecord>(await fixture.Store.GetRunAsync(source.Run.Id)).SnapshotId);
+        Assert.False(File.Exists(path + "-wal"));
+        Assert.False(File.Exists(path + "-shm"));
+    }
+
+    private static void AssertStoredSelfWorkgroups(
+        SqliteConnection connection,
+        IReadOnlyList<string> ticketKeys,
+        string? workGroup,
+        string? workGroupClean)
+    {
+        foreach (string ticketKey in ticketKeys)
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT WorkGroup, typeof(WorkGroup), WorkGroupClean, typeof(WorkGroupClean), Specification, Type
+                FROM prepared_jira_hydration
+                WHERE TicketKey = @ticketKey AND JiraKey = TicketKey
+                """;
+            command.Parameters.AddWithValue("@ticketKey", ticketKey);
+            using SqliteDataReader reader = command.ExecuteReader();
+            Assert.True(reader.Read());
+            Assert.Equal(workGroup is null, reader.IsDBNull(0));
+            Assert.Equal(workGroup, reader.IsDBNull(0) ? null : reader.GetString(0));
+            Assert.Equal(workGroup is null ? "null" : "text", reader.GetString(1));
+            Assert.Equal(workGroupClean is null, reader.IsDBNull(2));
+            Assert.Equal(workGroupClean, reader.IsDBNull(2) ? null : reader.GetString(2));
+            Assert.Equal(workGroupClean is null ? "null" : "text", reader.GetString(3));
+            Assert.Equal("FHIR", reader.GetString(4));
+            Assert.Equal("Change Request", reader.GetString(5));
+            Assert.False(reader.Read());
+        }
+    }
+
+    private static void AssertProtectedSelfWorkgroups(
+        PreparedTicketPublicationProtectedInventory inventory,
+        IReadOnlyList<string> ticketKeys,
+        string? workGroup,
+        string? workGroupClean)
+    {
+        foreach (string ticketKey in ticketKeys)
+        {
+            PreparedTicketPublicationProtectedRow row = Assert.Single(inventory.Rows, row =>
+                row.Table == "prepared_jira_hydration" && row.Scope == ticketKey &&
+                row.Values.Any(value => value.Column == "JiraKey" && value.Value == ticketKey));
+            Assert.Equal(
+                new PreparedTicketPublicationProtectedValue("WorkGroup", workGroup is null ? "null" : "text", workGroup),
+                Assert.Single(row.Values, value => value.Column == "WorkGroup"));
+            Assert.Equal(
+                new PreparedTicketPublicationProtectedValue("WorkGroupClean", workGroupClean is null ? "null" : "text", workGroupClean),
+                Assert.Single(row.Values, value => value.Column == "WorkGroupClean"));
+        }
+    }
+
+    private static void AssertNoStoredTopics(SqliteConnection connection)
+    {
+        Assert.Equal(0, ScalarInt(connection, "SELECT COUNT(*) FROM prepared_ticket_topics"));
+        Assert.Equal(0, ScalarInt(connection, "SELECT COUNT(*) FROM prepared_ticket_topic_groups"));
+        Assert.Equal(0, ScalarInt(connection, "SELECT COUNT(*) FROM prepared_ticket_topic_members"));
     }
 
     private static SqliteConnection OpenReadOnly(string path)

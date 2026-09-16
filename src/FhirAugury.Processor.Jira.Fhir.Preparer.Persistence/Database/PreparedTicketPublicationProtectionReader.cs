@@ -624,7 +624,11 @@ public static class PreparedTicketPublicationProtectionReader
                 .OrderBy(row => row.Integer("RowId")).ToArray();
             DataRow[] partitionSelf = selfJira.Values.Where(row => PartitionKey(row) == partitionKey).ToArray();
             string[] displayValues = (partitionTopics.Length == 0
-                    ? partitionSelf.Select(row => row.Text("WorkGroup").Trim())
+                    ? partitionSelf.Select(row =>
+                    {
+                        string? display = row.OptionalText("WorkGroup");
+                        return string.IsNullOrWhiteSpace(display) ? coordinates[0] : display.Trim();
+                    })
                     : partitionTopics.Select(row => row.Text("WorkGroupDisplay")))
                 .Distinct(StringComparer.Ordinal).ToArray();
             if (displayValues.Length != 1 || string.IsNullOrWhiteSpace(displayValues[0]))
