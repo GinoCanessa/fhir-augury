@@ -158,6 +158,31 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
 .readiness-notice ul {
   margin-bottom: 0;
 }
+.corpus-coverage {
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--card);
+  overflow-wrap: anywhere;
+}
+.corpus-coverage h2 { margin-top: 0; }
+.corpus-coverage ul { padding-left: 1.25rem; }
+.people-guidance { font-size: 0.9rem; }
+.empty-state,
+.filter-recovery {
+  padding: 0.75rem;
+  border-left: 3px solid var(--link);
+  background: var(--row-alt);
+}
+.view-heading { scroll-margin-top: 7rem; }
+.view-heading:focus,
+.chip-remove:focus-visible,
+.crosscut-row:focus-visible,
+.ticket-facet-value:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
 .filter-row { margin-bottom: 0.75rem; }
 .filter-row input[type="text"] {
   width: 100%;
@@ -182,7 +207,7 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
   margin: 0;
 }
 .ticket-header dt { font-weight: 600; color: var(--muted); }
-.ticket-header dd { margin: 0; }
+.ticket-header dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .ticket-header dd a { color: var(--link); }
 .people-list {
   margin: 0;
@@ -251,6 +276,9 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
 .md a { color: var(--link); }
 .related-sidebar { margin-top: 2rem; font-size: 0.9rem; }
 .related-sidebar ul { padding-left: 1.25rem; }
+.related-sidebar li,
+.summary-source-list li { overflow-wrap: anywhere; white-space: pre-wrap; }
+.link-diagnostic { font-size: 0.9em; }
 .muted { color: var(--muted); }
 .error { color: #c00; }
 .loading { padding: 1rem; color: var(--muted); font-style: italic; }
@@ -270,11 +298,16 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
   border: 1px solid var(--border);
   font-size: 0.9em;
   color: var(--fg);
+  flex-wrap: wrap;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
+.filter-chip-fixed { border-style: dashed; }
+.chip-fixed-label { color: var(--muted); }
 .chip-remove {
   background: none;
   border: none;
-  padding: 0;
+  padding: 0.2rem;
   margin: 0 0 0 2px;
   font-size: inherit;
   line-height: 1;
@@ -284,7 +317,6 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
 .chip-remove:hover,
 .chip-remove:focus {
   color: var(--fg);
-  outline: none;
 }
 .summary-row {
   display: flex;
@@ -323,7 +355,6 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
 .crosscut-row:hover,
 .crosscut-row:focus {
   text-decoration: underline;
-  outline: none;
 }
 .topic-meta {
   color: var(--muted);
@@ -395,6 +426,11 @@ tbody tr:nth-child(even) { background: var(--row-alt); }
   .summary-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+  .ticket-header dl {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.2rem;
+  }
+  .ticket-header dd { margin-bottom: 0.5rem; }
   .grouped-ticket-table {
     min-width: 42rem;
   }

@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using FhirAugury.Common.Api;
 using FhirAugury.Common.Text;
 using FhirAugury.Processing.Client;
 using FhirAugury.Processing.Contracts;
@@ -13,6 +14,30 @@ internal sealed class TicketSnapshotFixture
 {
     public const string FirstJiraUpdatedAt = "2026-09-05T12:00:00.0000000+00:00";
     public const string SecondJiraUpdatedAt = "2026-09-06T15:30:00.0000000+00:00";
+
+    public static IReadOnlyDictionary<string, string> DiscussionRuntimeBodies { get; } =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["RequestPlain"] = "  Original request.\r\nKeep <literal> & | text.\n\n  ",
+            ["ResolutionPlain"] = "\tOriginal resolution.\r\nDo not rewrite.  ",
+            ["RequestSummary"] = "  Request FHIR-1002 and BALLOT-12.\r\nKeep this line.  ",
+            ["CommentSummary"] = "\nComment FHIR-1004 and FHIR-1005suffix stays text.\t",
+            ["LinkedTicketSummary"] = " Linked FHIR-1002 and FHIR-2002.\r\n ",
+            ["RelatedTicketSummary"] = "\tRelated FHIR-2002.\nKeep | delimiters. ",
+            ["RelatedZulipSummary"] = "  Authored discussion analysis for FHIR-1002.\r\nNever replace this with lookup diagnostics.\n  ",
+            ["RelatedGitHubSummary"] = "\nGitHub context mentioning FHIR-2004.  ",
+            ["ExistingProposed"] = "  Existing proposal.\r\nUnchanged.  ",
+            ["ProposalA"] = "  Accept FHIR-1002 exactly.\r\nKeep | delimiters and <literal>.\n\n\tA ending  ",
+            ["ProposalAJustification"] = "\tA because.\r\nKeep *authored* formatting.  ",
+            ["ProposalAImpact"] = "  Non-substantive \r\n",
+            ["ProposalB"] = "\n B modified proposal.\r\nDo not normalize.\t",
+            ["ProposalBJustification"] = "  B because.\r\n  ",
+            ["ProposalBImpact"] = "Non-substantive",
+            ["ProposalC"] = "\tC rejection.\r\nPreserve exactly.  ",
+            ["ProposalCJustification"] = " C because.\nNo invented impact.\r\n",
+            ["Recommendation"] = "  A\r\n",
+            ["RecommendationJustification"] = "\n Because this is the authored recommendation.\t ",
+        };
 
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web)
@@ -249,7 +274,8 @@ internal sealed class TicketSnapshotFixture
         string? firstJiraUpdatedAt = FirstJiraUpdatedAt,
         string? secondJiraUpdatedAt = SecondJiraUpdatedAt,
         DateTimeOffset? ticketSavedAt = null,
-        DateTimeOffset? snapshotCreatedAt = null)
+        DateTimeOffset? snapshotCreatedAt = null,
+        bool includeRuntimeEvidence = false)
     {
         AuthoringSnapshotSchemaCatalog catalog =
             PreparedTicketSnapshotSchemaResolver.Resolve(schemaVersion);
@@ -688,6 +714,20 @@ internal sealed class TicketSnapshotFixture
                     PublicDisplayNamePolicy.CurrentVersion + 1));
         }
 
+        if (includeRuntimeEvidence)
+        {
+            if (!includeRendererEvidence || !includeSecondTicket ||
+                useMultipleRuns || schemaVersion != PreparedTicketSnapshotSchemaV3.Version)
+            {
+                throw new ArgumentException(
+                    "Runtime evidence requires a single-run v3 renderer fixture with two base tickets.",
+                    nameof(includeRuntimeEvidence));
+            }
+            await AddDiscussionRuntimeEvidenceAsync(connection, runId, createdAt);
+            currentRunItemCount = 4;
+            receiptCount = 4;
+        }
+
         await SanitizeSnapshotSchemaAsync(connection, catalog);
         Dictionary<string, long> counts =
             await ReadCountsAsync(connection, catalog.CountedTables);
@@ -720,6 +760,186 @@ internal sealed class TicketSnapshotFixture
             receiptCount);
         await WriteDescriptorAsync(descriptorPath, descriptor);
         return new TicketSnapshotFixture(databasePath, descriptorPath, descriptor);
+    }
+
+    public static Task<TicketSnapshotFixture> CreateDiscussionRuntimeAsync(string root)
+        => CreatePreparerAsync(
+            root,
+            includeSecondTicket: true,
+            schemaVersion: PreparedTicketSnapshotSchemaV3.Version,
+            includeRendererEvidence: true,
+            includeUntrustedPeople: true,
+            includeRuntimeEvidence: true);
+
+    private static async Task AddDiscussionRuntimeEvidenceAsync(
+        SqliteConnection connection,
+        string runId,
+        DateTimeOffset createdAt)
+    {
+        foreach ((int number, string key, string title, string workGroup, string specification) in new[]
+        {
+            (3, "FHIR-1002", "Alpha fixture title", "FHIR Infrastructure", "FHIR"),
+            (4, "CDS-2002", "Beta fixture title", "Clinical Decision Support", "CDS Hooks"),
+        })
+        {
+            await ExecuteAsync(connection,
+                """
+                INSERT INTO authoring_run_items(
+                    Id, RunId, BusinessKey, ItemKind, ExpectedSourceRevision, Status,
+                    AcceptedReceiptId, AttemptCount, CreatedAt, StartedAt, CompletedAt)
+                VALUES(@itemId, @runId, @key, 'ticket', 'fixture-revision', 'complete',
+                    @receiptId, 1, @createdAt, @createdAt, @createdAt);
+                INSERT INTO authoring_result_receipts(
+                    Id, OperationId, RunId, RunItemId, BusinessKey, ContentHash,
+                    ExpectedSourceRevision, ObservedSourceRevision, AuthoringEpoch, PersistedAt)
+                VALUES(@receiptId, @operationId, @runId, @itemId, @key,
+                    @contentHash, 'fixture-revision', 'fixture-revision', 1, @createdAt);
+                INSERT INTO prepared_tickets(
+                    Id, Key, RequestSummary, CommentSummary, LinkedTicketSummary,
+                    RelatedTicketSummary, RelatedZulipSummary, RelatedGitHubSummary,
+                    ExistingProposed, ProposalA, ProposalAJustification, ProposalAImpact,
+                    ProposalB, ProposalBJustification, ProposalBImpact, ProposalC,
+                    ProposalCJustification, Recommendation, RecommendationJustification, SavedAt)
+                VALUES(@preparedId, @key, 'Fixture request for filtering', '', '', '', '', '', '',
+                    'A', 'A because', 'Compatible, substantive', 'B', 'B because',
+                    @secondImpact, 'C', 'C because', 'B', 'Fixture recommendation', @createdAt);
+                INSERT INTO prepared_ticket_hydration(
+                    Id, TicketKey, Specification, DescriptionPlain, Reporter, Assignee,
+                    SourceProject, SourceLastSuccessfulRefreshAt, SourceContentRevision,
+                    HydratedAt, HydrationStatus, PublicDisplayNamePolicyVersion)
+                VALUES(@hydrationId, @key, @specification, 'Fixture source request', NULL, NULL,
+                    @project, @createdAt, 222, @createdAt, 'resolved', @policyVersion);
+                INSERT INTO prepared_jira_hydration(
+                    Id, TicketKey, JiraKey, Title, Status, Type, WorkGroup, WorkGroupClean,
+                    Specification, HydratedAt, HydrationStatus, UpdatedAt)
+                VALUES(@jiraId, @key, @key, @title, 'Resolved', 'Technical Correction',
+                    @workGroup, REPLACE(@workGroup, ' ', ''), @specification, @createdAt,
+                    'resolved', @updatedAt);
+                INSERT INTO prepared_ticket_artifacts(TicketKey, Value)
+                VALUES(@key, 'Observation'), (@key, 'Patient');
+                """,
+                ("@itemId", $"item-{number}"),
+                ("@receiptId", $"receipt-{number}"),
+                ("@operationId", $"operation-{number}"),
+                ("@contentHash", $"fixture-hash-{number}"),
+                ("@preparedId", $"prepared-{number}"),
+                ("@hydrationId", $"hydration-{number}"),
+                ("@jiraId", $"jira-{number}"),
+                ("@runId", runId),
+                ("@key", key),
+                ("@title", title),
+                ("@workGroup", workGroup),
+                ("@specification", specification),
+                ("@project", key.Split('-')[0]),
+                ("@secondImpact", number == 3 ? "Non-substantive" : "Compatible, substantive"),
+                ("@policyVersion", number == 3 ? null : PublicDisplayNamePolicy.CurrentVersion),
+                ("@updatedAt", $"2026-09-0{number + 4}T12:00:00.0000000+00:00"),
+                ("@createdAt", createdAt.ToString("O")));
+        }
+
+        await ExecuteAsync(connection,
+            """
+            UPDATE authoring_runs SET TotalItems = 4 WHERE Id = @runId;
+            UPDATE prepared_jira_hydration SET Title = 'Zulu snapshot title'
+            WHERE TicketKey = 'FHIR-1001' AND JiraKey = TicketKey;
+            UPDATE prepared_ticket_hydration SET Reporter = NULL, Assignee = NULL
+            WHERE TicketKey = 'FHIR-1001';
+            UPDATE prepared_ticket_jira_content
+            SET DescriptionHtml = NULL, ResolutionDescriptionHtml = NULL
+            WHERE TicketKey = 'FHIR-1001';
+            INSERT INTO prepared_ticket_related_jira(
+                Id, TicketKey, AssociatedTicketKey, LinkType, Justification)
+            VALUES('runtime-jira', 'FHIR-1001', 'FHIR-1002', 'linked', 'In-corpus link justification');
+            INSERT INTO prepared_ticket_repos(
+                Id, TicketKey, Repo, RepoCategory, Justification)
+            VALUES
+                ('runtime-repo', 'FHIR-1001', 'HL7/api-incubator-ig', 'ig', 'Repository justification'),
+                ('unsafe-repo', 'FHIR-1001', 'unsafe/repo', 'ig', 'Unsafe URL stays text'),
+                ('missing-repo', 'FHIR-1001', 'missing/repo', 'ig', 'Missing URL stays text');
+            INSERT INTO prepared_repo_hydration(
+                Id, TicketKey, Repo, Description, Url, HydratedAt, HydrationStatus, HydrationReason)
+            VALUES
+                ('runtime-repo-hydration', 'FHIR-1001', 'HL7/api-incubator-ig',
+                 'API incubator', 'https://github.com/HL7/api-incubator-ig', @createdAt, 'resolved', NULL),
+                ('unsafe-repo-hydration', 'FHIR-1001', 'unsafe/repo',
+                 'Unsafe source', 'javascript:alert(1)', @createdAt, 'unresolved', 'Unsafe source URL');
+            INSERT INTO prepared_ticket_related_zulip(
+                Id, TicketKey, ZulipThreadId, Justification)
+            VALUES
+                ('runtime-backed', 'FHIR-1001', '153858681', 'Retained source-backed analysis'),
+                ('runtime-unverified', 'FHIR-1001', 'legacy-zero', 'Retained unverified analysis'),
+                ('runtime-unsafe', 'FHIR-1001', 'bad-reference', 'Preserved invalid-reference analysis'),
+                ('other-ticket-zulip', 'CDS-2001', '153858681', 'Different ticket outcome');
+            INSERT INTO prepared_zulip_hydration(
+                Id, TicketKey, ZulipThreadId, StreamName, Topic, MessageCount, Url,
+                HydratedAt, HydrationStatus, HydrationReason)
+            VALUES
+                ('runtime-backed-hydration', 'FHIR-1001', '153858681', 'FHIR review',
+                 'Retained topic', 5,
+                 'https://chat.fhir.org/#narrow/channel/179166-implementers/topic/Retained.20topic/near/153858681',
+                 @createdAt, 'unresolved', @backedReason),
+                ('runtime-unverified-hydration', 'FHIR-1001', 'legacy-zero', 'Legacy channel',
+                 'Zero messages', 0,
+                 'https://chat.fhir.org/#narrow/channel/1/topic/Zero%20messages',
+                 @createdAt, 'unresolved', @unverifiedReason),
+                ('runtime-unsafe-hydration', 'FHIR-1001', 'bad-reference', NULL,
+                 NULL, 0, 'data:text/html,unsafe',
+                 @createdAt, 'unresolved', 'malformed thread id'),
+                ('other-ticket-zulip-hydration', 'CDS-2001', '153858681', 'Other channel',
+                 'Other ticket context', 10, 'https://chat.fhir.org/#narrow/channel/2/topic/Other',
+                 @createdAt, 'resolved', NULL);
+            INSERT INTO prepared_ticket_related_github(
+                Id, TicketKey, GitHubItemId, Justification)
+            VALUES('same-key-github', 'FHIR-1001', '153858681', 'Different kind outcome');
+            INSERT INTO prepared_github_hydration(
+                Id, TicketKey, GitHubItemId, Owner, Repo, Number, Title,
+                Url, HydratedAt, HydrationStatus)
+            VALUES('same-key-github-hydration', 'FHIR-1001', '153858681', 'HL7', 'fhir',
+                99, 'Unrelated GitHub coordinate', 'https://github.com/HL7/fhir/issues/99',
+                @createdAt, 'resolved');
+            """,
+            ("@runId", runId),
+            ("@createdAt", createdAt.ToString("O")),
+            ("@backedReason", ZulipReferenceHydrationReason.Serialize(new()
+            {
+                Backing = ZulipReferenceBacking.TypedResolver,
+                LatestOutcome = ZulipReferenceLookupOutcome.NotFound,
+                Diagnostics = [],
+            })),
+            ("@unverifiedReason", ZulipReferenceHydrationReason.Serialize(new()
+            {
+                Backing = ZulipReferenceBacking.Unverified,
+                LatestOutcome = ZulipReferenceLookupOutcome.NotFound,
+                Diagnostics = [],
+            })));
+
+        foreach ((string column, string body) in DiscussionRuntimeBodies)
+        {
+            if (column is "RequestPlain" or "ResolutionPlain")
+            {
+                string sourceColumn = column == "RequestPlain"
+                    ? "DescriptionPlain"
+                    : "ResolutionDescriptionPlain";
+                await ExecuteAsync(connection,
+                    $"UPDATE prepared_ticket_hydration SET {sourceColumn} = @body WHERE TicketKey = 'FHIR-1001'",
+                    ("@body", body));
+                if (column == "ResolutionPlain")
+                {
+                    await ExecuteAsync(connection,
+                        """
+                        UPDATE prepared_jira_hydration SET ResolutionDescriptionPlain = @body
+                        WHERE TicketKey = 'FHIR-1001' AND JiraKey = TicketKey
+                        """,
+                        ("@body", body));
+                }
+            }
+            else
+            {
+                await ExecuteAsync(connection,
+                    $"UPDATE prepared_tickets SET {column} = @body WHERE Key = 'FHIR-1001'",
+                    ("@body", body));
+            }
+        }
     }
 
     public static async Task<TicketSnapshotFixture> CreatePlannerAsync(
@@ -869,6 +1089,29 @@ internal sealed class TicketSnapshotFixture
                 """,
                 ("@updatedAt", updatedAt),
                 ("@ticketKey", ticketKey));
+        }
+        await RefreshDescriptorHashAsync();
+    }
+
+    public async Task SetTicketPublicDisplayNamesAsync(
+        string ticketKey,
+        string? reporter,
+        string? assignee)
+    {
+        await using (SqliteConnection connection = new(
+            $"Data Source={DatabasePath};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await ExecuteAsync(
+                connection,
+                """
+                UPDATE prepared_ticket_hydration
+                SET Reporter = @reporter, Assignee = @assignee
+                WHERE TicketKey = @ticketKey COLLATE NOCASE
+                """,
+                ("@ticketKey", ticketKey),
+                ("@reporter", reporter),
+                ("@assignee", assignee));
         }
         await RefreshDescriptorHashAsync();
     }

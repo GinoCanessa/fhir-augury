@@ -88,6 +88,9 @@
             sortDirection = 'ascending';
           }
           render();
+          if (typeof options.onSortChanged === 'function') {
+            options.onSortChanged(getSortState());
+          }
         });
       })(column);
 
@@ -186,18 +189,73 @@
       render();
     }
 
+    function getSortState() {
+      return sortKey == null
+        ? null
+        : { key: sortKey, direction: sortDirection };
+    }
+
     render();
     return {
       element: table,
-      setRows: setRows
+      setRows: setRows,
+      getSortState: getSortState
     };
+  }
+
+  function proposalLabel(name) {
+    var guidance = {
+      A: 'Accept as requested',
+      B: 'Accept modified',
+      C: 'Reject'
+    };
+    return 'Proposal ' + name + (guidance[name] ? ': ' + guidance[name] : '');
+  }
+
+  function createExternalAnchor(url, label) {
+    if (typeof url !== 'string' || !/^https?:\/\//i.test(url) ||
+        /[\u0000-\u001f\u007f]/.test(url)) return null;
+    try {
+      var parsed = new URL(url);
+      if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
+          !parsed.hostname) return null;
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
+      return null;
+    }
+    var anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.target = '_blank';
+    anchor.rel = 'noopener noreferrer';
+    anchor.textContent = asText(label);
+    return anchor;
+  }
+
+  function appendLinkOutcome(parent, source, hasLink) {
+    var messages = [];
+    if (!hasLink) {
+      messages.push(source.Url
+        ? 'Unsafe or invalid URL omitted'
+        : 'URL unavailable');
+    }
+    if (source.HydrationStatus === 'unresolved') {
+      messages.push('unresolved: ' + asText(source.HydrationReason ||
+        'Lookup outcome unavailable; source backing is not established.'));
+    } else if (source.HydrationReason) {
+      messages.push(asText(source.HydrationReason));
+    }
+    if (!messages.length) return;
+    var diagnostic = document.createElement('span');
+    diagnostic.className = 'link-diagnostic muted';
+    diagnostic.textContent = ' (' + messages.join('; ') + ')';
+    parent.appendChild(diagnostic);
   }
 
   function isJiraKeyCharacter(character) {
     return Boolean(character && /[A-Za-z0-9_-]/.test(character));
   }
 
-  function appendJiraLinkedText(parent, value) {
+  function appendJiraLinkedText(parent, value, inCorpusJiraHref) {
     var text = asText(value);
     var pattern = /[A-Za-z][A-Za-z0-9]*-[0-9]+/g;
     var cursor = 0;
@@ -212,13 +270,18 @@
       if (start > cursor) {
         parent.appendChild(document.createTextNode(text.slice(cursor, start)));
       }
-      var anchor = document.createElement('a');
       var canonicalKey = match[0].toUpperCase();
-      anchor.href = 'https://jira.hl7.org/browse/' +
-        encodeURIComponent(canonicalKey);
-      anchor.target = '_blank';
-      anchor.rel = 'noopener noreferrer';
-      anchor.textContent = match[0];
+      var internalHref = inCorpusJiraHref && inCorpusJiraHref(canonicalKey);
+      var anchor;
+      if (internalHref) {
+        anchor = document.createElement('a');
+        anchor.href = internalHref;
+        anchor.textContent = match[0];
+      } else {
+        anchor = createExternalAnchor(
+          'https://jira.hl7.org/browse/' + encodeURIComponent(canonicalKey),
+          match[0]);
+      }
       parent.appendChild(anchor);
       cursor = end;
     }
@@ -227,31 +290,35 @@
     }
   }
 
-  function appendSummarySources(parent, sources) {
+  function appendSummarySources(parent, sources, inCorpusJiraHref) {
     if (!sources || sources.length === 0) return;
     var list = document.createElement('ul');
     list.className = 'summary-source-list';
     for (var index = 0; index < sources.length; index++) {
       var source = sources[index];
       var item = document.createElement('li');
-      if (source.Url) {
-        var link = document.createElement('a');
-        link.href = String(source.Url);
-        link.target = '_blank';
-        link.rel = 'noopener noreferrer';
-        link.textContent = String(source.Label || source.SourceKey || '');
-        item.appendChild(link);
+      item.setAttribute('data-source-key', asText(source.SourceKey));
+      var label = asText(source.Label || source.SourceKey);
+      var internalHref = inCorpusJiraHref &&
+        (source.SummaryKind === 'linked-jira' ||
+         source.SummaryKind === 'related-jira') &&
+        inCorpusJiraHref(source.SourceKey);
+      var link;
+      if (internalHref) {
+        link = document.createElement('a');
+        link.href = internalHref;
+        link.textContent = label;
       } else {
-        item.appendChild(document.createTextNode(
-          String(source.Label || source.SourceKey || '') +
-          ' — URL unavailable'));
+        link = createExternalAnchor(source.Url, label);
       }
+      item.appendChild(link || document.createTextNode(label));
+      appendLinkOutcome(item, source, Boolean(link));
       list.appendChild(item);
     }
     parent.appendChild(list);
   }
 
-  function createSummarySection(title, value, sources) {
+  function createSummarySection(title, value, sources, inCorpusJiraHref) {
     var details = document.createElement('details');
     details.className = 'accordion';
     var summary = document.createElement('summary');
@@ -264,9 +331,9 @@
     body.className = 'accordion-body';
     var prose = document.createElement('pre');
     prose.className = 'summary-prose';
-    appendJiraLinkedText(prose, value);
+    appendJiraLinkedText(prose, value, inCorpusJiraHref);
     body.appendChild(prose);
-    appendSummarySources(body, sources);
+    appendSummarySources(body, sources, inCorpusJiraHref);
     details.appendChild(body);
     return details;
   }
@@ -274,6 +341,9 @@
   window.DiscussionComponents = Object.freeze({
     createSortableTable: createSortableTable,
     createSummarySection: createSummarySection,
-    appendJiraLinkedText: appendJiraLinkedText
+    appendJiraLinkedText: appendJiraLinkedText,
+    createExternalAnchor: createExternalAnchor,
+    appendLinkOutcome: appendLinkOutcome,
+    proposalLabel: proposalLabel
   });
 })();

@@ -102,9 +102,16 @@ public sealed class TicketSitePublisherTests : IDisposable
             html,
             StringComparison.Ordinal);
         Assert.Contains(
+            $"assets/state.js?v={result.Manifest.RendererAssetsVersion}",
+            html,
+            StringComparison.Ordinal);
+        Assert.Contains(
             $"assets/components.js?v={result.Manifest.RendererAssetsVersion}",
             html,
             StringComparison.Ordinal);
+        Assert.True(
+            html.IndexOf("assets/state.js", StringComparison.Ordinal) <
+            html.IndexOf("assets/components.js", StringComparison.Ordinal));
         Assert.True(
             html.IndexOf("assets/components.js", StringComparison.Ordinal) <
             html.IndexOf("assets/app.js", StringComparison.Ordinal));
@@ -144,7 +151,12 @@ public sealed class TicketSitePublisherTests : IDisposable
             StringComparison.Ordinal);
         Assert.Contains("locateFile:", script, StringComparison.Ordinal);
         Assert.Contains("FROM ticket_facets", script, StringComparison.Ordinal);
-        AssertFacetHashContract(script);
+        string stateScript = await File.ReadAllTextAsync(Path.Combine(
+            output, "discussion", "assets", "state.js"));
+        Assert.Equal(
+            await ReadEmbeddedResourceAsync("web-assets/discussion/state.js"),
+            stateScript);
+        AssertFacetHashContract(script, stateScript);
         AssertCopyForAiContract(script);
 
         byte[] databaseBytes = await ExtractEmbeddedDatabaseAsync(html);
@@ -685,6 +697,44 @@ public sealed class TicketSitePublisherTests : IDisposable
     }
 
     [Fact]
+    public async Task MissingStateScript_RejectsStageAndPreservesPreviousPublication()
+    {
+        string output = Path.Combine(_root, "missing-state-script");
+        TicketSnapshotFixture original = await TicketSnapshotFixture.CreatePreparerAsync(
+            _root, schemaVersion: PreparedTicketSnapshotSchemaV3.Version);
+        VerifiedAuthoringSnapshotPair originalPair = await original.CreateVerifiedPairAsync("Preparer");
+        await new TicketSitePublisher().PublishAsync(
+            new(originalPair, TicketSiteKind.Discussion, output, "Tickets"));
+        Dictionary<string, byte[]> before = Directory.GetFiles(output, "*", SearchOption.AllDirectories)
+            .ToDictionary(path => Path.GetRelativePath(output, path), File.ReadAllBytes, StringComparer.Ordinal);
+        TicketSnapshotFixture next = await TicketSnapshotFixture.CreatePreparerAsync(
+            _root, sequence: 2, schemaVersion: PreparedTicketSnapshotSchemaV3.Version);
+        VerifiedAuthoringSnapshotPair nextPair = await next.CreateVerifiedPairAsync("Preparer");
+        bool removedStateScript = false;
+        TicketSitePublisher publisher = new(new TicketSitePublisherTestHooks(
+            BeforeStageValidationAsync: (staging, _) =>
+            {
+                string statePath = Path.Combine(staging, "assets", "state.js");
+                Assert.True(File.Exists(statePath));
+                File.Delete(statePath);
+                removedStateScript = true;
+                return Task.CompletedTask;
+            }));
+        TicketSitePublishException exception = await Assert.ThrowsAsync<TicketSitePublishException>(() =>
+            publisher.PublishAsync(new(nextPair, TicketSiteKind.Discussion, output, "Tickets")));
+        Assert.True(removedStateScript);
+        Assert.Equal(TicketSitePublishFailure.Publication, exception.Failure);
+        Assert.Contains(Path.Combine("assets", "state.js"), exception.Message, StringComparison.Ordinal);
+        Assert.Equal(before.Keys.Order(StringComparer.Ordinal),
+            Directory.GetFiles(output, "*", SearchOption.AllDirectories)
+                .Select(path => Path.GetRelativePath(output, path)).Order(StringComparer.Ordinal));
+        foreach ((string relative, byte[] bytes) in before)
+        {
+            Assert.Equal(bytes, await File.ReadAllBytesAsync(Path.Combine(output, relative)));
+        }
+    }
+
+    [Fact]
     public async Task PublishesApplyingSiteFromVerifiedPair()
     {
         TicketSnapshotFixture fixture =
@@ -1054,11 +1104,16 @@ public sealed class TicketSitePublisherTests : IDisposable
             "web-assets/discussion/index.template.html");
         string componentsScript = await ReadEmbeddedResourceAsync(
             "web-assets/discussion/components.js");
+        string stateScript = await ReadEmbeddedResourceAsync(
+            "web-assets/discussion/state.js");
         string appScript = await ReadEmbeddedResourceAsync(
             "web-assets/discussion/app.js");
         string stylesheet = await ReadEmbeddedResourceAsync(
             "web-assets/discussion/app.css");
 
+        Assert.True(
+            template.IndexOf("assets/state.js", StringComparison.Ordinal) <
+            template.IndexOf("assets/components.js", StringComparison.Ordinal));
         Assert.True(
             template.IndexOf(
                 "assets/components.js",
@@ -1084,6 +1139,10 @@ public sealed class TicketSitePublisherTests : IDisposable
             "unknownLast",
             componentsScript,
             StringComparison.Ordinal);
+        Assert.Contains("onSortChanged", componentsScript, StringComparison.Ordinal);
+        Assert.Contains("getSortState", componentsScript, StringComparison.Ordinal);
+        Assert.Contains("proposalLabel", componentsScript, StringComparison.Ordinal);
+        Assert.Contains("createExternalAnchor", componentsScript, StringComparison.Ordinal);
         Assert.Contains(
             "/[A-Za-z][A-Za-z0-9]*-[0-9]+/g",
             componentsScript,
@@ -1125,7 +1184,7 @@ public sealed class TicketSitePublisherTests : IDisposable
             "resolveFacetValueKey",
             appScript,
             StringComparison.Ordinal);
-        AssertFacetHashContract(appScript);
+        AssertFacetHashContract(appScript, stateScript);
         AssertCopyForAiContract(appScript);
         Assert.Contains(
             "'Related GitHub Summary'",
@@ -1989,6 +2048,7 @@ public sealed class TicketSitePublisherTests : IDisposable
             runnerPath,
             """
             const fs = require('node:fs');
+            const path = require('node:path');
             const vm = require('node:vm');
 
             const appPath = process.argv[2];
@@ -2000,6 +2060,9 @@ public sealed class TicketSitePublisherTests : IDisposable
 
             const probe = `
               globalThis.__copyForAiMarkdown = (function () {
+                if (components.proposalLabel('A') !== 'Proposal A: Accept as requested') {
+                  throw new Error('The actual shared proposal helper was not loaded.');
+                }
                 var zulipRows = [
                   {
                     ItemKey: 'thread-1',
@@ -2054,13 +2117,19 @@ public sealed class TicketSitePublisherTests : IDisposable
             source = source.replace(marker, probe + '\n' + marker);
 
             const sandbox = {
+              URL, URLSearchParams,
               document: {
                 readyState: 'loading',
                 addEventListener: function () {}
-              },
-              window: {}
+              }
             };
-            vm.runInNewContext(source, sandbox, { filename: appPath });
+            sandbox.window = sandbox;
+            vm.createContext(sandbox);
+            for (const file of ['state.js', 'components.js']) {
+              vm.runInContext(fs.readFileSync(path.join(path.dirname(appPath), file), 'utf8'),
+                sandbox, { filename: file });
+            }
+            vm.runInContext(source, sandbox, { filename: appPath });
             process.stdout.write(sandbox.__copyForAiMarkdown);
             """);
 
@@ -2137,7 +2206,7 @@ public sealed class TicketSitePublisherTests : IDisposable
             System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    private static void AssertFacetHashContract(string script)
+    private static void AssertFacetHashContract(string script, string stateScript)
     {
         Assert.Contains(
             "FROM facet_dimensions ORDER BY SortOrder",
@@ -2168,21 +2237,21 @@ public sealed class TicketSitePublisherTests : IDisposable
             script,
             StringComparison.Ordinal);
         Assert.Contains(
-            "facetKeyParameters[dimension],",
-            script,
-            StringComparison.Ordinal);
-        Assert.Contains(
             "removeChipValue(capturedDimension, capturedValueKey);",
             script,
             StringComparison.Ordinal);
         Assert.Contains(
-            "function withFacetSelection(dimension, valueKey, state)",
+            "state.select(readRouteState(window.location.hash), dimension, valueKey)",
             script,
             StringComparison.Ordinal);
         Assert.Contains(
-            "return Object.freeze(frozen);",
+            "state.isDimensionVisible(routeState, dimension)",
             script,
             StringComparison.Ordinal);
+        Assert.Contains("window.DiscussionState", stateScript, StringComparison.Ordinal);
+        Assert.DoesNotContain("document.", stateScript, StringComparison.Ordinal);
+        Assert.DoesNotContain("SELECT ", stateScript, StringComparison.Ordinal);
+        Assert.DoesNotContain("facetCatalog", stateScript, StringComparison.Ordinal);
         Assert.Contains(
             "visibleListFacetDimensions",
             script,
@@ -2240,9 +2309,9 @@ public sealed class TicketSitePublisherTests : IDisposable
             "['Related Zulip Summary', ticket.RelatedZulipSummary]",
             "['Related GitHub Summary', ticket.RelatedGitHubSummary]",
             "['Existing Proposed', ticket.ExistingProposed]",
-            "'Proposal A'",
-            "'Proposal B'",
-            "'Proposal C'",
+            "components.proposalLabel('A')",
+            "components.proposalLabel('B')",
+            "components.proposalLabel('C')",
             "'Recommendation'");
         AssertAppearsInOrder(
             contract,

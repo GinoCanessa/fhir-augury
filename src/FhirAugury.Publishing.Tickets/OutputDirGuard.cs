@@ -150,6 +150,7 @@ internal static class OutputDirGuard
                 PreparerSubSiteEmitter.Kind,
                 StringComparison.Ordinal))
         {
+            requiredFiles.Add(Path.Combine("assets", "state.js"));
             requiredFiles.Add(Path.Combine("assets", "components.js"));
         }
         foreach (string relative in requiredFiles)

@@ -4,9 +4,15 @@
 
   var db = null;
   var presentation = null;
-  var components = null;
+  var components = window.DiscussionComponents;
+  var state = window.DiscussionState;
+  var routeState = null;
   var currentExport = null;
   var inRunKeys = Object.create(null);
+  var tableStates = Object.create(null);
+  var viewCleanup = [];
+  var viewRevision = 0;
+  var filterFocus = null;
 
   var filterableDimensions = [];
   var generationDimensions = ['spec', 'project', 'wg'];
@@ -177,6 +183,7 @@
       try {
         components = window.DiscussionComponents;
         if (!components) throw new Error('Discussion components failed to load.');
+        if (!state) throw new Error('Discussion state failed to load.');
         presentation = parsePresentation();
         document.title = presentation.siteName;
         var heading = document.querySelector('header h1');
@@ -263,25 +270,21 @@
 
     route: function () {
       var main = document.getElementById('app');
+      viewCleanup.forEach(function (cleanup) { cleanup(); });
+      viewCleanup = [];
+      viewRevision++;
       clearChildren(main);
       clearCopyExport();
       setDocumentTitle(null);
 
       var fullHash = window.location.hash || '#/';
-      var stripped = fullHash.replace(/^#\/?/, '');
-      var queryIndex = stripped.indexOf('?');
-      var pathPart = queryIndex >= 0
-        ? stripped.slice(0, queryIndex)
-        : stripped;
-      var queryPart = queryIndex >= 0
-        ? stripped.slice(queryIndex + 1)
-        : '';
-      activeChips = parseChipsFromQuery(queryPart);
-      var parts = pathPart.split('/').filter(function (part) {
-        return part.length > 0;
-      });
-
       try {
+        var previousRoute = routeState && routeState.route;
+        routeState = readRouteState(fullHash);
+        activeChips = state.activeFilters(routeState);
+        var parts = routeState.route.split('/').filter(function (part) {
+          return part.length > 0;
+        });
         if (parts.length === 0) {
           setBreadcrumb([]);
           Views.landing(main);
@@ -310,34 +313,29 @@
           setBreadcrumb([]);
           Views.notFound(main, fullHash);
         }
+        if (filterFocus || previousRoute === routeState.route) {
+          restoreFilterFocus(main);
+        }
       } catch (error) {
         renderError(main, 'Route render failed: ' + error.message);
       }
+      filterFocus = null;
     }
   };
 
   function parseChipsFromQuery(queryPart) {
     var result = {};
-    for (var dimension in generationChips) {
-      result[dimension] = generationChips[dimension].slice();
-    }
-    if (!queryPart) return freezeFacetState(result);
-
     var parameters = new URLSearchParams(queryPart);
     for (var index = 0; index < filterableDimensions.length; index++) {
       var currentDimension = filterableDimensions[index];
-      var existing = result[currentDimension]
-        ? result[currentDimension].slice()
-        : [];
+      var existing = [];
       var rawKeyValues =
         parameters.getAll(facetKeyParameters[currentDimension]);
       for (var keyIndex = 0; keyIndex < rawKeyValues.length; keyIndex++) {
         var valueKey = resolveFacetValueKey(
           currentDimension,
           rawKeyValues[keyIndex]);
-        if (valueKey && !containsCaseInsensitive(existing, valueKey)) {
-          existing.push(valueKey);
-        }
+        if (valueKey) existing.push(valueKey);
       }
       var rawDisplayValues = parameters.getAll(currentDimension);
       for (var displayIndex = 0;
@@ -346,133 +344,110 @@
         var legacyValueKey = resolveLegacyFacetDisplayValue(
           currentDimension,
           rawDisplayValues[displayIndex]);
-        if (legacyValueKey &&
-            !containsCaseInsensitive(existing, legacyValueKey)) {
-          existing.push(legacyValueKey);
-        }
+        if (legacyValueKey) existing.push(legacyValueKey);
       }
       if (existing.length > 0) result[currentDimension] = existing;
     }
-    return freezeFacetState(result);
+    return result;
   }
 
-  function parseFacetStateFromHash(hash) {
-    var stripped = String(hash || '#/').replace(/^#\/?/, '');
-    var queryIndex = stripped.indexOf('?');
-    return parseChipsFromQuery(
-      queryIndex >= 0 ? stripped.slice(queryIndex + 1) : '');
-  }
-
-  function freezeFacetState(state) {
-    var frozen = {};
-    for (var index = 0; index < filterableDimensions.length; index++) {
-      var dimension = filterableDimensions[index];
-      var values = state[dimension] || [];
-      if (values.length > 0) {
-        frozen[dimension] = Object.freeze(values.slice());
-      }
-    }
-    return Object.freeze(frozen);
-  }
-
-  function containsCaseInsensitive(values, candidate) {
-    var normalized = String(candidate).toLowerCase();
-    for (var index = 0; index < values.length; index++) {
-      if (String(values[index]).toLowerCase() === normalized) return true;
-    }
-    return false;
-  }
-
-  function getInPageChips() {
-    var result = {};
-    for (var dimension in activeChips) {
-      var generationValues = generationChips[dimension] || [];
-      var values = (activeChips[dimension] || []).filter(function (value) {
-        return !containsCaseInsensitive(generationValues, value);
-      });
-      if (values.length > 0) result[dimension] = values;
-    }
-    return freezeFacetState(result);
-  }
-
-  function buildChipQuerySuffix(chips) {
-    var parameters = new URLSearchParams();
-    for (var index = 0; index < filterableDimensions.length; index++) {
-      var dimension = filterableDimensions[index];
-      var values = chips[dimension] || [];
-      for (var valueIndex = 0; valueIndex < values.length; valueIndex++) {
-        parameters.append(
-          facetKeyParameters[dimension],
-          values[valueIndex]);
-      }
-    }
-    var queryString = parameters.toString();
-    return queryString ? '?' + queryString : '';
+  function readRouteState(hash) {
+    var parsed = state.parseHash(hash);
+    return state.create(
+      parsed.route,
+      parseChipsFromQuery(parsed.query),
+      generationChips,
+      presentation.corpusSummary.exportedProjectCount);
   }
 
   function currentHashSuffix() {
-    return buildChipQuerySuffix(getInPageChips());
+    return state.querySuffix(routeState.filters, filterableDimensions);
   }
 
-  function setHashChips(chips) {
-    var stripped = (window.location.hash || '#/').replace(/^#\/?/, '');
-    var queryIndex = stripped.indexOf('?');
-    var pathPart = queryIndex >= 0
-      ? stripped.slice(0, queryIndex)
-      : stripped;
-    window.location.hash = '#/' + pathPart + buildChipQuerySuffix(chips);
-  }
-
-  function withFacetSelection(dimension, valueKey, state) {
-    var current = state || activeChips;
-    var next = {};
-    for (var index = 0; index < filterableDimensions.length; index++) {
-      var currentDimension = filterableDimensions[index];
-      if (current[currentDimension]) {
-        next[currentDimension] = current[currentDimension].slice();
-      }
-    }
-    next[dimension] = [valueKey];
-    return freezeFacetState(next);
-  }
-
-  function facetSelectionHash(dimension, valueKey, state) {
-    return '#/list' + buildChipQuerySuffix(
-      withFacetSelection(dimension, valueKey, state));
-  }
-
-  function openFacetList(dimension, valueKey) {
-    window.location.hash = facetSelectionHash(
-      dimension,
-      valueKey,
-      getInPageChips());
+  function selectFacet(dimension, valueKey) {
+    filterFocus = { dimension: dimension, valueKey: valueKey };
+    window.location.hash = state.toHash(
+      state.select(readRouteState(window.location.hash), dimension, valueKey),
+      filterableDimensions);
   }
 
   function redirectToFacetList(dimension, rawValue) {
     var valueKey = resolveLegacyFacetDisplayValue(dimension, rawValue);
     if (!valueKey) return;
-    openFacetList(dimension, valueKey);
+    window.location.hash = state.toHash(
+      state.navigate(state.select(routeState, dimension, valueKey), 'list'),
+      filterableDimensions);
   }
 
   function removeChipValue(dimension, valueKey) {
-    var current = getInPageChips();
-    var chips = {};
-    for (var currentDimension in current) {
-      chips[currentDimension] = current[currentDimension].slice();
-    }
-    var normalized = String(valueKey).toLowerCase();
-    var remaining = (chips[dimension] || []).filter(function (value) {
-      return String(value).toLowerCase() !== normalized;
-    });
-    if (remaining.length > 0) chips[dimension] = remaining;
-    else delete chips[dimension];
-    setHashChips(chips);
+    filterFocus = { dimension: dimension };
+    window.location.hash = state.toHash(
+      state.remove(readRouteState(window.location.hash), dimension, valueKey),
+      filterableDimensions);
   }
 
   function isGenerationChip(dimension, valueKey) {
-    return containsCaseInsensitive(
-      generationChips[dimension] || [],
-      valueKey);
+    return (routeState.fixedFilters[dimension] || []).some(function (value) {
+      return String(value).toLowerCase() === String(valueKey).toLowerCase();
+    });
+  }
+
+  function isDimensionVisible(dimension) {
+    return state.isDimensionVisible(routeState, dimension);
+  }
+
+  function restoreFilterFocus(main) {
+    var buttons = main.querySelectorAll('.chip-remove');
+    var target = null;
+    for (var index = 0; index < buttons.length; index++) {
+      var button = buttons[index];
+      if (filterFocus &&
+          button.getAttribute('data-dimension') === filterFocus.dimension &&
+          (!filterFocus.valueKey ||
+           button.getAttribute('data-value-key') === filterFocus.valueKey)) {
+        target = button;
+        break;
+      }
+    }
+    target = target || buttons[0] || main.querySelector('.view-heading');
+    if (target) target.focus();
+  }
+
+  function appendViewHeading(main, title) {
+    main.appendChild(el('h2', {
+      class: 'view-heading',
+      tabindex: '-1'
+    }, title));
+  }
+
+  function tableState(tableKey, initialSort) {
+    var key = routeState.route + '|' + tableKey;
+    if (!tableStates[key]) {
+      tableStates[key] = { search: '', sort: initialSort };
+    }
+    return tableStates[key];
+  }
+
+  function visibleSort(savedSort, columns, fallback) {
+    return savedSort && columns.some(function (column) {
+      return column.key === savedSort.key;
+    }) ? savedSort : fallback;
+  }
+
+  function bindTableSearch(input, localState, apply) {
+    input.value = localState.search;
+    var debounce = 0;
+    var revision = viewRevision;
+    viewCleanup.push(function () { window.clearTimeout(debounce); });
+    input.addEventListener('input', function () {
+      if (revision !== viewRevision) return;
+      localState.search = input.value;
+      window.clearTimeout(debounce);
+      debounce = window.setTimeout(function () {
+        if (revision === viewRevision) apply();
+      }, 150);
+    });
+    apply();
   }
 
   function hasActiveChips() {
@@ -484,21 +459,13 @@
     return false;
   }
 
-  function chipsSubject() {
-    var values = [];
-    for (var index = 0; index < filterableDimensions.length; index++) {
-      var dimension = filterableDimensions[index];
-      var chipValues = activeChips[dimension] || [];
-      for (var valueIndex = 0; valueIndex < chipValues.length; valueIndex++) {
-        values.push(facetLabel(dimension, chipValues[valueIndex]));
-      }
-    }
-    return values.join(' · ');
-  }
-
   function renderChipBanner(main) {
     if (!hasActiveChips()) return;
-    var banner = el('div', { id: 'filter-banner' });
+    var banner = el('div', {
+      id: 'filter-banner',
+      role: 'group',
+      'aria-label': 'Active ticket filters'
+    });
     for (var index = 0; index < filterableDimensions.length; index++) {
       var dimension = filterableDimensions[index];
       var values = activeChips[dimension] || [];
@@ -506,11 +473,14 @@
         var valueKey = values[valueIndex];
         var label = facetLabel(dimension, valueKey);
         var chip = el('span', { class: 'filter-chip' });
-        chip.appendChild(document.createTextNode(dimension + ': ' + label));
+        chip.appendChild(document.createTextNode(
+          facetDimensionsByKey[dimension].label + ': ' + label));
         if (!isGenerationChip(dimension, valueKey)) {
           var removeButton = el('button', {
             type: 'button',
             class: 'chip-remove',
+            'data-dimension': dimension,
+            'data-value-key': valueKey,
             'aria-label': 'Remove ' + dimension + ' filter ' + label
           }, '×');
           (function (capturedDimension, capturedValueKey) {
@@ -519,6 +489,11 @@
             });
           })(dimension, valueKey);
           chip.appendChild(removeButton);
+        } else {
+          chip.className += ' filter-chip-fixed';
+          chip.appendChild(el('span', {
+            class: 'chip-fixed-label'
+          }, ' (fixed at publication)'));
         }
         banner.appendChild(chip);
       }
@@ -601,11 +576,9 @@
     return rows;
   }
 
-  function visibleListFacetDimensions(state) {
-    var selected = state || activeChips;
+  function visibleListFacetDimensions() {
     return facetDimensions.filter(function (definition) {
-      return definition.showInList &&
-        !(selected[definition.dimension] || []).length;
+      return definition.showInList && isDimensionVisible(definition.dimension);
     });
   }
 
@@ -672,14 +645,13 @@
       var value = values[index];
       var button = el('button', {
         type: 'button',
-        class: 'ticket-facet-value'
+        class: 'ticket-facet-value',
+        'data-dimension': definition.dimension,
+        'data-value-key': String(value.ValueKey)
       }, String(value.DisplayValue));
       (function (dimension, valueKey) {
         button.addEventListener('click', function () {
-          window.location.hash = facetSelectionHash(
-            dimension,
-            valueKey,
-            getInPageChips());
+          selectFacet(dimension, valueKey);
         });
       })(definition.dimension, String(value.ValueKey));
       container.appendChild(button);
@@ -689,46 +661,23 @@
 
   var Views = {
     landing: function (main) {
+      appendViewHeading(main, 'Overview');
       renderChipBanner(main);
       renderReadiness(main);
+      renderCorpusCoverage(main);
       var ticketKeys = buildTicketKeysSubquery([]);
       var totalRows = query(
         'SELECT COUNT(*) AS Count FROM (' + ticketKeys.sql + ')',
         ticketKeys.params).rows;
       var total = totalRows.length ? Number(totalRows[0].Count) : 0;
-
-      var summary = el('p', { class: 'summary-row' });
-      summary.appendChild(el(
-        'span',
-        null,
-        total + (total === 1
-          ? ' prepared ticket in this run.'
-          : ' prepared tickets in this run.')));
-      var links = el('span', { class: 'summary-links' });
-      links.appendChild(el('a', {
-        href: '#/list' + currentHashSuffix(),
-        class: 'show-ticket-list'
-      }, 'Show Ticket List →'));
-      var topicCount = Number(query(
-        'SELECT COUNT(*) AS Count FROM topics',
-        null).rows[0].Count);
-      if (topicCount > 0) {
-        links.appendChild(el('a', {
-          href: '#/topics' + currentHashSuffix(),
-          class: 'show-topic-list'
-        }, 'Show Topic List →'));
-      } else {
-        links.appendChild(el('span', {
-          class: 'show-topic-list show-topic-list-disabled',
-          title: 'No topics in this run.'
-        }, 'Show Topic List →'));
-      }
-      summary.appendChild(links);
-      main.appendChild(summary);
+      renderMatchSummary(main, total, true);
 
       var grid = el('div', { class: 'summary-grid' });
       for (var index = 0; index < landingCrosscutOrder.length; index++) {
-        grid.appendChild(buildCrosscutSection(landingCrosscutOrder[index]));
+        var route = landingCrosscutOrder[index];
+        if (isDimensionVisible(Crosscuts[route].dimension)) {
+          grid.appendChild(buildCrosscutSection(route));
+        }
       }
       main.appendChild(grid);
     },
@@ -737,24 +686,39 @@
       var config = Crosscuts[route];
       renderChipBanner(main);
       setDocumentTitle(config.pageTitle);
-      main.appendChild(el('h2', null, config.pageTitle));
-      main.appendChild(buildCrosscutSection(route));
+      appendViewHeading(main, config.pageTitle);
+      var ticketKeys = buildTicketKeysSubquery([]);
+      var total = Number(query(
+        'SELECT COUNT(*) AS Count FROM (' + ticketKeys.sql + ')',
+        ticketKeys.params).rows[0].Count);
+      renderMatchSummary(main, total, false);
+      if (isDimensionVisible(config.dimension)) {
+        main.appendChild(buildCrosscutSection(route));
+      } else {
+        main.appendChild(el('p', { class: 'filter-recovery' },
+          routeState.fixedFilters[config.dimension]
+            ? config.columnLabel + ' is fixed by publication filters.'
+            : config.dimension === 'project' &&
+              routeState.exportedProjectCount === 1
+              ? 'Project is hidden because this export contains one project.'
+              : config.columnLabel +
+                ' is filtered. Remove its filter above to choose again.'));
+      }
+      main.appendChild(el('p', null, el('a', {
+        href: '#/' + currentHashSuffix()
+      }, '← Back to overview')));
     },
 
     list: function (main) {
       renderChipBanner(main);
-      setDocumentTitle(
-        hasActiveChips()
-          ? 'Filtered tickets: ' + chipsSubject()
-          : 'All prepared tickets');
+      setDocumentTitle('Ticket list');
       var ticketKeys = buildTicketKeysSubquery([]);
       var rows = readTicketListRows(ticketKeys);
 
-      main.appendChild(el(
-        'h2',
-        null,
+      appendViewHeading(main,
         (hasActiveChips() ? 'Filtered ticket list' : 'All prepared tickets') +
-        ' (' + rows.length + ')'));
+        ' (' + rows.length + ')');
+      if (rows.length === 0) renderNoMatch(main);
       var filterRow = el('div', { class: 'filter-row' });
       var input = el('input', {
         type: 'text',
@@ -765,18 +729,22 @@
       filterRow.appendChild(input);
       main.appendChild(filterRow);
 
-      var count = el('span', null, String(rows.length));
-      main.appendChild(el('p', { class: 'muted' }, [
+      var count = el('span', { class: 'list-row-count' }, String(rows.length));
+      main.appendChild(el('p', { class: 'muted', role: 'status' }, [
         count,
         document.createTextNode(' rows')
       ]));
 
+      var columns = createTicketListColumns();
+      var defaultSort = { key: 'key', direction: 'ascending' };
+      var localState = tableState('tickets', defaultSort);
       var table = components.createSortableTable({
         rows: rows,
-        initialSort: { key: 'key', direction: 'ascending' },
+        initialSort: visibleSort(localState.sort, columns, defaultSort),
+        onSortChanged: function (sort) { localState.sort = sort; },
         className: 'ticket-list-table',
         ariaLabel: 'Prepared tickets',
-        columns: createTicketListColumns()
+        columns: columns
       });
       var tableRegion = el('div', {
         class: 'table-overflow ticket-list-overflow',
@@ -787,31 +755,24 @@
       tableRegion.appendChild(table.element);
       main.appendChild(tableRegion);
 
-      var debounce = 0;
-      input.addEventListener('input', function () {
-        if (debounce) window.clearTimeout(debounce);
-        debounce = window.setTimeout(function () {
-          var needle = input.value.toLowerCase();
-          var filtered = rows.filter(function (row) {
-            return !needle ||
-              (String(row.Key || '') + '\n' +
-               String(row.Title || '') + '\n' +
-               String(row.SearchBody || '')).toLowerCase().indexOf(needle) >= 0;
-          });
-          table.setRows(filtered);
-          count.textContent = needle
-            ? filtered.length + ' of ' + rows.length
-            : String(rows.length);
-        }, 150);
+      bindTableSearch(input, localState, function () {
+        var needle = localState.search.toLowerCase();
+        var filtered = rows.filter(function (row) {
+          return !needle ||
+            (String(row.Key || '') + '\n' +
+             String(row.Title || '') + '\n' +
+             String(row.SearchBody || '')).toLowerCase().indexOf(needle) >= 0;
+        });
+        table.setRows(filtered);
+        count.textContent = needle
+          ? filtered.length + ' of ' + rows.length
+          : String(rows.length);
       });
     },
 
     topics: function (main) {
       renderChipBanner(main);
-      setDocumentTitle(
-        hasActiveChips()
-          ? 'Filtered topics: ' + chipsSubject()
-          : 'Topics');
+      setDocumentTitle('Topics');
       var ticketKeys = buildTicketKeysSubquery([]);
       var parameters = {};
       mergeParameters(parameters, ticketKeys.params);
@@ -832,11 +793,9 @@
         't.RenderOrderHint, t.RowId',
         parameters).rows;
 
-      main.appendChild(el(
-        'h2',
-        null,
+      appendViewHeading(main,
         (hasActiveChips() ? 'Filtered topic list' : 'Topics') +
-        ' (' + rows.length + ')'));
+        ' (' + rows.length + ')');
       if (rows.length === 0) {
         main.appendChild(el(
           'p',
@@ -844,7 +803,6 @@
           hasActiveChips()
             ? 'No topics match this filter.'
             : 'No topics in this run.'));
-        return;
       }
 
       var filterRow = el('div', { class: 'filter-row' });
@@ -862,9 +820,11 @@
         document.createTextNode(' rows')
       ]));
 
+      var localState = tableState('topics', null);
       var table = components.createSortableTable({
         rows: rows,
-        initialSort: null,
+        initialSort: localState.sort,
+        onSortChanged: function (sort) { localState.sort = sort; },
         ariaLabel: 'Discussion topics',
         columns: [
           {
@@ -909,22 +869,18 @@
       });
       main.appendChild(table.element);
 
-      var debounce = 0;
-      input.addEventListener('input', function () {
-        if (debounce) window.clearTimeout(debounce);
-        debounce = window.setTimeout(function () {
-          var needle = input.value.toLowerCase();
-          var filtered = rows.filter(function (row) {
-            return !needle ||
-              (String(row.ShortDescription || '') + '\n' +
-               String(row.LongerDescription || ''))
-                .toLowerCase().indexOf(needle) >= 0;
-          });
-          table.setRows(filtered);
-          count.textContent = needle
-            ? filtered.length + ' of ' + rows.length
-            : String(rows.length);
-        }, 150);
+      bindTableSearch(input, localState, function () {
+        var needle = localState.search.toLowerCase();
+        var filtered = rows.filter(function (row) {
+          return !needle ||
+            (String(row.ShortDescription || '') + '\n' +
+             String(row.LongerDescription || ''))
+              .toLowerCase().indexOf(needle) >= 0;
+        });
+        table.setRows(filtered);
+        count.textContent = needle
+          ? filtered.length + ' of ' + rows.length
+          : String(rows.length);
       });
     },
 
@@ -952,10 +908,7 @@
       renderChipBanner(main);
 
       var header = el('section', { class: 'topic-detail' });
-      header.appendChild(el(
-        'h2',
-        null,
-        String(topic.ShortDescription || '')));
+      appendViewHeading(header, String(topic.ShortDescription || ''));
       var metadata = [
         topic.WorkGroupDisplay,
         topic.Specification,
@@ -1094,18 +1047,13 @@
       }
 
       var header = el('section', { class: 'ticket-header' });
-      header.appendChild(el(
-        'h2',
-        null,
+      appendViewHeading(header,
         String(ticket.Key) +
-          (ticket.Title ? ' — ' + String(ticket.Title) : '')));
+          (ticket.Title ? ' — ' + String(ticket.Title) : ''));
       var definitions = el('dl');
-      appendDefinition(definitions, 'Key', el('a', {
-        href: 'https://jira.hl7.org/browse/' +
-          encodeURIComponent(String(ticket.Key)),
-        target: '_blank',
-        rel: 'noopener noreferrer'
-      }, String(ticket.Key)));
+      appendDefinition(definitions, 'Key', components.createExternalAnchor(
+        'https://jira.hl7.org/browse/' + encodeURIComponent(String(ticket.Key)),
+        String(ticket.Key)));
       appendDefinition(definitions, 'Title', ticket.Title);
       appendDefinition(definitions, 'Workgroup', ticket.WorkGroup);
       appendDefinition(definitions, 'Status', ticket.Status);
@@ -1137,10 +1085,21 @@
           definitions,
           'In-person requesters',
           requesterList);
+      } else {
+        appendDefinition(definitions, 'In-person requesters',
+          renderPersonAvailability({
+            Availability: reporter && reporter.Availability,
+            UnavailableReason: reporter && reporter.UnavailableReason
+          }));
       }
       appendDefinition(definitions, 'Recommendation', ticket.Recommendation);
       appendDefinition(definitions, 'Saved', ticket.SavedAt);
       header.appendChild(definitions);
+      if (hasMissingPublicName(reporter) || hasMissingPublicName(assignee) ||
+          (requesters.length === 0 && reporter &&
+           reporter.Availability === 'available')) {
+        appendPeopleGuidance(header);
+      }
       main.appendChild(header);
 
       if (ticket.RequestHtml) {
@@ -1187,14 +1146,25 @@
       }
 
       var summarySources = query(
-        'SELECT SummaryKind, SourceKey, Label, Url FROM summary_sources ' +
-        'WHERE TicketKey = $key ORDER BY SummaryKind, SortKey, Label, SourceKey',
+        'SELECT s.SummaryKind, s.SourceKey, s.Label, s.Url, ' +
+        'r.HydrationStatus, r.HydrationReason FROM summary_sources s ' +
+        'LEFT JOIN related_items r ON r.TicketKey = s.TicketKey ' +
+        "AND s.SummaryKind = 'related-zulip' AND r.Kind = 'zulip' " +
+        'AND r.ItemKey = s.SourceKey ' +
+        'WHERE s.TicketKey = $key ' +
+        'ORDER BY s.SummaryKind, s.SortKey, s.Label, s.SourceKey',
         { $key: ticket.Key }).rows;
       var sourcesByKind = Object.create(null);
       for (var sourceIndex = 0;
         sourceIndex < summarySources.length;
         sourceIndex++) {
         var source = summarySources[sourceIndex];
+        if (source.SummaryKind === 'related-zulip' &&
+            !source.HydrationStatus) {
+          source.HydrationStatus = 'unresolved';
+          source.HydrationReason =
+            'Zulip lookup outcome unavailable; source backing is not established.';
+        }
         if (!sourcesByKind[source.SummaryKind]) {
           sourcesByKind[source.SummaryKind] = [];
         }
@@ -1283,12 +1253,56 @@
       main.appendChild(el(
         'p',
         null,
-        el('a', { href: '#/' }, '← Home')));
+        el('a', { href: '#/' + currentHashSuffix() }, '← Home')));
     }
   };
 
+  function renderNoMatch(main) {
+    main.appendChild(el('p', { class: 'empty-state' },
+      Object.keys(routeState.filters).length > 0
+        ? 'No tickets match these filters. Remove a browser filter above to ' +
+          'recover; publication filters are fixed.'
+        : 'This export contains no tickets.' +
+          (hasActiveChips()
+            ? ' Publication filters are fixed; generate a new site to ' +
+              'change the exported corpus.'
+            : '')));
+  }
+
+  function renderMatchSummary(main, total, includeTopics) {
+    var summary = el('p', { class: 'summary-row' });
+    summary.appendChild(el('span', {
+      class: 'matching-ticket-count',
+      'data-count': total,
+      role: 'status'
+    }, total + (total === 1
+      ? ' matching prepared ticket.'
+      : ' matching prepared tickets.')));
+    var links = el('span', { class: 'summary-links' });
+    links.appendChild(el('a', {
+      href: '#/list' + currentHashSuffix(),
+      class: 'show-ticket-list'
+    }, 'Show Ticket List →'));
+    if (includeTopics) {
+      var topicCount = Number(query(
+        'SELECT COUNT(*) AS Count FROM topics', null).rows[0].Count);
+      links.appendChild(topicCount > 0
+        ? el('a', {
+          href: '#/topics' + currentHashSuffix(),
+          class: 'show-topic-list'
+        }, 'Show Topic List →')
+        : el('span', {
+          class: 'show-topic-list show-topic-list-disabled',
+          title: 'No topics in this run.'
+        }, 'Show Topic List →'));
+    }
+    summary.appendChild(links);
+    main.appendChild(summary);
+    if (total === 0) renderNoMatch(main);
+  }
+
   function readCrosscutRows(dimension) {
-    var ticketKeys = buildTicketKeysSubquery([dimension]);
+    var ticketKeys = buildTicketKeysSubquery([]);
     var parameters = { $dimension: rendererDimensions[dimension] };
     mergeParameters(parameters, ticketKeys.params);
     return query(
@@ -1306,15 +1320,22 @@
   function buildCrosscutSection(route) {
     var config = Crosscuts[route];
     var rows = readCrosscutRows(config.dimension);
-    var section = el('section', { class: 'crosscut-card' });
+    var section = el('section', {
+      class: 'crosscut-card',
+      'data-dimension': config.dimension
+    });
     if (rows.length === 0) {
-      section.appendChild(el('p', { class: 'muted' }, 'No data.'));
-      return section;
+      section.appendChild(el('p', { class: 'muted' }, 'No matching choices.'));
     }
 
+    var localState = tableState('crosscut:' + route, {
+      key: 'category',
+      direction: 'ascending'
+    });
     var table = components.createSortableTable({
       rows: rows,
-      initialSort: { key: 'category', direction: 'ascending' },
+      initialSort: localState.sort,
+      onSortChanged: function (sort) { localState.sort = sort; },
       className: 'crosscut-table',
       ariaLabel: config.pageTitle + ' crosscut',
       columns: [
@@ -1329,10 +1350,12 @@
           render: function (row) {
             var button = el('button', {
               type: 'button',
-              class: 'crosscut-row'
+              class: 'crosscut-row',
+              'data-dimension': config.dimension,
+              'data-value-key': String(row.ValueKey)
             }, String(row.DisplayValue));
             button.addEventListener('click', function () {
-              openFacetList(config.dimension, String(row.ValueKey));
+              selectFacet(config.dimension, String(row.ValueKey));
             });
             return button;
           }
@@ -1412,6 +1435,54 @@
     main.appendChild(notice);
   }
 
+  function appendPeopleGuidance(parent) {
+    parent.appendChild(el('p', { class: 'people-guidance muted' },
+      'Populate available policy-safe display names in the Jira source, then ' +
+      'refresh publication metadata and generate a new site. A missing ' +
+      'Assignee display name does not establish that the ticket is unassigned.'));
+  }
+
+  function renderCorpusCoverage(main) {
+    var corpus = presentation.corpusSummary;
+    var total = corpus.ticketCount;
+    var section = el('section', {
+      class: 'corpus-coverage',
+      'aria-label': 'Exported corpus coverage'
+    });
+    section.appendChild(el('h2', null, 'Exported corpus coverage'));
+    section.appendChild(el('p', null,
+      'Frozen at publication: ' + total + ' tickets across ' +
+      corpus.exportedProjectCount + ' projects. Browser filters do not ' +
+      'change these coverage facts or the site title.'));
+    var list = el('ul');
+    list.appendChild(el('li', { class: 'date-coverage' },
+      'Jira update dates: ' + corpus.validJiraUpdatedAtCount + ' of ' +
+      total + ' tickets (' + corpus.dateCoverage + ' coverage).' +
+      (corpus.maxJiraUpdatedAt
+        ? ' Latest known ticket update: ' + corpus.maxJiraUpdatedAt + '.'
+        : ' No ticket update date is available.')));
+    list.appendChild(el('li', { class: 'people-coverage' },
+      'Public display names: Reporter ' + corpus.ticketsWithPublicReporter +
+      ' of ' + total + '; Assignee ' + corpus.ticketsWithPublicAssignee +
+      ' of ' + total + '; in-person requesters ' +
+      corpus.ticketsWithPublicRequester + ' of ' + total + ' tickets.'));
+    corpus.linksByKind.forEach(function (coverage) {
+      list.appendChild(el('li', { class: 'link-coverage' },
+        coverage.kind + ': ' + coverage.totalRows + ' related rows; ' +
+        coverage.resolvedSafeLinks + ' resolved safe links; ' +
+        coverage.unresolvedWithRetainedSafeLinks +
+        ' retained safe links with unresolved lookups; ' +
+        coverage.withoutUsableUrl + ' without a usable URL.'));
+    });
+    section.appendChild(list);
+    if (corpus.ticketsWithPublicReporter < total ||
+        corpus.ticketsWithPublicAssignee < total ||
+        corpus.ticketsWithPublicRequester < total) {
+      appendPeopleGuidance(section);
+    }
+    main.appendChild(section);
+  }
+
   function readinessReasonMessage(code) {
     var reasons = presentation.readiness &&
       presentation.readiness.reasons || [];
@@ -1429,10 +1500,14 @@
       return readinessReasonMessage(
         person && person.UnavailableReason);
     }
-    return person.DisplayName == null ||
-      String(person.DisplayName).trim() === ''
-      ? 'Not provided'
+    return hasMissingPublicName(person)
+      ? 'No public display name available'
       : String(person.DisplayName);
+  }
+
+  function hasMissingPublicName(person) {
+    return person && person.Availability === 'available' &&
+      (person.DisplayName == null || String(person.DisplayName).trim() === '');
   }
 
   function appendDefinition(list, label, value) {
@@ -1445,13 +1520,14 @@
   }
 
   function appendAuthoredSummary(body, title, value, sources) {
-    if (value == null || String(value).trim() === '') return;
+    if (value == null || String(value) === '') return;
     body.appendChild(
-      components.createSummarySection(title, String(value), sources));
+      components.createSummarySection(
+        title, String(value), sources, inCorpusJiraHref));
   }
 
   function appendPlainSection(body, title, value) {
-    if (value == null || String(value).trim() === '') return;
+    if (value == null || String(value) === '') return;
     body.appendChild(accordion(
       title,
       el('pre', null, String(value)),
@@ -1464,14 +1540,15 @@
     proposal,
     justification,
     impact) {
-    appendPlainSection(body, 'Proposal ' + proposalName, proposal);
+    var label = components.proposalLabel(proposalName);
+    appendPlainSection(body, label, proposal);
     appendPlainSection(
       body,
-      'Proposal ' + proposalName + ' — Justification',
+      label + ' — Justification',
       justification);
     appendPlainSection(
       body,
-      'Proposal ' + proposalName + ' — Impact',
+      label + ' — Impact',
       impact);
   }
 
@@ -1502,24 +1579,17 @@
   }
 
   function renderRelatedItem(item) {
-    var listItem = el('li');
+    var listItem = el('li', {
+      'data-kind': item.Kind,
+      'data-item-key': item.ItemKey
+    });
     var label = String(item.Label || item.ItemKey || '');
-    if ((item.Kind === 'jira' || item.Kind === 'jira-xref') &&
-        inRunKeys[String(item.ItemKey).toLowerCase()]) {
-      listItem.appendChild(el('a', {
-        href: '#/ticket/' + encodeURIComponent(String(item.ItemKey)) +
-          currentHashSuffix()
-      }, label));
-    } else if ((item.Kind === 'jira' || item.Kind === 'jira-xref') &&
-               item.Url) {
-      listItem.appendChild(el('a', {
-        href: String(item.Url),
-        target: '_blank',
-        rel: 'noopener noreferrer'
-      }, label + ' ↗'));
-    } else {
-      listItem.appendChild(document.createTextNode(label));
-    }
+    var internalHref = (item.Kind === 'jira' || item.Kind === 'jira-xref') &&
+      inCorpusJiraHref(item.ItemKey);
+    var link = internalHref
+      ? el('a', { href: internalHref }, label)
+      : components.createExternalAnchor(item.Url, label);
+    listItem.appendChild(link || document.createTextNode(label));
     if (item.LinkType) {
       listItem.appendChild(document.createTextNode(
         ' (' + String(item.LinkType) + ')'));
@@ -1528,13 +1598,7 @@
       listItem.appendChild(document.createTextNode(
         ' · ' + String(item.Detail)));
     }
-    if (item.HydrationStatus === 'unresolved') {
-      listItem.appendChild(document.createTextNode(' '));
-      listItem.appendChild(el(
-        'span',
-        { class: 'muted' },
-        '(unresolved: ' + String(item.HydrationReason || '') + ')'));
-    }
+    components.appendLinkOutcome(listItem, item, Boolean(link));
     if (item.Justification) {
       listItem.appendChild(document.createElement('br'));
       listItem.appendChild(el(
@@ -1543,6 +1607,12 @@
         String(item.Justification)));
     }
     return listItem;
+  }
+
+  function inCorpusJiraHref(key) {
+    return inRunKeys[String(key).toLowerCase()]
+      ? '#/ticket/' + encodeURIComponent(String(key)) + currentHashSuffix()
+      : null;
   }
 
   function query(sql, params) {
@@ -1623,7 +1693,10 @@
     var hasTail = Array.isArray(tail) && tail.length > 0;
     var parts = [
       { label: 'Chooser', href: '../index.html' },
-      { label: presentation.siteName, href: hasTail ? '#/' : null }
+      {
+        label: presentation.siteName,
+        href: hasTail ? '#/' + currentHashSuffix() : null
+      }
     ];
     if (hasTail) {
       for (var index = 0; index < tail.length; index++) {
@@ -1758,8 +1831,8 @@
   }
 
   function markdownProseSection(title, value) {
-    if (value == null || String(value).trim() === '') return '';
-    return '## ' + title + '\n\n' + String(value).trim() + '\n\n';
+    if (value == null || String(value) === '') return '';
+    return '## ' + title + '\n\n' + String(value) + '\n\n';
   }
 
   function readCopyRelatedItems(ticketKey) {
@@ -1848,29 +1921,32 @@
     if (ticket.ProposalA ||
         ticket.ProposalAJustification ||
         ticket.ProposalAImpact) {
-      output += markdownProseSection('Proposal A', ticket.ProposalA);
       output += markdownProseSection(
-        'Proposal A — Justification',
+        components.proposalLabel('A'), ticket.ProposalA);
+      output += markdownProseSection(
+        components.proposalLabel('A') + ' — Justification',
         ticket.ProposalAJustification);
       output += markdownProseSection(
-        'Proposal A — Impact',
+        components.proposalLabel('A') + ' — Impact',
         ticket.ProposalAImpact);
     }
     if (ticket.ProposalB ||
         ticket.ProposalBJustification ||
         ticket.ProposalBImpact) {
-      output += markdownProseSection('Proposal B', ticket.ProposalB);
       output += markdownProseSection(
-        'Proposal B — Justification',
+        components.proposalLabel('B'), ticket.ProposalB);
+      output += markdownProseSection(
+        components.proposalLabel('B') + ' — Justification',
         ticket.ProposalBJustification);
       output += markdownProseSection(
-        'Proposal B — Impact',
+        components.proposalLabel('B') + ' — Impact',
         ticket.ProposalBImpact);
     }
     if (ticket.ProposalC || ticket.ProposalCJustification) {
-      output += markdownProseSection('Proposal C', ticket.ProposalC);
       output += markdownProseSection(
-        'Proposal C — Justification',
+        components.proposalLabel('C'), ticket.ProposalC);
+      output += markdownProseSection(
+        components.proposalLabel('C') + ' — Justification',
         ticket.ProposalCJustification);
     }
     if (ticket.Recommendation || ticket.RecommendationJustification) {
@@ -1976,10 +2052,13 @@
   function copyHydrationDetail(item) {
     if (!item) return '';
     if (item.HydrationStatus === 'unresolved') {
-      return 'unresolved: ' + String(item.HydrationReason || '');
+      return (item.Detail ? String(item.Detail) + ' · ' : '') +
+        'unresolved: ' + String(item.HydrationReason || '');
     }
     if (item.HydrationStatus !== 'resolved') return '';
-    return item.Detail == null ? '' : String(item.Detail);
+    return [item.Detail, item.HydrationReason].filter(function (value) {
+      return value != null && String(value) !== '';
+    }).map(String).join(' · ');
   }
 
   function copyZulipDetail(item) {
@@ -2007,16 +2086,9 @@
     if (typeof window.__DISCUSSION_TEST_HOOK__ !== 'function') return;
     window.__DISCUSSION_TEST_HOOK__(Object.freeze({
       query: query,
-      parseFacetStateFromHash: parseFacetStateFromHash,
-      withFacetSelection: withFacetSelection,
-      facetSelectionHash: facetSelectionHash,
       readCrosscutRows: readCrosscutRows,
       visibleListFacetDimensions: visibleListFacetDimensions,
       renderPersonAvailability: renderPersonAvailability,
-      setFacetState: function (hash) {
-        activeChips = parseFacetStateFromHash(hash);
-        return activeChips;
-      },
       readTicketListRows: function () {
         return readTicketListRows(buildTicketKeysSubquery([]));
       },
