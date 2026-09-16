@@ -169,9 +169,12 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         PreparedTicketTopicMemberRecord.CreateTable(connection);
         PreparedTicketPublicationRefreshReceiptRecord.CreateTable(connection);
         PreparedTicketPartitionCertificationRecord.CreateTable(connection);
+        PreparedTicketPublicationReconciliationRecord.CreateTable(connection);
+        PreparedTicketPublicationReconciliationJournalRecord.CreateTable(connection);
         JiraReviewWorkGroupRecord.CreateTable(connection);
         EnsureMigrationsTable(connection);
         EnsureAuthoringStateTables(connection);
+        EnsurePublicationReconciliationTables(connection);
         EnsurePublicationCompositeIndexes(connection);
         EnsureCanonicalCompositeIndexes(connection);
         EnsureHydrationWorkGroupCleanColumn(connection);
@@ -233,6 +236,265 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             "prepared_ticket_partition_receipts",
             "OutputFingerprint",
             "TEXT NULL");
+    }
+
+    private static void EnsurePublicationReconciliationTables(
+        SqliteConnection connection)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            CREATE TABLE IF NOT EXISTS prepared_ticket_publication_reconciliation_items(
+                RunId TEXT NOT NULL,
+                TicketKey TEXT NOT NULL COLLATE NOCASE,
+                Disposition TEXT NOT NULL,
+                BaselineSourceRevision TEXT NOT NULL,
+                CurrentSourceRevision TEXT NOT NULL,
+                BaselineReceiptId TEXT NOT NULL,
+                BaselineRunItemId TEXT NOT NULL,
+                BaselineContributingRunId TEXT NOT NULL,
+                BaselineAuthoredFingerprint TEXT NOT NULL,
+                BaselineGroupingFingerprint TEXT NOT NULL,
+                PRIMARY KEY(RunId, TicketKey)
+            );
+
+            CREATE TABLE IF NOT EXISTS prepared_ticket_publication_staged_graphs(
+                RunId TEXT NOT NULL,
+                TicketKey TEXT NOT NULL COLLATE NOCASE,
+                RunItemId TEXT NOT NULL,
+                OperationId TEXT NOT NULL,
+                SourceRevision TEXT NOT NULL,
+                AuthoredFingerprint TEXT NOT NULL,
+                PayloadJson TEXT NOT NULL,
+                StagedAt TEXT NOT NULL,
+                PRIMARY KEY(RunId, TicketKey)
+            );
+
+            CREATE TABLE IF NOT EXISTS prepared_ticket_publication_staged_hydration(
+                RunId TEXT NOT NULL,
+                TicketKey TEXT NOT NULL COLLATE NOCASE,
+                HydrationFingerprint TEXT NOT NULL,
+                HydrationJson TEXT NOT NULL,
+                StagedAt TEXT NOT NULL,
+                PRIMARY KEY(RunId, TicketKey)
+            );
+
+            CREATE TABLE IF NOT EXISTS prepared_ticket_publication_staged_receipts(
+                RunId TEXT NOT NULL,
+                TicketKey TEXT NOT NULL COLLATE NOCASE,
+                ReceiptId TEXT NOT NULL,
+                RunItemId TEXT NOT NULL,
+                OperationId TEXT NOT NULL,
+                AuthoredFingerprint TEXT NOT NULL,
+                PersistedAt TEXT NOT NULL,
+                PRIMARY KEY(RunId, TicketKey),
+                UNIQUE(ReceiptId)
+            );
+
+            CREATE TABLE IF NOT EXISTS prepared_ticket_publication_grouping_impacts(
+                RunId TEXT NOT NULL,
+                PartitionKey TEXT NOT NULL,
+                ImpactJson TEXT NOT NULL,
+                Complete INTEGER NOT NULL,
+                UpdatedAt TEXT NOT NULL,
+                PRIMARY KEY(RunId, PartitionKey)
+            );
+
+            CREATE TABLE IF NOT EXISTS prepared_ticket_publication_staged_grouping(
+                RunId TEXT NOT NULL,
+                PartitionKey TEXT NOT NULL,
+                ReplacementJson TEXT NOT NULL,
+                CorpusFingerprint TEXT NOT NULL,
+                OutputFingerprint TEXT NOT NULL,
+                ProtectedRowsFingerprint TEXT NOT NULL,
+                StagedAt TEXT NOT NULL,
+                PRIMARY KEY(RunId, PartitionKey)
+            );
+
+            CREATE TABLE IF NOT EXISTS prepared_ticket_publication_reconciliation_proofs(
+                RunId TEXT PRIMARY KEY,
+                ProofJson TEXT NOT NULL,
+                CapturedAt TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS prepared_ticket_publication_reconciliation_fences(
+                RunId TEXT PRIMARY KEY,
+                LeaseId TEXT NOT NULL,
+                AcquiredAt TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS prepared_ticket_publication_snapshot_descriptors(
+                RunId TEXT PRIMARY KEY,
+                DescriptorJson TEXT NOT NULL,
+                Sha256 TEXT NOT NULL,
+                PersistedAt TEXT NOT NULL
+            );
+            """;
+        command.ExecuteNonQuery();
+    }
+
+    public async Task<AuthoringRunRecord> CreatePublicationReconciliationAsync(
+        PreparedTicketPublicationReconciliationComparison comparison,
+        DateTimeOffset? now = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(comparison);
+        if (comparison.ContractVersion !=
+            PreparedTicketPublicationReconciliationContract.CurrentVersion)
+        {
+            throw new ArgumentException(
+                $"Unsupported reconciliation contract version '{comparison.ContractVersion}'.",
+                nameof(comparison));
+        }
+        ArgumentException.ThrowIfNullOrWhiteSpace(comparison.SourceRunId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(comparison.SourceSnapshotId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(comparison.SourceSnapshotSha256);
+        ArgumentException.ThrowIfNullOrWhiteSpace(comparison.StableJiraGeneration);
+        ArgumentException.ThrowIfNullOrWhiteSpace(comparison.CorpusFingerprint);
+        if (comparison.Items.Count == 0)
+        {
+            throw new ArgumentException(
+                "A publication reconciliation requires at least one item.",
+                nameof(comparison));
+        }
+        string[] duplicateKeys = comparison.Items
+            .GroupBy(item => item.TicketKey, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() != 1)
+            .Select(group => group.Key)
+            .ToArray();
+        if (duplicateKeys.Length != 0)
+        {
+            throw new ArgumentException(
+                $"The reconciliation comparison contains duplicate ticket keys: {string.Join(", ", duplicateKeys)}.",
+                nameof(comparison));
+        }
+        foreach (PreparedTicketPublicationReconciliationItemDecision item in
+                 comparison.Items)
+        {
+            PreparedTicketPublicationReconciliationDispositionValues
+                .EnsureValid(item.Disposition);
+        }
+
+        DateTimeOffset timestamp = now ?? DateTimeOffset.UtcNow;
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteTransaction transaction =
+            connection.BeginTransaction(deferred: false);
+        try
+        {
+            AuthoringRunStore store = new(this);
+            AuthoringRunRecord run = await store.CreateMixedRunAsync(
+                connection,
+                transaction,
+                AuthoringProcessorKind,
+                PreparedTicketPublicationReconciliationContract.Purpose,
+                comparison.SourceRunId,
+                comparison.Items.Select(item => new AuthoringMixedRunItem(
+                    item.TicketKey,
+                    "fhir",
+                    item.CurrentSourceRevision,
+                    item.Disposition ==
+                        PreparedTicketPublicationReconciliationDispositionValues
+                            .CarryForward
+                        ? AuthoringStatusValues.Items.Complete
+                        : AuthoringStatusValues.Items.Pending,
+                    item.Disposition ==
+                        PreparedTicketPublicationReconciliationDispositionValues
+                            .CarryForward
+                        ? item.BaselineReceiptId
+                        : null)).ToArray(),
+                now: timestamp,
+                requestJson: JsonSerializer.Serialize(comparison),
+                ct: ct);
+
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                INSERT INTO prepared_ticket_publication_reconciliations(
+                    RunId, SourceRunId, SourceSnapshotId, SourceSnapshotSha256,
+                    StableJiraGeneration, CorpusFingerprint, ComparisonJson,
+                    PromotionState, CapturedAt)
+                VALUES(
+                    @runId, @sourceRunId, @sourceSnapshotId, @sourceSnapshotSha256,
+                    @stableJiraGeneration, @corpusFingerprint, @comparisonJson,
+                    @promotionState, @capturedAt)
+                """,
+                ct,
+                ("@runId", run.Id),
+                ("@sourceRunId", comparison.SourceRunId),
+                ("@sourceSnapshotId", comparison.SourceSnapshotId),
+                ("@sourceSnapshotSha256", comparison.SourceSnapshotSha256),
+                ("@stableJiraGeneration", comparison.StableJiraGeneration),
+                ("@corpusFingerprint", comparison.CorpusFingerprint),
+                ("@comparisonJson", JsonSerializer.Serialize(comparison)),
+                ("@promotionState",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .Staged),
+                ("@capturedAt", Format(comparison.CapturedAt)));
+            foreach (PreparedTicketPublicationReconciliationItemDecision item in
+                     comparison.Items)
+            {
+                await ExecuteInTransactionAsync(
+                    connection,
+                    transaction,
+                    """
+                    INSERT INTO prepared_ticket_publication_reconciliation_items(
+                        RunId, TicketKey, Disposition, BaselineSourceRevision,
+                        CurrentSourceRevision, BaselineReceiptId,
+                        BaselineRunItemId, BaselineContributingRunId,
+                        BaselineAuthoredFingerprint, BaselineGroupingFingerprint)
+                    VALUES(
+                        @runId, @ticketKey, @disposition, @baselineRevision,
+                        @currentRevision, @receiptId, @runItemId,
+                        @contributingRunId, @authoredFingerprint,
+                        @groupingFingerprint)
+                    """,
+                    ct,
+                    ("@runId", run.Id),
+                    ("@ticketKey", item.TicketKey),
+                    ("@disposition", item.Disposition),
+                    ("@baselineRevision", item.BaselineSourceRevision),
+                    ("@currentRevision", item.CurrentSourceRevision),
+                    ("@receiptId", item.BaselineReceiptId),
+                    ("@runItemId", item.BaselineRunItemId),
+                    ("@contributingRunId", item.BaselineContributingRunId),
+                    ("@authoredFingerprint", item.BaselineAuthoredFingerprint),
+                    ("@groupingFingerprint", item.BaselineGroupingFingerprint));
+            }
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                INSERT INTO prepared_ticket_publication_reconciliation_journal(
+                    RunId, State, UpdatedAt)
+                VALUES(@runId, @state, @updatedAt)
+                """,
+                ct,
+                ("@runId", run.Id),
+                ("@state",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .Staged),
+                ("@updatedAt", Format(timestamp)));
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                INSERT INTO prepared_ticket_publication_reconciliation_fences(
+                    RunId, LeaseId, AcquiredAt)
+                VALUES(@runId, @leaseId, @acquiredAt)
+                """,
+                ct,
+                ("@runId", run.Id),
+                ("@leaseId", Guid.NewGuid().ToString("N")),
+                ("@acquiredAt", Format(timestamp)));
+            await transaction.CommitAsync(ct);
+            return run;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
     }
 
     private static void EnsurePublicationCompositeIndexes(
@@ -5742,6 +6004,661 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             ct);
     }
 
+    public async Task<PreparedTicketPublicationReconciliationComparison?>
+        GetPublicationReconciliationComparisonAsync(
+            string runId,
+            CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT ComparisonJson
+            FROM prepared_ticket_publication_reconciliations
+            WHERE RunId = @runId
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        string? json = (string?)await command.ExecuteScalarAsync(ct);
+        return json is null
+            ? null
+            : JsonSerializer.Deserialize<
+                PreparedTicketPublicationReconciliationComparison>(json)
+              ?? throw new InvalidOperationException(
+                  $"Reconciliation '{runId}' has an invalid comparison.");
+    }
+
+    public async Task<PreparedTicketPublicationStagedTicket>
+        StagePublicationReconciliationTicketAsync(
+            string runId,
+            string runItemId,
+            string operationId,
+            string receiptId,
+            string sourceRevision,
+            string authoredFingerprint,
+            PreparedTicketPayload payload,
+            PreparedTicketHydrationBatch hydration,
+            DateTimeOffset? now = null,
+            CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(runItemId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(operationId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(receiptId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceRevision);
+        ArgumentException.ThrowIfNullOrWhiteSpace(authoredFingerprint);
+        PreparedTicketPayloadValidator.ThrowIfInvalid(payload);
+        ArgumentNullException.ThrowIfNull(hydration);
+        ValidateStagedHydration(payload.Key, hydration);
+
+        DateTimeOffset stagedAt = now ?? DateTimeOffset.UtcNow;
+        string payloadJson = JsonSerializer.Serialize(payload);
+        string hydrationJson = JsonSerializer.Serialize(hydration);
+        string hydrationFingerprint =
+            AuthoringResultHasher.HashNormalizedUtf8(hydrationJson);
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteTransaction transaction =
+            connection.BeginTransaction(deferred: false);
+        try
+        {
+            await using (SqliteCommand validate = connection.CreateCommand())
+            {
+                validate.Transaction = transaction;
+                validate.CommandText =
+                    """
+                    SELECT i.CurrentSourceRevision, r.Status, r.BusinessKey
+                    FROM prepared_ticket_publication_reconciliation_items i
+                    INNER JOIN authoring_run_items r
+                        ON r.RunId = i.RunId
+                       AND r.Id = @runItemId
+                       AND r.BusinessKey = i.TicketKey COLLATE NOCASE
+                    WHERE i.RunId = @runId
+                      AND i.TicketKey = @ticketKey COLLATE NOCASE
+                      AND i.Disposition = @disposition
+                    """;
+                validate.Parameters.AddWithValue("@runId", runId);
+                validate.Parameters.AddWithValue("@runItemId", runItemId);
+                validate.Parameters.AddWithValue("@ticketKey", payload.Key);
+                validate.Parameters.AddWithValue(
+                    "@disposition",
+                    PreparedTicketPublicationReconciliationDispositionValues
+                        .ReAuthor);
+                await using SqliteDataReader reader =
+                    await validate.ExecuteReaderAsync(ct);
+                if (!await reader.ReadAsync(ct))
+                {
+                    throw new InvalidOperationException(
+                        $"Ticket '{payload.Key}' is not pending revised work in reconciliation '{runId}'.");
+                }
+                if (!string.Equals(
+                        AuthoringSourceRevision.CanonicalizeTimestamp(
+                            reader.GetString(0)),
+                        AuthoringSourceRevision.CanonicalizeTimestamp(
+                            sourceRevision),
+                        StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        $"Ticket '{payload.Key}' staging revision does not match the frozen recipe.");
+                }
+            }
+
+            await InsertIdempotentStageRowAsync(
+                connection,
+                transaction,
+                "prepared_ticket_publication_staged_graphs",
+                payload.Key,
+                runId,
+                """
+                RunId, TicketKey, RunItemId, OperationId, SourceRevision,
+                AuthoredFingerprint, PayloadJson, StagedAt
+                """,
+                """
+                @runId, @ticketKey, @runItemId, @operationId, @sourceRevision,
+                @authoredFingerprint, @payloadJson, @stagedAt
+                """,
+                """
+                RunItemId = @runItemId AND OperationId = @operationId
+                AND SourceRevision = @sourceRevision
+                AND AuthoredFingerprint = @authoredFingerprint
+                AND PayloadJson = @payloadJson
+                """,
+                ct,
+                ("@runItemId", runItemId),
+                ("@operationId", operationId),
+                ("@sourceRevision", sourceRevision),
+                ("@authoredFingerprint", authoredFingerprint),
+                ("@payloadJson", payloadJson),
+                ("@stagedAt", Format(stagedAt)));
+            await InsertIdempotentStageRowAsync(
+                connection,
+                transaction,
+                "prepared_ticket_publication_staged_hydration",
+                payload.Key,
+                runId,
+                "RunId, TicketKey, HydrationFingerprint, HydrationJson, StagedAt",
+                "@runId, @ticketKey, @hydrationFingerprint, @hydrationJson, @stagedAt",
+                """
+                HydrationFingerprint = @hydrationFingerprint
+                AND HydrationJson = @hydrationJson
+                """,
+                ct,
+                ("@hydrationFingerprint", hydrationFingerprint),
+                ("@hydrationJson", hydrationJson),
+                ("@stagedAt", Format(stagedAt)));
+            await InsertIdempotentStageRowAsync(
+                connection,
+                transaction,
+                "prepared_ticket_publication_staged_receipts",
+                payload.Key,
+                runId,
+                """
+                RunId, TicketKey, ReceiptId, RunItemId, OperationId,
+                AuthoredFingerprint, PersistedAt
+                """,
+                """
+                @runId, @ticketKey, @receiptId, @runItemId, @operationId,
+                @authoredFingerprint, @stagedAt
+                """,
+                """
+                ReceiptId = @receiptId AND RunItemId = @runItemId
+                AND OperationId = @operationId
+                AND AuthoredFingerprint = @authoredFingerprint
+                """,
+                ct,
+                ("@receiptId", receiptId),
+                ("@runItemId", runItemId),
+                ("@operationId", operationId),
+                ("@authoredFingerprint", authoredFingerprint),
+                ("@stagedAt", Format(stagedAt)));
+            await transaction.CommitAsync(ct);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+
+        return new PreparedTicketPublicationStagedTicket(
+            runId,
+            payload.Key,
+            runItemId,
+            operationId,
+            receiptId,
+            sourceRevision,
+            authoredFingerprint,
+            hydrationFingerprint,
+            payload,
+            hydration,
+            stagedAt);
+    }
+
+    public async Task SavePublicationReconciliationGroupingImpactAsync(
+        string runId,
+        PreparedTicketPublicationReconciliationGroupingImpact impact,
+        DateTimeOffset? now = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentNullException.ThrowIfNull(impact);
+        ArgumentException.ThrowIfNullOrWhiteSpace(impact.PartitionKey);
+        string json = JsonSerializer.Serialize(impact);
+        await using SqliteConnection connection = OpenConnection();
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO prepared_ticket_publication_grouping_impacts(
+                RunId, PartitionKey, ImpactJson, Complete, UpdatedAt)
+            VALUES(@runId, @partitionKey, @json, @complete, @updatedAt)
+            ON CONFLICT(RunId, PartitionKey) DO UPDATE SET
+                ImpactJson = excluded.ImpactJson,
+                Complete = excluded.Complete,
+                UpdatedAt = excluded.UpdatedAt
+            WHERE ImpactJson = excluded.ImpactJson
+            """,
+            ct,
+            ("@runId", runId),
+            ("@partitionKey", impact.PartitionKey),
+            ("@json", json),
+            ("@complete", impact.Complete),
+            ("@updatedAt", Format(now ?? DateTimeOffset.UtcNow)));
+        await using SqliteCommand check = connection.CreateCommand();
+        check.CommandText =
+            """
+            SELECT ImpactJson FROM prepared_ticket_publication_grouping_impacts
+            WHERE RunId = @runId AND PartitionKey = @partitionKey
+            """;
+        check.Parameters.AddWithValue("@runId", runId);
+        check.Parameters.AddWithValue("@partitionKey", impact.PartitionKey);
+        if (!string.Equals(
+                json,
+                (string?)await check.ExecuteScalarAsync(ct),
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Grouping impact '{impact.PartitionKey}' was already staged with different content.");
+        }
+    }
+
+    public async Task SavePublicationReconciliationGroupingReplacementAsync(
+        PreparedTicketPublicationStagedGroupingReplacement replacement,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(replacement);
+        ArgumentException.ThrowIfNullOrWhiteSpace(replacement.RunId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(replacement.PartitionKey);
+        ArgumentException.ThrowIfNullOrWhiteSpace(replacement.ReplacementJson);
+        ArgumentException.ThrowIfNullOrWhiteSpace(
+            replacement.CorpusFingerprint);
+        ArgumentException.ThrowIfNullOrWhiteSpace(
+            replacement.OutputFingerprint);
+        ArgumentException.ThrowIfNullOrWhiteSpace(
+            replacement.ProtectedRowsFingerprint);
+        await using SqliteConnection connection = OpenConnection();
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO prepared_ticket_publication_staged_grouping(
+                RunId, PartitionKey, ReplacementJson, CorpusFingerprint,
+                OutputFingerprint, ProtectedRowsFingerprint, StagedAt)
+            VALUES(
+                @runId, @partitionKey, @replacementJson, @corpusFingerprint,
+                @outputFingerprint, @protectedRowsFingerprint, @stagedAt)
+            ON CONFLICT(RunId, PartitionKey) DO NOTHING
+            """,
+            ct,
+            ("@runId", replacement.RunId),
+            ("@partitionKey", replacement.PartitionKey),
+            ("@replacementJson", replacement.ReplacementJson),
+            ("@corpusFingerprint", replacement.CorpusFingerprint),
+            ("@outputFingerprint", replacement.OutputFingerprint),
+            ("@protectedRowsFingerprint",
+                replacement.ProtectedRowsFingerprint),
+            ("@stagedAt", Format(replacement.StagedAt)));
+        await using SqliteCommand check = connection.CreateCommand();
+        check.CommandText =
+            """
+            SELECT 1 FROM prepared_ticket_publication_staged_grouping
+            WHERE RunId = @runId AND PartitionKey = @partitionKey
+              AND ReplacementJson = @replacementJson
+              AND CorpusFingerprint = @corpusFingerprint
+              AND OutputFingerprint = @outputFingerprint
+              AND ProtectedRowsFingerprint = @protectedRowsFingerprint
+            """;
+        check.Parameters.AddWithValue("@runId", replacement.RunId);
+        check.Parameters.AddWithValue(
+            "@partitionKey",
+            replacement.PartitionKey);
+        check.Parameters.AddWithValue(
+            "@replacementJson",
+            replacement.ReplacementJson);
+        check.Parameters.AddWithValue(
+            "@corpusFingerprint",
+            replacement.CorpusFingerprint);
+        check.Parameters.AddWithValue(
+            "@outputFingerprint",
+            replacement.OutputFingerprint);
+        check.Parameters.AddWithValue(
+            "@protectedRowsFingerprint",
+            replacement.ProtectedRowsFingerprint);
+        if (await check.ExecuteScalarAsync(ct) is null)
+        {
+            throw new InvalidOperationException(
+                $"Grouping replacement '{replacement.PartitionKey}' was already staged with different content.");
+        }
+    }
+
+    public async Task SavePublicationReconciliationSnapshotDescriptorAsync(
+        PreparedTicketPublicationSnapshotDescriptor descriptor,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ArgumentException.ThrowIfNullOrWhiteSpace(descriptor.RunId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(descriptor.DescriptorJson);
+        ArgumentException.ThrowIfNullOrWhiteSpace(descriptor.Sha256);
+        await using SqliteConnection connection = OpenConnection();
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO prepared_ticket_publication_snapshot_descriptors(
+                RunId, DescriptorJson, Sha256, PersistedAt)
+            VALUES(@runId, @json, @sha256, @persistedAt)
+            ON CONFLICT(RunId) DO UPDATE SET
+                DescriptorJson = excluded.DescriptorJson,
+                Sha256 = excluded.Sha256,
+                PersistedAt = excluded.PersistedAt
+            WHERE DescriptorJson = excluded.DescriptorJson
+              AND Sha256 = excluded.Sha256
+            """,
+            ct,
+            ("@runId", descriptor.RunId),
+            ("@json", descriptor.DescriptorJson),
+            ("@sha256", descriptor.Sha256),
+            ("@persistedAt", Format(descriptor.PersistedAt)));
+    }
+
+    public async Task SavePublicationReconciliationProofAsync(
+        string runId,
+        PreparedTicketPublicationReconciliationProof proof,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentNullException.ThrowIfNull(proof);
+        if (proof.ContractVersion !=
+                PreparedTicketPublicationReconciliationContract.CurrentVersion ||
+            proof.Purpose !=
+                PreparedTicketPublicationReconciliationContract.Purpose)
+        {
+            throw new ArgumentException(
+                "The publication proof is not a current reconciliation proof.",
+                nameof(proof));
+        }
+        string json = JsonSerializer.Serialize(proof);
+        await using SqliteConnection connection = OpenConnection();
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO prepared_ticket_publication_reconciliation_proofs(
+                RunId, ProofJson, CapturedAt)
+            VALUES(@runId, @json, @capturedAt)
+            ON CONFLICT(RunId) DO UPDATE SET
+                ProofJson = excluded.ProofJson,
+                CapturedAt = excluded.CapturedAt
+            WHERE ProofJson = excluded.ProofJson
+            """,
+            ct,
+            ("@runId", runId),
+            ("@json", json),
+            ("@capturedAt", Format(proof.CapturedAt)));
+    }
+
+    public async Task UpdatePublicationReconciliationJournalAsync(
+        PreparedTicketPublicationPromotionJournal journal,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(journal);
+        ArgumentException.ThrowIfNullOrWhiteSpace(journal.RunId);
+        if (!PreparedTicketPublicationReconciliationPromotionStateValues
+                .IsValid(journal.State))
+        {
+            throw new ArgumentException(
+                $"Unknown reconciliation journal state '{journal.State}'.",
+                nameof(journal));
+        }
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteTransaction transaction =
+            connection.BeginTransaction(deferred: false);
+        try
+        {
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                UPDATE prepared_ticket_publication_reconciliation_journal
+                SET State = @state,
+                    SnapshotDescriptorJson = @descriptor,
+                    LastRecoveryAttemptAt = @recoveryAt,
+                    FailureCode = @failureCode,
+                    FailureDetail = @failureDetail,
+                    UpdatedAt = @updatedAt
+                WHERE RunId = @runId
+                """,
+                ct,
+                ("@state", journal.State),
+                ("@descriptor", journal.SnapshotDescriptorJson),
+                ("@recoveryAt", journal.LastRecoveryAttemptAt is null
+                    ? null
+                    : Format(journal.LastRecoveryAttemptAt.Value)),
+                ("@failureCode", journal.FailureCode),
+                ("@failureDetail", journal.FailureDetail),
+                ("@updatedAt", Format(journal.UpdatedAt)),
+                ("@runId", journal.RunId));
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                UPDATE prepared_ticket_publication_reconciliations
+                SET PromotionState = @state
+                WHERE RunId = @runId
+                """,
+                ct,
+                ("@state", journal.State),
+                ("@runId", journal.RunId));
+            await transaction.CommitAsync(ct);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
+    public async Task CleanupPublicationReconciliationWorkspaceAsync(
+        string runId,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteTransaction transaction =
+            connection.BeginTransaction(deferred: false);
+        try
+        {
+            string? promotionState;
+            string? journalState;
+            bool abandoned;
+            await using (SqliteCommand state = connection.CreateCommand())
+            {
+                state.Transaction = transaction;
+                state.CommandText =
+                    """
+                    SELECT reconciliation.PromotionState,
+                           journal.State,
+                           reconciliation.AbandonedAt IS NOT NULL
+                    FROM prepared_ticket_publication_reconciliations reconciliation
+                    LEFT JOIN prepared_ticket_publication_reconciliation_journal journal
+                      ON journal.RunId = reconciliation.RunId
+                    WHERE reconciliation.RunId = @runId
+                    """;
+                state.Parameters.AddWithValue("@runId", runId);
+                await using SqliteDataReader reader =
+                    await state.ExecuteReaderAsync(ct);
+                if (!await reader.ReadAsync(ct))
+                {
+                    await transaction.CommitAsync(ct);
+                    return;
+                }
+                promotionState = reader.GetString(0);
+                journalState = reader.IsDBNull(1)
+                    ? null
+                    : reader.GetString(1);
+                abandoned = reader.GetBoolean(2);
+            }
+            if (!abandoned &&
+                promotionState !=
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .Ready)
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{runId}' workspace is still required.");
+            }
+            if (journalState ==
+                PreparedTicketPublicationReconciliationPromotionStateValues
+                    .SnapshotPublishPending)
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{runId}' has a pending promotion journal.");
+            }
+            foreach (string table in new[]
+            {
+                "prepared_ticket_publication_staged_graphs",
+                "prepared_ticket_publication_staged_hydration",
+                "prepared_ticket_publication_staged_receipts",
+                "prepared_ticket_publication_grouping_impacts",
+                "prepared_ticket_publication_staged_grouping",
+                "prepared_ticket_publication_snapshot_descriptors",
+                "prepared_ticket_publication_reconciliation_fences",
+            })
+            {
+                await ExecuteInTransactionAsync(
+                    connection,
+                    transaction,
+                    $"DELETE FROM {table} WHERE RunId = @runId",
+                    ct,
+                    ("@runId", runId));
+            }
+            await transaction.CommitAsync(ct);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
+    public async Task<PreparedTicketPublicationCorpusOverlay>
+        GetPublicationReconciliationCorpusAsync(
+            string runId,
+            CancellationToken ct = default)
+    {
+        PreparedTicketPublicationReconciliationComparison comparison =
+            await GetPublicationReconciliationComparisonAsync(runId, ct)
+            ?? throw new KeyNotFoundException(
+                $"Publication reconciliation '{runId}' was not found.");
+        List<PreparedTicketPublicationCorpusTicket> tickets =
+            new(comparison.Items.Count);
+        await using SqliteConnection connection = OpenConnection();
+        foreach (PreparedTicketPublicationReconciliationItemDecision decision in
+                 comparison.Items.OrderBy(
+                     item => item.TicketKey,
+                     StringComparer.OrdinalIgnoreCase))
+        {
+            tickets.Add(decision.Disposition ==
+                PreparedTicketPublicationReconciliationDispositionValues
+                    .CarryForward
+                ? await ReadCarriedCorpusTicketAsync(
+                    connection,
+                    decision,
+                    ct)
+                : await ReadStagedCorpusTicketAsync(
+                    connection,
+                    runId,
+                    decision,
+                    ct));
+        }
+        if (tickets.Select(ticket => ticket.TicketKey)
+            .Distinct(StringComparer.OrdinalIgnoreCase).Count() !=
+            comparison.Items.Count)
+        {
+            throw new InvalidOperationException(
+                $"Reconciliation '{runId}' overlay contains duplicate or missing tickets.");
+        }
+        return new PreparedTicketPublicationCorpusOverlay(
+            runId,
+            comparison.CorpusFingerprint,
+            tickets);
+    }
+
+    public async Task AbandonPublicationReconciliationAsync(
+        string runId,
+        string reason,
+        DateTimeOffset? now = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        DateTimeOffset abandonedAt = now ?? DateTimeOffset.UtcNow;
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteTransaction transaction =
+            connection.BeginTransaction(deferred: false);
+        try
+        {
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                UPDATE prepared_ticket_publication_reconciliations
+                SET AbandonedAt = @abandonedAt,
+                    AbandonmentReason = @reason
+                WHERE RunId = @runId
+                """,
+                ct,
+                ("@abandonedAt", Format(abandonedAt)),
+                ("@reason", reason),
+                ("@runId", runId));
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                DELETE FROM prepared_ticket_publication_reconciliation_fences
+                WHERE RunId = @runId
+                """,
+                ct,
+                ("@runId", runId));
+            await transaction.CommitAsync(ct);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
+    private static void ValidateStagedHydration(
+        string ticketKey,
+        PreparedTicketHydrationBatch hydration)
+    {
+        if (!string.Equals(
+                ticketKey,
+                hydration.TicketKey,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                ticketKey,
+                hydration.Parent.TicketKey,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                "Staged graph and hydration ticket keys must match.",
+                nameof(hydration));
+        }
+        IEnumerable<string> childKeys =
+            hydration.JiraRows.Select(row => row.TicketKey)
+                .Concat(hydration.ZulipRows.Select(row => row.TicketKey))
+                .Concat(hydration.GitHubRows.Select(row => row.TicketKey))
+                .Concat(hydration.RepoRows.Select(row => row.TicketKey))
+                .Concat(hydration.JiraXrefRows.Select(row => row.TicketKey))
+                .Concat((hydration.InPersonRequesters ?? [])
+                    .Select(row => row.TicketKey));
+        if (childKeys.Any(key => !string.Equals(
+                key,
+                ticketKey,
+                StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new ArgumentException(
+                "A staged hydration child belongs to a different ticket.",
+                nameof(hydration));
+        }
+        if (hydration.JiraRows
+                .Select(row => row.JiraKey)
+                .Distinct(StringComparer.OrdinalIgnoreCase).Count() !=
+            hydration.JiraRows.Count ||
+            hydration.ZulipRows
+                .Select(row => row.ZulipThreadId)
+                .Distinct(StringComparer.OrdinalIgnoreCase).Count() !=
+            hydration.ZulipRows.Count ||
+            hydration.GitHubRows
+                .Select(row => row.GitHubItemId)
+                .Distinct(StringComparer.OrdinalIgnoreCase).Count() !=
+            hydration.GitHubRows.Count ||
+            hydration.RepoRows
+                .Select(row => row.Repo)
+                .Distinct(StringComparer.OrdinalIgnoreCase).Count() !=
+            hydration.RepoRows.Count)
+        {
+            throw new ArgumentException(
+                "A staged hydration graph contains duplicate child rows.",
+                nameof(hydration));
+        }
+    }
+
     private static async Task<string> ComputeGroupingOutputFingerprintAsync(
         SqliteConnection connection,
         string partitionKey,
@@ -6272,6 +7189,339 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         }
 
         await command.ExecuteNonQueryAsync(ct);
+    }
+
+    private static async Task ExecuteInTransactionAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sql,
+        CancellationToken ct,
+        params (string Name, object? Value)[] parameters)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = sql;
+        foreach ((string name, object? value) in parameters)
+        {
+            command.Parameters.AddWithValue(name, value ?? DBNull.Value);
+        }
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    private static async Task InsertIdempotentStageRowAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string table,
+        string ticketKey,
+        string runId,
+        string columns,
+        string values,
+        string equalityPredicate,
+        CancellationToken ct,
+        params (string Name, object? Value)[] parameters)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            $"""
+             INSERT INTO {table}({columns})
+             VALUES({values})
+             ON CONFLICT(RunId, TicketKey) DO NOTHING
+             """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue("@ticketKey", ticketKey);
+        foreach ((string name, object? value) in parameters)
+        {
+            command.Parameters.AddWithValue(name, value ?? DBNull.Value);
+        }
+        await command.ExecuteNonQueryAsync(ct);
+
+        command.Parameters.Clear();
+        command.CommandText =
+            $"""
+             SELECT 1 FROM {table}
+             WHERE RunId = @runId AND TicketKey = @ticketKey COLLATE NOCASE
+               AND {equalityPredicate}
+             """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue("@ticketKey", ticketKey);
+        foreach ((string name, object? value) in parameters)
+        {
+            command.Parameters.AddWithValue(name, value ?? DBNull.Value);
+        }
+        if (await command.ExecuteScalarAsync(ct) is null)
+        {
+            throw new InvalidOperationException(
+                $"Ticket '{ticketKey}' was already staged with different content.");
+        }
+    }
+
+    private static async Task<PreparedTicketPublicationCorpusTicket>
+        ReadCarriedCorpusTicketAsync(
+            SqliteConnection connection,
+            PreparedTicketPublicationReconciliationItemDecision decision,
+            CancellationToken ct)
+    {
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                SELECT state.GraphHash, state.RunId, state.RunItemId,
+                       item.AcceptedReceiptId
+                FROM prepared_ticket_authoring_state state
+                INNER JOIN authoring_run_items item
+                    ON item.Id = state.RunItemId
+                   AND item.RunId = state.RunId
+                WHERE state.TicketKey = @ticketKey COLLATE NOCASE
+                  AND state.Classification = 'receipt-backed'
+                """;
+            command.Parameters.AddWithValue("@ticketKey", decision.TicketKey);
+            await using SqliteDataReader reader =
+                await command.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct) ||
+                !string.Equals(
+                    reader.GetString(0),
+                    decision.BaselineAuthoredFingerprint,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    reader.GetString(1),
+                    decision.BaselineContributingRunId,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    reader.GetString(2),
+                    decision.BaselineRunItemId,
+                    StringComparison.Ordinal) ||
+                reader.IsDBNull(3) ||
+                !string.Equals(
+                    reader.GetString(3),
+                    decision.BaselineReceiptId,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Carried ticket '{decision.TicketKey}' diverged from its frozen accepted coordinate.");
+            }
+        }
+        PreparedTicketPayload payload =
+            await ReadPreparedTicketPayloadAsync(
+                connection,
+                decision.TicketKey,
+                ct);
+        string graphHash = await ComputePreparedGraphHashAsync(
+            connection,
+            decision.TicketKey,
+            ct);
+        if (!string.Equals(
+                graphHash,
+                decision.BaselineAuthoredFingerprint,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Carried ticket '{decision.TicketKey}' graph fingerprint diverged.");
+        }
+        PreparedTicketHydrationBatch hydration =
+            await ReadHydrationBatchAsync(
+                connection,
+                decision.TicketKey,
+                ct);
+        return new PreparedTicketPublicationCorpusTicket(
+            decision.TicketKey,
+            decision.Disposition,
+            decision.CurrentSourceRevision,
+            decision.BaselineReceiptId,
+            decision.BaselineRunItemId,
+            decision.BaselineContributingRunId,
+            decision.BaselineAuthoredFingerprint,
+            payload,
+            hydration);
+    }
+
+    private static async Task<PreparedTicketPublicationCorpusTicket>
+        ReadStagedCorpusTicketAsync(
+            SqliteConnection connection,
+            string runId,
+            PreparedTicketPublicationReconciliationItemDecision decision,
+            CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT graph.RunItemId, graph.OperationId, graph.SourceRevision,
+                   graph.AuthoredFingerprint, graph.PayloadJson,
+                   hydration.HydrationFingerprint, hydration.HydrationJson,
+                   receipt.ReceiptId
+            FROM prepared_ticket_publication_staged_graphs graph
+            INNER JOIN prepared_ticket_publication_staged_hydration hydration
+                ON hydration.RunId = graph.RunId
+               AND hydration.TicketKey = graph.TicketKey COLLATE NOCASE
+            INNER JOIN prepared_ticket_publication_staged_receipts receipt
+                ON receipt.RunId = graph.RunId
+               AND receipt.TicketKey = graph.TicketKey COLLATE NOCASE
+               AND receipt.RunItemId = graph.RunItemId
+               AND receipt.OperationId = graph.OperationId
+               AND receipt.AuthoredFingerprint = graph.AuthoredFingerprint
+            WHERE graph.RunId = @runId
+              AND graph.TicketKey = @ticketKey COLLATE NOCASE
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue("@ticketKey", decision.TicketKey);
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+        {
+            throw new InvalidOperationException(
+                $"Revised ticket '{decision.TicketKey}' does not have a complete staged graph.");
+        }
+        string runItemId = reader.GetString(0);
+        string sourceRevision = reader.GetString(2);
+        string authoredFingerprint = reader.GetString(3);
+        string payloadJson = reader.GetString(4);
+        string hydrationFingerprint = reader.GetString(5);
+        string hydrationJson = reader.GetString(6);
+        string receiptId = reader.GetString(7);
+        if (!string.Equals(
+                AuthoringSourceRevision.CanonicalizeTimestamp(sourceRevision),
+                AuthoringSourceRevision.CanonicalizeTimestamp(
+                    decision.CurrentSourceRevision),
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                hydrationFingerprint,
+                AuthoringResultHasher.HashNormalizedUtf8(hydrationJson),
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Revised ticket '{decision.TicketKey}' staged fingerprints diverged.");
+        }
+        PreparedTicketPayload payload =
+            JsonSerializer.Deserialize<PreparedTicketPayload>(payloadJson)
+            ?? throw new InvalidOperationException(
+                $"Revised ticket '{decision.TicketKey}' has an invalid staged graph.");
+        PreparedTicketHydrationBatch hydration =
+            JsonSerializer.Deserialize<PreparedTicketHydrationBatch>(
+                hydrationJson)
+            ?? throw new InvalidOperationException(
+                $"Revised ticket '{decision.TicketKey}' has invalid staged hydration.");
+        PreparedTicketPayloadValidator.ThrowIfInvalid(payload);
+        ValidateStagedHydration(decision.TicketKey, hydration);
+        if (!string.Equals(
+                payload.Key,
+                decision.TicketKey,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Revised ticket '{decision.TicketKey}' staged graph belongs to another ticket.");
+        }
+        return new PreparedTicketPublicationCorpusTicket(
+            decision.TicketKey,
+            decision.Disposition,
+            decision.CurrentSourceRevision,
+            receiptId,
+            runItemId,
+            runId,
+            authoredFingerprint,
+            payload,
+            hydration);
+    }
+
+    private static async Task<PreparedTicketPayload>
+        ReadPreparedTicketPayloadAsync(
+            SqliteConnection connection,
+            string key,
+            CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT Key, RequestSummary, CommentSummary, LinkedTicketSummary,
+                   RelatedTicketSummary, RelatedZulipSummary,
+                   RelatedGitHubSummary, ExistingProposed, ProposalA,
+                   ProposalAJustification, ProposalAImpact, ProposalB,
+                   ProposalBJustification, ProposalBImpact, ProposalC,
+                   ProposalCJustification, Recommendation,
+                   RecommendationJustification, SavedAt
+            FROM prepared_tickets
+            WHERE Key = @key COLLATE NOCASE
+            """;
+        command.Parameters.AddWithValue("@key", key);
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+        {
+            throw new InvalidOperationException(
+                $"Carried ticket '{key}' is missing its canonical graph.");
+        }
+        PreparedTicketPayload payload = new()
+        {
+            Key = reader.GetString(0),
+            RequestSummary = reader.GetString(1),
+            CommentSummary = reader.GetString(2),
+            LinkedTicketSummary = reader.GetString(3),
+            RelatedTicketSummary = reader.GetString(4),
+            RelatedZulipSummary = reader.GetString(5),
+            RelatedGitHubSummary = reader.GetString(6),
+            ExistingProposed = reader.GetString(7),
+            ProposalA = reader.GetString(8),
+            ProposalAJustification = reader.GetString(9),
+            ProposalAImpact = reader.GetString(10),
+            ProposalB = reader.GetString(11),
+            ProposalBJustification = reader.GetString(12),
+            ProposalBImpact = reader.GetString(13),
+            ProposalC = reader.GetString(14),
+            ProposalCJustification = reader.GetString(15),
+            Recommendation = reader.GetString(16),
+            RecommendationJustification = reader.GetString(17),
+            SavedAt = reader.GetDateTimeOffset(18),
+        };
+        await reader.DisposeAsync();
+        payload.Repos = (await GetRelatedItemsAsync(connection, key, ct)).Repos
+            .Select(row => new PreparedTicketRepoPayload
+            {
+                Repo = row.Repo,
+                RepoCategory = row.RepoCategory,
+                Justification = row.Justification,
+            }).ToList();
+        PreparedTicketRelatedItems related =
+            await GetRelatedItemsAsync(connection, key, ct);
+        payload.RelatedJiraTickets = related.JiraTickets.Select(row =>
+            new PreparedTicketRelatedJiraPayload
+            {
+                AssociatedTicketKey = row.AssociatedTicketKey,
+                LinkType = row.LinkType,
+                Justification = row.Justification,
+            }).ToList();
+        payload.RelatedZulipThreads = related.ZulipThreads.Select(row =>
+            new PreparedTicketRelatedZulipPayload
+            {
+                ZulipThreadId = row.ZulipThreadId,
+                Justification = row.Justification,
+            }).ToList();
+        payload.RelatedGitHubItems = related.GitHubItems.Select(row =>
+            new PreparedTicketRelatedGitHubPayload
+            {
+                GitHubItemId = row.GitHubItemId,
+                Justification = row.Justification,
+            }).ToList();
+        return payload;
+    }
+
+    private static async Task<PreparedTicketHydrationBatch>
+        ReadHydrationBatchAsync(
+            SqliteConnection connection,
+            string key,
+            CancellationToken ct)
+    {
+        PreparedTicketHydrationRow parent =
+            await ReadHydrationParentAsync(connection, key, ct)
+            ?? throw new InvalidOperationException(
+                $"Carried ticket '{key}' is missing canonical hydration.");
+        return new PreparedTicketHydrationBatch(
+            key,
+            parent,
+            await ReadJiraHydrationAsync(connection, key, ct),
+            await ReadZulipHydrationAsync(connection, key, ct),
+            await ReadGitHubHydrationAsync(connection, key, ct),
+            await ReadRepoHydrationAsync(connection, key, ct),
+            await ReadJiraXrefAsync(connection, key, ct),
+            await ReadInPersonRequestersAsync(connection, key, ct));
     }
 
     private static async Task<int> ExecuteAsyncWithCount(

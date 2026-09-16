@@ -57,6 +57,170 @@ public sealed class PreparerDatabaseTests
             database,
             "prepared_ticket_partition_certifications",
             ["RunId", "PartitionKey"]));
+        foreach (string table in new[]
+        {
+            "prepared_ticket_publication_reconciliations",
+            "prepared_ticket_publication_reconciliation_items",
+            "prepared_ticket_publication_staged_graphs",
+            "prepared_ticket_publication_staged_hydration",
+            "prepared_ticket_publication_staged_receipts",
+            "prepared_ticket_publication_grouping_impacts",
+            "prepared_ticket_publication_staged_grouping",
+            "prepared_ticket_publication_reconciliation_proofs",
+            "prepared_ticket_publication_reconciliation_journal",
+            "prepared_ticket_publication_reconciliation_fences",
+            "prepared_ticket_publication_snapshot_descriptors",
+        })
+        {
+            Assert.True(Exists(database, "table", table), table);
+        }
+    }
+
+    [Fact]
+    public async Task MixedRunCreation_ParticipatesInCallerTransaction()
+    {
+        using TestDatabase database = CreateDatabase();
+        AuthoringRunStore store = new(database.Database);
+        await store.EnsureProcessorModeAsync("jira-fhir");
+        await store.TransitionProcessorModeAsync(
+            "jira-fhir",
+            AuthoringStatusValues.ProcessorModes.Legacy,
+            AuthoringStatusValues.ProcessorModes.CuttingOver);
+        await store.TransitionProcessorModeAsync(
+            "jira-fhir",
+            AuthoringStatusValues.ProcessorModes.CuttingOver,
+            AuthoringStatusValues.ProcessorModes.RunBacked);
+
+        string runId = Guid.NewGuid().ToString("N");
+        await using (SqliteConnection connection =
+                     database.Database.OpenConnection())
+        await using (SqliteTransaction transaction =
+                     connection.BeginTransaction(deferred: false))
+        {
+            await store.CreateMixedRunAsync(
+                connection,
+                transaction,
+                "jira-fhir",
+                PreparedTicketPublicationReconciliationContract.Purpose,
+                "source-run",
+                [
+                    new AuthoringMixedRunItem(
+                        "FHIR-1",
+                        "fhir",
+                        "revision-1",
+                        AuthoringStatusValues.Items.Pending),
+                    new AuthoringMixedRunItem(
+                        "FHIR-2",
+                        "fhir",
+                        "revision-2",
+                        AuthoringStatusValues.Items.Complete,
+                        "receipt-2"),
+                ],
+                runId);
+            await transaction.RollbackAsync();
+        }
+
+        Assert.Null(await store.GetRunAsync(runId));
+        Assert.Empty(await store.GetRunItemsAsync(runId));
+    }
+
+    [Fact]
+    public async Task ReconciliationStaging_IsIdempotentAndOnlyVisibleInOverlay()
+    {
+        using TestDatabase database = CreateDatabase();
+        AuthoringRunStore store = new(database.Database);
+        await store.EnsureProcessorModeAsync("jira-fhir");
+        await store.TransitionProcessorModeAsync(
+            "jira-fhir",
+            AuthoringStatusValues.ProcessorModes.Legacy,
+            AuthoringStatusValues.ProcessorModes.CuttingOver);
+        await store.TransitionProcessorModeAsync(
+            "jira-fhir",
+            AuthoringStatusValues.ProcessorModes.CuttingOver,
+            AuthoringStatusValues.ProcessorModes.RunBacked);
+        DateTimeOffset capturedAt = DateTimeOffset.UtcNow;
+        PreparedTicketPublicationReconciliationComparison comparison = new(
+            PreparedTicketPublicationReconciliationContract.CurrentVersion,
+            "source-run",
+            "snapshot-1",
+            "snapshot-sha",
+            "jira-generation-1",
+            capturedAt,
+            "corpus-fingerprint",
+            [
+                new PreparedTicketPublicationReconciliationItemDecision(
+                    "FHIR-1",
+                    PreparedTicketPublicationReconciliationDispositionValues
+                        .ReAuthor,
+                    "revision-0",
+                    "revision-1",
+                    "old-receipt",
+                    "old-item",
+                    "old-run",
+                    "old-graph",
+                    "old-grouping"),
+            ]);
+        AuthoringRunRecord run =
+            await database.Database.CreatePublicationReconciliationAsync(
+                comparison,
+                capturedAt);
+        AuthoringRunItemRecord item = Assert.Single(
+            await store.GetRunItemsAsync(run.Id));
+        PreparedTicketPayload payload = SamplePayload("FHIR-1");
+        PreparedTicketHydrationBatch hydration =
+            SampleBatch("FHIR-1", "FHIR-1");
+
+        PreparedTicketPublicationStagedTicket first =
+            await database.Database
+                .StagePublicationReconciliationTicketAsync(
+                    run.Id,
+                    item.Id,
+                    "operation-1",
+                    "receipt-1",
+                    "revision-1",
+                    "graph-1",
+                    payload,
+                    hydration,
+                    capturedAt);
+        PreparedTicketPublicationStagedTicket second =
+            await database.Database
+                .StagePublicationReconciliationTicketAsync(
+                    run.Id,
+                    item.Id,
+                    "operation-1",
+                    "receipt-1",
+                    "revision-1",
+                    "graph-1",
+                    payload,
+                    hydration,
+                    capturedAt.AddMinutes(1));
+
+        Assert.Equal(first.AuthoredFingerprint, second.AuthoredFingerprint);
+        Assert.False(
+            await database.Database.PreparedTicketExistsAsync("FHIR-1"));
+        PreparedTicketPublicationCorpusOverlay overlay =
+            await database.Database.GetPublicationReconciliationCorpusAsync(
+                run.Id);
+        PreparedTicketPublicationCorpusTicket ticket =
+            Assert.Single(overlay.Tickets);
+        Assert.Equal("FHIR-1", ticket.TicketKey);
+        Assert.Equal("graph-1", ticket.AuthoredFingerprint);
+        Assert.Equal("corpus-fingerprint", overlay.CorpusFingerprint);
+        Assert.Equal(
+            1,
+            Count(
+                database,
+                "prepared_ticket_publication_staged_graphs"));
+        Assert.Equal(
+            1,
+            Count(
+                database,
+                "prepared_ticket_publication_staged_hydration"));
+        Assert.Equal(
+            1,
+            Count(
+                database,
+                "prepared_ticket_publication_staged_receipts"));
     }
 
     [Fact]

@@ -1,6 +1,7 @@
 using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
 
@@ -107,3 +108,64 @@ public sealed record PreparedTicketPublicationPreservationComparison(
 public sealed record PreparedTicketPublicationBaseline(
     PreparedTicketPublicationEnrichmentSource Source,
     PreparedTicketPublicationProtectedInventory Inventory);
+
+public sealed record PreparedTicketPublicationCarriedCoordinate(
+    string TicketKey,
+    string ReceiptId,
+    string RunItemId,
+    string ContributingRunId,
+    string AuthoredFingerprint,
+    string GroupingFingerprint);
+
+public sealed record PreparedTicketPublicationStagedTicket(
+    string RunId,
+    string TicketKey,
+    string RunItemId,
+    string OperationId,
+    string ReceiptId,
+    string SourceRevision,
+    string AuthoredFingerprint,
+    string HydrationFingerprint,
+    PreparedTicketPayload Payload,
+    PreparedTicketHydrationBatch Hydration,
+    DateTimeOffset StagedAt);
+
+public sealed record PreparedTicketPublicationCorpusTicket(
+    string TicketKey,
+    string Disposition,
+    string SourceRevision,
+    string ReceiptId,
+    string RunItemId,
+    string ContributingRunId,
+    string AuthoredFingerprint,
+    PreparedTicketPayload Payload,
+    PreparedTicketHydrationBatch Hydration);
+
+public sealed record PreparedTicketPublicationCorpusOverlay(
+    string RunId,
+    string CorpusFingerprint,
+    IReadOnlyList<PreparedTicketPublicationCorpusTicket> Tickets);
+
+public sealed record PreparedTicketPublicationPromotionJournal(
+    string RunId,
+    string State,
+    string? SnapshotDescriptorJson,
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? LastRecoveryAttemptAt = null,
+    string? FailureCode = null,
+    string? FailureDetail = null);
+
+public sealed record PreparedTicketPublicationStagedGroupingReplacement(
+    string RunId,
+    string PartitionKey,
+    string ReplacementJson,
+    string CorpusFingerprint,
+    string OutputFingerprint,
+    string ProtectedRowsFingerprint,
+    DateTimeOffset StagedAt);
+
+public sealed record PreparedTicketPublicationSnapshotDescriptor(
+    string RunId,
+    string DescriptorJson,
+    string Sha256,
+    DateTimeOffset PersistedAt);

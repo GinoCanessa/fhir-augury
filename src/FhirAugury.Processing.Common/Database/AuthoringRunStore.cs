@@ -20,6 +20,13 @@ public sealed record AuthoringMaintenanceRunSelection(
     IReadOnlyList<AuthoringMaintenanceRunItem> Items,
     string? RequestJson);
 
+public sealed record AuthoringMixedRunItem(
+    string BusinessKey,
+    string ItemKind,
+    string ExpectedSourceRevision,
+    string Status,
+    string? AcceptedReceiptId = null);
+
 public sealed record AuthoringErrorReconciliationResult(
     int RetriedItems,
     int ResumedReceiptItems,
@@ -495,6 +502,211 @@ public sealed class AuthoringRunStore
             await RollbackAsync(connection);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Creates a run inside a transaction owned by the caller. This is used
+    /// when a purpose-specific durable recipe must become visible atomically
+    /// with the authoring run that consumes it.
+    /// </summary>
+    public async Task<AuthoringRunRecord> CreateMixedRunAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string processorKind,
+        string purpose,
+        string sourceRunId,
+        IReadOnlyCollection<AuthoringMixedRunItem> items,
+        string? runId = null,
+        DateTimeOffset? now = null,
+        string? requestJson = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(transaction);
+        if (!ReferenceEquals(transaction.Connection, connection))
+        {
+            throw new ArgumentException(
+                "The transaction must belong to the supplied connection.",
+                nameof(transaction));
+        }
+        ArgumentException.ThrowIfNullOrWhiteSpace(processorKind);
+        ArgumentException.ThrowIfNullOrWhiteSpace(purpose);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceRunId);
+        ArgumentNullException.ThrowIfNull(items);
+        if (items.Count == 0)
+        {
+            throw new ArgumentException(
+                "A mixed authoring run must contain at least one item.",
+                nameof(items));
+        }
+
+        foreach (AuthoringMixedRunItem item in items)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(item.BusinessKey);
+            ArgumentException.ThrowIfNullOrWhiteSpace(item.ItemKind);
+            ArgumentException.ThrowIfNullOrWhiteSpace(item.ExpectedSourceRevision);
+            if (item.Status is not (
+                    AuthoringStatusValues.Items.Pending or
+                    AuthoringStatusValues.Items.Complete))
+            {
+                throw new ArgumentException(
+                    $"Mixed run item '{item.BusinessKey}' has unsupported status '{item.Status}'.",
+                    nameof(items));
+            }
+            if (item.Status == AuthoringStatusValues.Items.Complete)
+            {
+                ArgumentException.ThrowIfNullOrWhiteSpace(item.AcceptedReceiptId);
+            }
+            else if (item.AcceptedReceiptId is not null)
+            {
+                throw new ArgumentException(
+                    $"Pending mixed run item '{item.BusinessKey}' cannot carry a receipt.",
+                    nameof(items));
+            }
+        }
+
+        DateTimeOffset timestamp = now ?? DateTimeOffset.UtcNow;
+        string id = runId ?? Guid.NewGuid().ToString("N");
+        AuthoringProcessorModeRecord mode;
+        await using (SqliteCommand readMode = connection.CreateCommand())
+        {
+            readMode.Transaction = transaction;
+            readMode.CommandText =
+                """
+                SELECT ProcessorKind, Mode, Epoch, RevalidationRequired,
+                       RevalidationRunId, UpdatedAt
+                FROM authoring_processor_modes
+                WHERE ProcessorKind = @processorKind
+                """;
+            readMode.Parameters.AddWithValue("@processorKind", processorKind);
+            await using SqliteDataReader reader =
+                await readMode.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct))
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.AuthoringNotActivated,
+                    $"Authoring is not activated for processor '{processorKind}'.");
+            }
+            mode = new AuthoringProcessorModeRecord
+            {
+                ProcessorKind = reader.GetString(0),
+                Mode = reader.GetString(1),
+                Epoch = reader.GetInt64(2),
+                RevalidationRequired = reader.GetBoolean(3),
+                RevalidationRunId = reader.IsDBNull(4) ? null : reader.GetString(4),
+                UpdatedAt = reader.GetDateTimeOffset(5),
+            };
+        }
+        EnsureRunBacked(mode);
+        if (mode.RevalidationRequired)
+        {
+            throw new AuthoringConflictException(
+                AuthoringConflictCode.RevalidationRequired,
+                $"Initial revalidation run '{mode.RevalidationRunId}' must complete before reconciliation.");
+        }
+
+        await using (SqliteCommand activeFence = connection.CreateCommand())
+        {
+            activeFence.Transaction = transaction;
+            activeFence.CommandText =
+                "SELECT RunId FROM authoring_mutation_fences WHERE ProcessorKind = @processorKind";
+            activeFence.Parameters.AddWithValue("@processorKind", processorKind);
+            string? activeRunId =
+                (string?)await activeFence.ExecuteScalarAsync(ct);
+            if (activeRunId is not null)
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.MutationFenceUnavailable,
+                    $"Mutating run '{activeRunId}' is already active.",
+                    [activeRunId]);
+            }
+        }
+
+        async Task ExecuteInTransactionAsync(
+            string sql,
+            params (string Name, object? Value)[] parameters)
+        {
+            await using SqliteCommand command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = sql;
+            foreach ((string name, object? value) in parameters)
+            {
+                command.Parameters.AddWithValue(name, value ?? DBNull.Value);
+            }
+            await command.ExecuteNonQueryAsync(ct);
+        }
+
+        await ExecuteInTransactionAsync(
+            """
+            INSERT INTO authoring_runs(
+                Id, ProcessorKind, AuthoringEpoch, Status, Purpose,
+                SourceRunId, DatabaseOnly, TotalItems, CreatedAt, StartedAt,
+                RequestJson)
+            VALUES(
+                @id, @processorKind, @epoch, @status, @purpose,
+                @sourceRunId, 0, @totalItems, @createdAt, @startedAt,
+                @requestJson)
+            """,
+            ("@id", id),
+            ("@processorKind", processorKind),
+            ("@epoch", mode.Epoch),
+            ("@status", AuthoringStatusValues.Runs.Running),
+            ("@purpose", purpose),
+            ("@sourceRunId", sourceRunId),
+            ("@totalItems", items.Count),
+            ("@createdAt", Format(timestamp)),
+            ("@startedAt", Format(timestamp)),
+            ("@requestJson", requestJson));
+        await ExecuteInTransactionAsync(
+            """
+            INSERT INTO authoring_mutation_fences(
+                ProcessorKind, RunId, LeaseId, AcquiredAt)
+            VALUES(@processorKind, @runId, @leaseId, @acquiredAt)
+            """,
+            ("@processorKind", processorKind),
+            ("@runId", id),
+            ("@leaseId", Guid.NewGuid().ToString("N")),
+            ("@acquiredAt", Format(timestamp)));
+        foreach (AuthoringMixedRunItem item in items)
+        {
+            await ExecuteInTransactionAsync(
+                """
+                INSERT INTO authoring_run_items(
+                    Id, RunId, BusinessKey, ItemKind,
+                    ExpectedSourceRevision, Status, AcceptedReceiptId,
+                    AttemptCount, CreatedAt, CompletedAt)
+                VALUES(
+                    @id, @runId, @businessKey, @itemKind,
+                    @expectedSourceRevision, @status, @receiptId,
+                    0, @createdAt, @completedAt)
+                """,
+                ("@id", Guid.NewGuid().ToString("N")),
+                ("@runId", id),
+                ("@businessKey", item.BusinessKey),
+                ("@itemKind", item.ItemKind),
+                ("@expectedSourceRevision", item.ExpectedSourceRevision),
+                ("@status", item.Status),
+                ("@receiptId", item.AcceptedReceiptId),
+                ("@createdAt", Format(timestamp)),
+                ("@completedAt", item.Status == AuthoringStatusValues.Items.Complete
+                    ? Format(timestamp)
+                    : null));
+        }
+
+        return new AuthoringRunRecord
+        {
+            Id = id,
+            ProcessorKind = processorKind,
+            AuthoringEpoch = mode.Epoch,
+            Status = AuthoringStatusValues.Runs.Running,
+            Purpose = purpose,
+            SourceRunId = sourceRunId,
+            DatabaseOnly = false,
+            TotalItems = items.Count,
+            CreatedAt = timestamp,
+            StartedAt = timestamp,
+            RequestJson = requestJson,
+        };
     }
 
     public async Task<AuthoringRunRecord> CreateMaintenanceRunAsync(
