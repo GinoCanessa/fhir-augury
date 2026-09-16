@@ -12,6 +12,51 @@ namespace FhirAugury.Processing.Common.Tests.Authoring;
 public sealed class AuthoringRunStoreTests
 {
     [Fact]
+    public void PublicationReconciliationPurposeIsDistinctMaintenancePurpose()
+    {
+        Assert.Equal(
+            "publication-reconciliation",
+            AuthoringRunPurposeValues.PublicationReconciliation);
+        Assert.True(AuthoringRunPurposeValues.IsValid(
+            AuthoringRunPurposeValues.PublicationReconciliation));
+        Assert.True(AuthoringRunPurposeValues.IsMaintenance(
+            AuthoringRunPurposeValues.PublicationReconciliation));
+        Assert.Equal(
+            "publication-refresh",
+            AuthoringRunPurposeValues.PublicationRefresh);
+        AuthoringRunPurposeValues.EnsureValid(
+            AuthoringRunPurposeValues.PublicationRefresh);
+        AuthoringRunPurposeValues.EnsureValid(
+            AuthoringRunPurposeValues.PublicationReconciliation);
+    }
+
+    [Fact]
+    public void ReconciliationStatusFieldsSerializeAdditively()
+    {
+        AuthoringRunReconciliationCounts counts = new(2, 1, 1, 0);
+        counts.Validate();
+        AuthoringRunRecoveryState recovery =
+            new("staged", "workspace-ready", true);
+        AuthoringRunItemReconciliation decision = new(
+            "re-author",
+            "revision-1",
+            "revision-2",
+            new('a', 64),
+            new('b', 64));
+
+        string json = JsonSerializer.Serialize(
+            new { counts, recovery, decision },
+            JsonSerializerOptions.Web);
+
+        Assert.Contains("\"carryForwardTicketCount\":1", json);
+        Assert.Contains("\"promotionState\":\"staged\"", json);
+        Assert.Contains("\"mutationFenceHeld\":true", json);
+        Assert.Contains("\"disposition\":\"re-author\"", json);
+        Assert.Contains("\"baselineSourceRevision\":\"revision-1\"", json);
+        Assert.Contains("\"currentSourceRevision\":\"revision-2\"", json);
+    }
+
+    [Fact]
     public async Task CreateRun_FreezesMembershipAndRequiresRunBackedMode()
     {
         using AuthoringTestDatabase database = new();

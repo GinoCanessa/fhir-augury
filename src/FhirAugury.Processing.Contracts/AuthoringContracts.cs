@@ -72,6 +72,41 @@ public sealed record AuthoringRunCorpusComparison(
     }
 }
 
+public sealed record AuthoringRunReconciliationCounts(
+    int AcceptedTicketCount,
+    int CarryForwardTicketCount,
+    int ReAuthorTicketCount,
+    int InvalidatedTicketCount = 0)
+{
+    public void Validate()
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(AcceptedTicketCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(CarryForwardTicketCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(ReAuthorTicketCount);
+        ArgumentOutOfRangeException.ThrowIfNegative(InvalidatedTicketCount);
+        if ((long)CarryForwardTicketCount + ReAuthorTicketCount !=
+            AcceptedTicketCount)
+        {
+            throw new ArgumentException(
+                "The carry-forward and re-author ticket counts must equal the accepted ticket count.");
+        }
+    }
+}
+
+public sealed record AuthoringRunRecoveryState(
+    string PromotionState,
+    string? JournalState,
+    bool MutationFenceHeld,
+    string? FailureCode = null);
+
+public sealed record AuthoringRunItemReconciliation(
+    string Disposition,
+    string BaselineSourceRevision,
+    string CurrentSourceRevision,
+    string BaselineAuthoredFingerprint,
+    string BaselineGroupingFingerprint,
+    bool Invalidated = false);
+
 public sealed record AuthoringRunStatus(
     string RunId,
     string ProcessorKind,
@@ -90,7 +125,9 @@ public sealed record AuthoringRunStatus(
     AuthoringRunStateInfo? State = null,
     string? Purpose = null,
     string? SourceRunId = null,
-    AuthoringRunCorpusComparison? CorpusComparison = null);
+    AuthoringRunCorpusComparison? CorpusComparison = null,
+    AuthoringRunReconciliationCounts? ReconciliationCounts = null,
+    AuthoringRunRecoveryState? Recovery = null);
 
 public sealed record AuthoringRunItemStatus(
     string ItemId,
@@ -110,7 +147,8 @@ public sealed record AuthoringRunItemStatus(
     DateTimeOffset? NextAutomaticRetryAt = null,
     string? CurrentError = null,
     string? SupersessionReason = null,
-    AuthoringAllowedActions? AllowedActions = null);
+    AuthoringAllowedActions? AllowedActions = null,
+    AuthoringRunItemReconciliation? Reconciliation = null);
 
 public sealed record AuthoringRunResponse(
     AuthoringRunStatus Run,

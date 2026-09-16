@@ -6,16 +6,22 @@ public static class AuthoringRunPurposeValues
     public const string InitialRevalidation = "initial-revalidation";
     public const string GroupingMaintenance = "grouping-maintenance";
     public const string PublicationRefresh = "publication-refresh";
+    public const string PublicationReconciliation =
+        "publication-reconciliation";
 
     public static bool IsValid(string? purpose)
         => purpose is
             Authoring or
             InitialRevalidation or
             GroupingMaintenance or
-            PublicationRefresh;
+            PublicationRefresh or
+            PublicationReconciliation;
 
     public static bool IsMaintenance(string? purpose)
-        => purpose is GroupingMaintenance or PublicationRefresh;
+        => purpose is
+            GroupingMaintenance or
+            PublicationRefresh or
+            PublicationReconciliation;
 
     public static void EnsureValid(string purpose)
     {
