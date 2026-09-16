@@ -166,6 +166,8 @@ builder.Services.AddSingleton<
 builder.Services.AddSingleton<PreparedTicketPublicationBaselineReader>();
 builder.Services.AddSingleton<PreparedTicketPublicationEnricher>();
 builder.Services.AddSingleton<PreparedTicketPublicationRefreshService>();
+builder.Services.AddSingleton<PreparedTicketPublicationReconciliationPlanner>();
+builder.Services.AddSingleton<PreparedTicketRunWorkflowRegistry>();
 builder.Services.AddSingleton<PreparedTicketSnapshotMaterializer>();
 builder.Services.AddSingleton<PreparedTicketRunPostProcessor>();
 builder.Services.AddSingleton<PreparedTicketGroupingMaintenanceService>();

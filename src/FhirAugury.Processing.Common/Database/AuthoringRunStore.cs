@@ -27,6 +27,11 @@ public sealed record AuthoringMixedRunItem(
     string Status,
     string? AcceptedReceiptId = null);
 
+public delegate Task AuthoringReceiptDomainPersistence(
+    SqliteConnection connection,
+    string receiptId,
+    CancellationToken cancellationToken);
+
 public sealed record AuthoringErrorReconciliationResult(
     int RetriedItems,
     int ResumedReceiptItems,
@@ -1766,6 +1771,22 @@ public sealed class AuthoringRunStore
         AuthoringDomainPersistence? persistDomainResult = null,
         DateTimeOffset? now = null,
         CancellationToken ct = default)
+        => await AcceptResultWithReceiptAsync(
+            submission,
+            operationToken,
+            persistDomainResult is null
+                ? null
+                : (connection, _, cancellationToken) =>
+                    persistDomainResult(connection, cancellationToken),
+            now,
+            ct);
+
+    public async Task<AuthoringReceiptAcceptance> AcceptResultWithReceiptAsync(
+        AuthoringResultSubmission submission,
+        string operationToken,
+        AuthoringReceiptDomainPersistence? persistDomainResult = null,
+        DateTimeOffset? now = null,
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(submission);
         ArgumentException.ThrowIfNullOrWhiteSpace(operationToken);
@@ -1838,12 +1859,12 @@ public sealed class AuthoringRunStore
             AuthoringRunRecord run = await ReadRunAsync(connection, submission.RunId, ct)
                 ?? throw new KeyNotFoundException($"Authoring run '{submission.RunId}' was not found.");
 
+            string receiptId = Guid.NewGuid().ToString("N");
             if (persistDomainResult is not null)
             {
-                await persistDomainResult(connection, ct);
+                await persistDomainResult(connection, receiptId, ct);
             }
 
-            string receiptId = Guid.NewGuid().ToString("N");
             await ExecuteAsync(
                 connection,
                 """

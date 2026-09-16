@@ -1,6 +1,7 @@
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Jira.Common.Agent;
 using FhirAugury.Processing.Jira.Common.Authoring;
@@ -9,6 +10,7 @@ using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Discovery;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Hydration;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -26,6 +28,7 @@ public sealed class FhirTicketPrepHandler
     private readonly PreparerDatabase _database;
     private readonly PreparedTicketHydrator _hydrator;
     private readonly IOptions<ProcessingServiceOptions> _processingOptions;
+    private readonly AuthoringRunStore _authoringStore;
     private readonly ILogger<FhirTicketPrepHandler> _logger;
 
     public FhirTicketPrepHandler(
@@ -53,6 +56,7 @@ public sealed class FhirTicketPrepHandler
         _database = database;
         _hydrator = hydrator;
         _processingOptions = processingOptions;
+        _authoringStore = authoringStore;
         _logger = logger;
     }
 
@@ -144,6 +148,13 @@ public sealed class FhirTicketPrepHandler
         string receiptId,
         CancellationToken ct)
     {
+        AuthoringRunRecord? run =
+            await _authoringStore.GetRunAsync(item.RunItem.RunId, ct);
+        if (run?.Purpose ==
+            PreparedTicketPublicationReconciliationContract.Purpose)
+        {
+            return AuthoringWorkResult.Complete(receiptId);
+        }
         HydrationAttemptResult hydration = await _hydrator.HydrateWithResultAsync(
             item.SourceTicket.Key,
             ct);

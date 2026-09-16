@@ -6,6 +6,7 @@ using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Api;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
 using Microsoft.AspNetCore.Mvc;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Controllers;
@@ -16,7 +17,8 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Controllers;
 public sealed class PreparedTicketAuthoringRunsController(
     AuthoringRunStore authoringStore,
     JiraAuthoringRunCoordinator coordinator,
-    PreparerDatabase database) : ControllerBase
+    PreparerDatabase database,
+    PreparedTicketRunWorkflowRegistry? workflows = null) : ControllerBase
 {
     public const string OperationTokenHeader = "X-Fhir-Augury-Authoring-Token";
 
@@ -60,6 +62,9 @@ public sealed class PreparedTicketAuthoringRunsController(
         {
             return Conflict(new { error = "ticket-key-mismatch" });
         }
+        AuthoringRunRecord run = await authoringStore.GetRunAsync(runId, ct)
+            ?? throw new InvalidOperationException(
+                $"Authoring run '{runId}' disappeared while accepting a result.");
 
         string contentHash = PreparedTicketAuthoringDtos.ComputeContentHash(request.Payload);
         if (!string.Equals(contentHash, request.Submission.ContentHash, StringComparison.Ordinal))
@@ -69,28 +74,35 @@ public sealed class PreparedTicketAuthoringRunsController(
 
         try
         {
-            AuthoringReceiptAcceptance result = await authoringStore.AcceptResultAsync(
-                request.Submission,
-                operationToken,
-                async (connection, cancellationToken) =>
-                {
-                    await JiraProcessingSourceTicketStore
-                        .EnsureCurrentSourceRevisionAsync(
+            AuthoringReceiptAcceptance result = workflows is null
+                ? await authoringStore.AcceptResultAsync(
+                    request.Submission,
+                    operationToken,
+                    async (connection, cancellationToken) =>
+                    {
+                        await JiraProcessingSourceTicketStore
+                            .EnsureCurrentSourceRevisionAsync(
+                                connection,
+                                request.Payload.Key,
+                                item.ItemKind,
+                                request.Submission.ObservedSourceRevision,
+                                cancellationToken);
+                        await database.SavePreparedTicketForAuthoringAsync(
                             connection,
-                            request.Payload.Key,
-                            item.ItemKind,
-                            request.Submission.ObservedSourceRevision,
+                            request.Payload,
+                            contentHash,
+                            runId,
+                            itemId,
+                            request.Submission.OperationId,
                             cancellationToken);
-                    await database.SavePreparedTicketForAuthoringAsync(
-                        connection,
-                        request.Payload,
-                        contentHash,
-                        runId,
-                        itemId,
-                        request.Submission.OperationId,
-                        cancellationToken);
-                },
-                ct: ct);
+                    },
+                    ct: ct)
+                : await workflows.AcceptResultAsync(
+                    run,
+                    item,
+                    request,
+                    operationToken,
+                    ct);
             return Ok(result);
         }
         catch (AuthoringConflictException ex)

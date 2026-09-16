@@ -336,7 +336,8 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     public async Task<AuthoringRunRecord> CreatePublicationReconciliationAsync(
         PreparedTicketPublicationReconciliationComparison comparison,
         DateTimeOffset? now = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Func<SqliteConnection, CancellationToken, Task>? validateFrozenObservation = null)
     {
         ArgumentNullException.ThrowIfNull(comparison);
         if (comparison.ContractVersion !=
@@ -382,6 +383,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         try
         {
             AuthoringRunStore store = new(this);
+            string runId = Guid.NewGuid().ToString("N");
             AuthoringRunRecord run = await store.CreateMixedRunAsync(
                 connection,
                 transaction,
@@ -390,7 +392,11 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 comparison.SourceRunId,
                 comparison.Items.Select(item => new AuthoringMixedRunItem(
                     item.TicketKey,
-                    "fhir",
+                    item.Disposition ==
+                        PreparedTicketPublicationReconciliationDispositionValues
+                            .CarryForward
+                        ? $"reconciliation:{runId}:fhir"
+                        : "fhir",
                     item.CurrentSourceRevision,
                     item.Disposition ==
                         PreparedTicketPublicationReconciliationDispositionValues
@@ -402,9 +408,14 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                             .CarryForward
                         ? item.BaselineReceiptId
                         : null)).ToArray(),
+                runId: runId,
                 now: timestamp,
                 requestJson: JsonSerializer.Serialize(comparison),
                 ct: ct);
+            if (validateFrozenObservation is not null)
+            {
+                await validateFrozenObservation(connection, ct);
+            }
 
             await ExecuteInTransactionAsync(
                 connection,
@@ -6061,10 +6072,88 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             connection.BeginTransaction(deferred: false);
         try
         {
-            await using (SqliteCommand validate = connection.CreateCommand())
-            {
-                validate.Transaction = transaction;
-                validate.CommandText =
+            PreparedTicketPublicationStagedTicket staged =
+                await StagePublicationReconciliationTicketAsync(
+                    connection, transaction, runId, runItemId, operationId,
+                    receiptId, sourceRevision, authoredFingerprint, payload,
+                    hydration, stagedAt, ct);
+            await transaction.CommitAsync(ct);
+            return staged;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
+    public async Task<PreparedTicketPublicationStagedTicket>
+        StagePublicationReconciliationTicketAsync(
+            SqliteConnection connection,
+            string runId,
+            string runItemId,
+            string operationId,
+            string receiptId,
+            string sourceRevision,
+            string authoredFingerprint,
+            PreparedTicketPayload payload,
+            HydrationBatch hydration,
+            DateTimeOffset? now = null,
+            CancellationToken ct = default)
+        => await StagePublicationReconciliationTicketAsync(
+            connection,
+            transaction: null,
+            runId,
+            runItemId,
+            operationId,
+            receiptId,
+            sourceRevision,
+            authoredFingerprint,
+            payload,
+            ToPreparedHydrationBatch(hydration),
+            now ?? DateTimeOffset.UtcNow,
+            ct);
+
+    private static async Task<PreparedTicketPublicationStagedTicket>
+        StagePublicationReconciliationTicketAsync(
+            SqliteConnection connection,
+            SqliteTransaction? transaction,
+            string runId,
+            string runItemId,
+            string operationId,
+            string receiptId,
+            string sourceRevision,
+            string authoredFingerprint,
+            PreparedTicketPayload payload,
+            PreparedTicketHydrationBatch hydration,
+            DateTimeOffset stagedAt,
+            CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(runItemId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(operationId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(receiptId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceRevision);
+        ArgumentException.ThrowIfNullOrWhiteSpace(authoredFingerprint);
+        PreparedTicketPayloadValidator.ThrowIfInvalid(payload);
+        ArgumentNullException.ThrowIfNull(hydration);
+        ValidateStagedHydration(payload.Key, hydration);
+        if (transaction is not null &&
+            !ReferenceEquals(transaction.Connection, connection))
+        {
+            throw new ArgumentException(
+                "The transaction must belong to the supplied connection.",
+                nameof(transaction));
+        }
+        string payloadJson = JsonSerializer.Serialize(payload);
+        string hydrationJson = JsonSerializer.Serialize(hydration);
+        string hydrationFingerprint =
+            AuthoringResultHasher.HashNormalizedUtf8(hydrationJson);
+        await using (SqliteCommand validate = connection.CreateCommand())
+        {
+            validate.Transaction = transaction;
+            validate.CommandText =
                     """
                     SELECT i.CurrentSourceRevision, r.Status, r.BusinessKey
                     FROM prepared_ticket_publication_reconciliation_items i
@@ -6076,32 +6165,31 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                       AND i.TicketKey = @ticketKey COLLATE NOCASE
                       AND i.Disposition = @disposition
                     """;
-                validate.Parameters.AddWithValue("@runId", runId);
-                validate.Parameters.AddWithValue("@runItemId", runItemId);
-                validate.Parameters.AddWithValue("@ticketKey", payload.Key);
-                validate.Parameters.AddWithValue(
-                    "@disposition",
-                    PreparedTicketPublicationReconciliationDispositionValues
-                        .ReAuthor);
-                await using SqliteDataReader reader =
-                    await validate.ExecuteReaderAsync(ct);
-                if (!await reader.ReadAsync(ct))
-                {
-                    throw new InvalidOperationException(
-                        $"Ticket '{payload.Key}' is not pending revised work in reconciliation '{runId}'.");
-                }
-                if (!string.Equals(
-                        AuthoringSourceRevision.CanonicalizeTimestamp(
-                            reader.GetString(0)),
-                        AuthoringSourceRevision.CanonicalizeTimestamp(
-                            sourceRevision),
-                        StringComparison.Ordinal))
-                {
-                    throw new InvalidOperationException(
-                        $"Ticket '{payload.Key}' staging revision does not match the frozen recipe.");
-                }
+            validate.Parameters.AddWithValue("@runId", runId);
+            validate.Parameters.AddWithValue("@runItemId", runItemId);
+            validate.Parameters.AddWithValue("@ticketKey", payload.Key);
+            validate.Parameters.AddWithValue(
+                "@disposition",
+                PreparedTicketPublicationReconciliationDispositionValues
+                    .ReAuthor);
+            await using SqliteDataReader reader =
+                await validate.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct))
+            {
+                throw new InvalidOperationException(
+                    $"Ticket '{payload.Key}' is not pending revised work in reconciliation '{runId}'.");
             }
-
+            if (!string.Equals(
+                    AuthoringSourceRevision.CanonicalizeTimestamp(
+                        reader.GetString(0)),
+                    AuthoringSourceRevision.CanonicalizeTimestamp(
+                        sourceRevision),
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Ticket '{payload.Key}' staging revision does not match the frozen recipe.");
+            }
+        }
             await InsertIdempotentStageRowAsync(
                 connection,
                 transaction,
@@ -6170,14 +6258,6 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 ("@operationId", operationId),
                 ("@authoredFingerprint", authoredFingerprint),
                 ("@stagedAt", Format(stagedAt)));
-            await transaction.CommitAsync(ct);
-        }
-        catch
-        {
-            await transaction.RollbackAsync(CancellationToken.None);
-            throw;
-        }
-
         return new PreparedTicketPublicationStagedTicket(
             runId,
             payload.Key,
@@ -6190,6 +6270,70 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             payload,
             hydration,
             stagedAt);
+    }
+
+    private static PreparedTicketHydrationBatch ToPreparedHydrationBatch(
+        HydrationBatch batch)
+    {
+        ArgumentNullException.ThrowIfNull(batch);
+        return new PreparedTicketHydrationBatch(
+            batch.TicketKey,
+            new PreparedTicketHydrationRow(
+                batch.Parent.TicketKey, batch.Parent.Priority,
+                batch.Parent.Resolution,
+                batch.Parent.ResolutionDescriptionPlain,
+                batch.Parent.Specification, batch.Parent.RaisedInVersion,
+                batch.Parent.SelectedBallot, batch.Parent.ChangeCategory,
+                batch.Parent.Impact, batch.Parent.Labels,
+                batch.Parent.CommentCount, batch.Parent.DescriptionPlain,
+                batch.Parent.HydratedAt, batch.Parent.HydrationStatus,
+                batch.Parent.HydrationReason, batch.Parent.DescriptionHtml,
+                batch.Parent.ResolutionDescriptionHtml,
+                batch.Parent.StructuredReporter, batch.Parent.CreatedAt,
+                batch.Parent.RelatedArtifactsRaw,
+                batch.Parent.RelatedPagesRaw, batch.Parent.Assignee,
+                batch.Parent.SourceIsStable == true
+                    ? batch.Parent.SourceProject : null,
+                batch.Parent.SourceIsStable == true
+                    ? batch.Parent.SourceLastSuccessfulRefreshAt : null,
+                batch.Parent.SourceIsStable == true
+                    ? batch.Parent.SourceContentRevision : null,
+                batch.Parent.PublicDisplayNamePolicyVersion),
+            batch.JiraRows.Select(row => new PreparedJiraHydrationRow(
+                row.TicketKey, row.JiraKey, row.Title, row.Status, row.Type,
+                row.Priority, row.Resolution,
+                row.ResolutionDescriptionPlain, row.WorkGroup,
+                row.Specification, row.UpdatedAt, row.Url, row.HydratedAt,
+                row.HydrationStatus, row.HydrationReason,
+                row.DescriptionHtml, row.ResolutionDescriptionHtml,
+                row.StructuredReporter, row.CreatedAt,
+                row.RelatedArtifactsRaw, row.RelatedPagesRaw, row.Assignee,
+                row.PublicDisplayNamePolicyVersion)).ToArray(),
+            batch.ZulipRows.Select(row => new PreparedZulipHydrationRow(
+                row.TicketKey, row.ZulipThreadId, row.StreamId,
+                row.StreamName, row.Topic, row.MessageCount,
+                row.FirstMessageAt, row.LastMessageAt,
+                row.FirstMessageExcerpt, row.Url, row.HydratedAt,
+                row.HydrationStatus, row.HydrationReason)).ToArray(),
+            batch.GitHubRows.Select(row => new PreparedGitHubHydrationRow(
+                row.TicketKey, row.GitHubItemId, row.Owner, row.Repo,
+                row.Number, row.Path, row.Title, row.State,
+                row.IsPullRequest, row.Labels, row.UpdatedAt, row.Url,
+                row.HydratedAt, row.HydrationStatus,
+                row.HydrationReason)).ToArray(),
+            batch.RepoRows.Select(row => new PreparedRepoHydrationRow(
+                row.TicketKey, row.Repo, row.Description, row.WorkGroup,
+                row.Specification, row.CategoryDetail, row.Url,
+                row.HydratedAt, row.HydrationStatus,
+                row.HydrationReason)).ToArray(),
+            batch.JiraXrefRows.Select(row =>
+                new PreparedTicketJiraXrefRow(
+                    row.TicketKey, row.JiraKey, row.Source)).ToArray(),
+            (batch.Parent.InPersonRequesters ?? []).Select(displayName =>
+                new PreparedTicketInPersonRequesterRow(
+                    batch.TicketKey,
+                    displayName,
+                    batch.Parent.PublicDisplayNamePolicyVersion)).ToArray());
     }
 
     public async Task SavePublicationReconciliationGroupingImpactAsync(
@@ -7210,7 +7354,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
 
     private static async Task InsertIdempotentStageRowAsync(
         SqliteConnection connection,
-        SqliteTransaction transaction,
+        SqliteTransaction? transaction,
         string table,
         string ticketKey,
         string runId,
