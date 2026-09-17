@@ -164,6 +164,47 @@ public class ProcessingControllerTests
     }
 
     [Fact]
+    public async Task PublicationReconciliation_PreservesLifecycleBodiesAndHeaders()
+    {
+        ProcessingController controller = CreateController(enabled: true);
+
+        ContentResult started = Assert.IsType<ContentResult>(
+            await controller.StartPublicationReconciliation(
+                "Planner",
+                "source-run",
+                CancellationToken.None));
+        ContentResult status = Assert.IsType<ContentResult>(
+            await controller.GetPublicationReconciliation(
+                "Planner",
+                "reconciliation-run",
+                CancellationToken.None));
+        ContentResult retry = Assert.IsType<ContentResult>(
+            await controller.RetryPublicationReconciliation(
+                "Planner",
+                "reconciliation-run",
+                CancellationToken.None));
+        ContentResult abandon = Assert.IsType<ContentResult>(
+            await controller.AbandonPublicationReconciliation(
+                "Planner",
+                "reconciliation-run",
+                JsonDocument.Parse(
+                    """{"reason":"operator accepted risk"}""")
+                    .RootElement.Clone(),
+                CancellationToken.None));
+
+        Assert.Equal(StatusCodes.Status202Accepted, started.StatusCode);
+        Assert.Equal(
+            "/api/v1/processing-services/Planner/authoring/runs/reconciliation-run/publication-reconciliation",
+            controller.Response.Headers.Location.ToString());
+        Assert.Contains("stableJiraGeneration", status.Content);
+        Assert.Equal(StatusCodes.Status409Conflict, retry.StatusCode);
+        Assert.Equal("17", controller.Response.Headers.RetryAfter.ToString());
+        Assert.Contains("recovery-in-progress", retry.Content);
+        Assert.Equal(StatusCodes.Status200OK, abandon.StatusCode);
+        Assert.Contains("canonical-unpublished", abandon.Content);
+    }
+
+    [Fact]
     public async Task SnapshotBytes_PreservesNotModifiedWithoutWritingBody()
     {
         ProcessingController controller = CreateController(
@@ -277,6 +318,14 @@ public class ProcessingControllerTests
                     RefreshRunEnvelope,
                 "/processing/authoring/runs/busy-run/publication-refresh" =>
                     """{"error":"mutation-fence-unavailable","detail":"Another mutation is active.","conflictingRunIds":["active-run"],"runId":"active-run"}""",
+                "/processing/authoring/runs/source-run/publication-reconciliation" =>
+                    ReconciliationStartEnvelope,
+                "/processing/authoring/runs/reconciliation-run/publication-reconciliation" =>
+                    ReconciliationStatusEnvelope,
+                "/processing/authoring/runs/reconciliation-run/publication-reconciliation/retry" =>
+                    """{"error":"recovery-in-progress","detail":"Snapshot publication is still pending.","conflictingRunIds":["reconciliation-run"],"runId":"reconciliation-run"}""",
+                "/processing/authoring/runs/reconciliation-run/publication-reconciliation/abandon" =>
+                    ReconciliationAbandonEnvelope,
                 "/processing/authoring/runs/run-1/items/item-1/retry" =>
                     """{"itemId":"item-1","requiresAuthoring":true}""",
                 "/processing/authoring/runs/run-1/items/item-1/supersede" =>
@@ -291,6 +340,12 @@ public class ProcessingControllerTests
                 : path == "/processing/authoring/runs/source-run/publication-refresh"
                     ? HttpStatusCode.Accepted
                 : path == "/processing/authoring/runs/busy-run/publication-refresh"
+                    ? HttpStatusCode.Conflict
+                : path == "/processing/authoring/runs/source-run/publication-reconciliation"
+                    ? HttpStatusCode.Accepted
+                : path.EndsWith(
+                    "/publication-reconciliation/retry",
+                    StringComparison.Ordinal)
                     ? HttpStatusCode.Conflict
                 : path.EndsWith("/supersede", StringComparison.Ordinal)
                     ? HttpStatusCode.Conflict
@@ -342,6 +397,20 @@ public class ProcessingControllerTests
                     new RetryConditionHeaderValue(
                         TimeSpan.FromSeconds(13));
             }
+            if (path == "/processing/authoring/runs/source-run/publication-reconciliation")
+            {
+                response.Headers.Location = new Uri(
+                    "/processing/authoring/runs/reconciliation-run/publication-reconciliation",
+                    UriKind.Relative);
+            }
+            if (path.EndsWith(
+                "/publication-reconciliation/retry",
+                StringComparison.Ordinal))
+            {
+                response.Headers.RetryAfter =
+                    new RetryConditionHeaderValue(
+                        TimeSpan.FromSeconds(17));
+            }
             if (path.EndsWith("/snapshot/bytes", StringComparison.Ordinal))
             {
                 response.Content.Headers.ContentType =
@@ -361,5 +430,14 @@ public class ProcessingControllerTests
 
         private const string RefreshRunEnvelope =
             """{"run":{"runId":"refresh-run","processorKind":"jira-fhir","authoringEpoch":1,"status":"queued","databaseOnly":false,"totalItems":1,"completedItems":1,"failedItems":0,"createdAt":"2026-09-14T00:00:00Z","startedAt":null,"completedAt":null,"error":null,"purpose":"publication-refresh","sourceRunId":"source-run"},"items":[{"itemId":"item-1","runId":"refresh-run","businessKey":"FHIR-1","itemKind":"jira-ticket","expectedSourceRevision":"rev-1","status":"completed","currentOperationId":null,"acceptedReceiptId":"receipt-1","attemptCount":0,"createdAt":"2026-09-14T00:00:00Z","startedAt":null,"completedAt":"2026-09-14T00:00:00Z","error":null}]}""";
+
+        private const string ReconciliationStartEnvelope =
+            """{"run":{"runId":"reconciliation-run","purpose":"publication-reconciliation"},"comparison":{"stableJiraGeneration":"generation-1"}}""";
+
+        private const string ReconciliationStatusEnvelope =
+            """{"run":{"runId":"reconciliation-run","purpose":"publication-reconciliation"},"comparison":{"stableJiraGeneration":"generation-1"},"promotion":{"state":"snapshot-publish-pending"}}""";
+
+        private const string ReconciliationAbandonEnvelope =
+            """{"status":{"run":{"runId":"reconciliation-run"},"promotion":{"state":"canonical-unpublished"}},"reason":"operator accepted risk"}""";
     }
 }

@@ -114,6 +114,60 @@ internal sealed class AuthoringHttpClient : IDisposable
                 ct));
     }
 
+    public Task<PublicationReconciliationStartResult>
+        StartPublicationReconciliationAsync(
+            string serviceName,
+            string sourceRunId,
+            CancellationToken ct)
+    {
+        EnsureOuterMode();
+        return _controlClient.StartPublicationReconciliationAsync(
+            serviceName,
+            sourceRunId,
+            ct);
+    }
+
+    public Task<PublicationReconciliationStatusResult>
+        GetPublicationReconciliationStatusAsync(
+            string serviceName,
+            string runId,
+            CancellationToken ct)
+    {
+        EnsureOuterMode();
+        return _controlClient.GetPublicationReconciliationAsync(
+            serviceName,
+            runId,
+            ct);
+    }
+
+    public Task<PublicationReconciliationRetryResult>
+        RetryPublicationReconciliationAsync(
+            string serviceName,
+            string runId,
+            CancellationToken ct)
+    {
+        EnsureOuterMode();
+        return _controlClient.RetryPublicationReconciliationAsync(
+            serviceName,
+            runId,
+            ct);
+    }
+
+    public Task<PublicationReconciliationAbandonResult>
+        AbandonPublicationReconciliationAsync(
+            string serviceName,
+            string runId,
+            string reason,
+            CancellationToken ct)
+    {
+        EnsureOuterMode();
+        return _controlClient.AbandonPublicationReconciliationAsync(
+            serviceName,
+            runId,
+            reason,
+            ct);
+    }
+
     public Task<AuthoringRunListResponse> ListAsync(
         string serviceName,
         int? limit,

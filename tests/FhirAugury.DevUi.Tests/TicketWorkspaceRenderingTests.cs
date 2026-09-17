@@ -607,6 +607,7 @@ public sealed class TicketWorkspaceRenderingTests
             fixture.Catalog.Get("prepare");
         AuthoringRunStatus sourceRun =
             Run("source-run", "completed", terminal: true);
+        int reconciliations = 0;
         int refreshes = 0;
         List<bool> generations = [];
         Mounted<PublicationPanel> panel =
@@ -619,6 +620,8 @@ public sealed class TicketWorkspaceRenderingTests
                             prepare,
                             sourceRun,
                             proofReady ? ReadyReadiness() : DegradedReadiness()))),
+                    (nameof(PublicationPanel.OnReconcilePublication),
+                        EventCallback.Factory.Create(this, () => { reconciliations++; })),
                     (nameof(PublicationPanel.OnRefreshPublication),
                         EventCallback.Factory.Create(this, () => { refreshes++; })),
                     (nameof(PublicationPanel.OnPublish),
@@ -631,10 +634,20 @@ public sealed class TicketWorkspaceRenderingTests
                 ? "Publication readiness is verified."
                 : "Publication readiness is degraded.",
             markup.Html);
-        Assert.False(markup.Button("Refresh publication data and snapshot").Disabled);
+        Assert.False(markup.Button(
+            "Reconcile changed tickets and refresh snapshot").Disabled);
+        Assert.False(markup.Button(
+            "Repair publication metadata and snapshot").Disabled);
         Assert.False(markup.Button("Regenerate review site").Disabled);
         Assert.Contains("href=\"/api-test?source=Jira\"", markup.Html);
         string text = Normalize(Regex.Replace(markup.Html, "<[^>]*>", " "));
+        Assert.Contains("re-authors changed tickets", text);
+        Assert.Contains("carries unchanged output forward", text);
+        Assert.Contains("Advanced: repair publication metadata only", text);
+        Assert.Contains(
+            "Metadata repair does not re-author tickets or recompute grouping.",
+            text);
+        Assert.Contains("It refuses changed Jira revisions.", text);
         Assert.Contains("Preview public people population", text);
         Assert.Contains("Apply public people population", text);
         Assert.Contains("This refresh never performs source backfill.", text);
@@ -642,12 +655,22 @@ public sealed class TicketWorkspaceRenderingTests
         Assert.DoesNotContain("Replace existing output", markup.Html);
         Assert.DoesNotContain("Replace and regenerate", markup.Html);
 
-        await fixture.Renderer.ClickAsync(panel.Id, "Refresh publication data and snapshot");
+        await fixture.Renderer.ClickAsync(
+            panel.Id,
+            "Reconcile changed tickets and refresh snapshot");
+        Assert.Equal(1, reconciliations);
+        Assert.Equal(0, refreshes);
+        Assert.Empty(generations);
+        await fixture.Renderer.ClickAsync(
+            panel.Id,
+            "Repair publication metadata and snapshot");
         Assert.Equal(1, refreshes);
+        Assert.Equal(1, reconciliations);
         Assert.Empty(generations);
         await fixture.Renderer.ClickAsync(panel.Id, "Regenerate review site");
         Assert.True(Assert.Single(generations));
         Assert.Equal(1, refreshes);
+        Assert.Equal(1, reconciliations);
         Assert.Equal(0, fixture.Authoring.RefreshCalls);
         Assert.Empty(fixture.Readiness.Requests);
     }
@@ -755,7 +778,15 @@ public sealed class TicketWorkspaceRenderingTests
         Assert.DoesNotContain("0 /", text);
         Assert.DoesNotContain("Date coverage complete", text);
         Assert.DoesNotContain("2026-09-15", text);
-        Assert.Contains("Refresh publication data and snapshot", text);
+        Assert.Contains(
+            "Reconcile changed tickets and refresh snapshot",
+            text);
+        Assert.Contains(
+            "Advanced: repair publication metadata only",
+            text);
+        Assert.Contains(
+            "Repair publication metadata and snapshot",
+            text);
         Assert.Contains("Regenerate review site", text);
         if (!proofReady)
         {
@@ -786,7 +817,10 @@ public sealed class TicketWorkspaceRenderingTests
 
         Assert.Contains(published ? "Regenerate review site" : "Generate review site", html);
         Assert.DoesNotContain(
-            "Refresh publication data and snapshot",
+            "Reconcile changed tickets and refresh snapshot",
+            html);
+        Assert.DoesNotContain(
+            "Repair publication metadata and snapshot",
             html);
         Assert.DoesNotContain("Replace existing output", html);
     }
@@ -812,7 +846,10 @@ public sealed class TicketWorkspaceRenderingTests
                 prepare, run, Publication(prepare, run, ReadyReadiness())))));
 
         Assert.DoesNotContain(
-            "Refresh publication data and snapshot",
+            "Reconcile changed tickets and refresh snapshot",
+            html);
+        Assert.DoesNotContain(
+            "Repair publication metadata and snapshot",
             html);
         Assert.DoesNotContain("Generate review site", html);
         Assert.DoesNotContain("Regenerate review site", html);
@@ -842,7 +879,11 @@ public sealed class TicketWorkspaceRenderingTests
         Markup markup = await fixture.Renderer.MarkupAsync(panel.Id);
 
         Assert.True(markup.Button(
-            refreshing ? "Starting publication refresh\u2026" : "Refresh publication data and snapshot").Disabled);
+            refreshing
+                ? "Starting reconciliation\u2026"
+                : "Reconcile changed tickets and refresh snapshot").Disabled);
+        Assert.True(markup.Button(
+            "Repair publication metadata and snapshot").Disabled);
         Assert.Equal(!unknownRefresh, markup.Button(
             busy ? "Generating site\u2026" : "Regenerate review site").Disabled);
     }
@@ -892,7 +933,12 @@ public sealed class TicketWorkspaceRenderingTests
                 text.Contains("Additional current output is included.", StringComparison.Ordinal));
             Assert.Contains("Generate review site", text);
             Assert.DoesNotContain("Open review site", text);
-            Assert.DoesNotContain("Refresh publication data and snapshot", text);
+            Assert.DoesNotContain(
+                "Reconcile changed tickets and refresh snapshot",
+                text);
+            Assert.DoesNotContain(
+                "Repair publication metadata and snapshot",
+                text);
         }
         Assert.Equal(2, fixture.Authoring.GetCalls);
         Assert.Equal(0, fixture.Authoring.RefreshCalls);
@@ -943,12 +989,12 @@ public sealed class TicketWorkspaceRenderingTests
         await fixture.Renderer.WaitForAsync(
             page.Id,
             markup => markup.Html.Contains(
-                "Refresh publication data and snapshot",
+                "Repair publication metadata and snapshot",
                 StringComparison.Ordinal));
 
         await fixture.Renderer.ClickAsync(
             page.Id,
-            "Refresh publication data and snapshot");
+            "Repair publication metadata and snapshot");
 
         Assert.Equal(
             "/operations/prepare/refresh-run",
@@ -1018,12 +1064,12 @@ public sealed class TicketWorkspaceRenderingTests
         await fixture.Renderer.WaitForAsync(
             page.Id,
             markup => markup.Html.Contains(
-                "Refresh publication data and snapshot",
+                "Repair publication metadata and snapshot",
                 StringComparison.Ordinal));
 
         await fixture.Renderer.ClickAsync(
             page.Id,
-            "Refresh publication data and snapshot");
+            "Repair publication metadata and snapshot");
         Markup reconciled = await fixture.Renderer.WaitForAsync(
             page.Id,
             markup => markup.Html.Contains(
@@ -1067,7 +1113,7 @@ public sealed class TicketWorkspaceRenderingTests
                 .GetRequiredService<TicketOperationsService>());
         Assert.True(
             restored.Button(
-                "Refresh publication data and snapshot").Disabled);
+                "Repair publication metadata and snapshot").Disabled);
         Assert.False(restored.Button("Regenerate review site").Disabled);
         TicketPublicationRefreshResult restoredReview =
             Assert.IsType<TicketPublicationRefreshResult>(
@@ -1077,7 +1123,7 @@ public sealed class TicketWorkspaceRenderingTests
             Assert.Single(restoredReview.Candidates).CorpusComparison);
         await fixture.Renderer.ClickAsync(
             remounted.Id,
-            "Refresh publication data and snapshot");
+            "Repair publication metadata and snapshot");
         Assert.Equal(1, fixture.Authoring.RefreshCalls);
         Assert.Single(fixture.Authoring.ListRequests);
 
@@ -1091,8 +1137,341 @@ public sealed class TicketWorkspaceRenderingTests
         Assert.False(
             (await fixture.Renderer.MarkupAsync(remounted.Id))
                 .Button(
-                    "Refresh publication data and snapshot")
+                    "Repair publication metadata and snapshot")
                 .Disabled);
+    }
+
+    [Fact]
+    public async Task ReconciliationRunRendersDeltaPromotionAndInvalidation()
+    {
+        await using Fixture fixture = new();
+        PublicationReconciliationStatusResult status =
+            ReconciliationStatus(
+                promotionState: "staged",
+                journalState: "grouping-complete",
+                invalidatedTicketKeys: ["FHIR-2"]);
+        fixture.Authoring.GetHandler = (serviceName, runId, _) =>
+        {
+            Assert.Equal("Preparer", serviceName);
+            Assert.Equal("reconciliation-run", runId);
+            return Task.FromResult(
+                new AuthoringRunResponse(status.Run, status.Items));
+        };
+        fixture.Authoring.ReconciliationStatusHandler =
+            (serviceName, runId, _) =>
+            {
+                Assert.Equal("Preparer", serviceName);
+                Assert.Equal("reconciliation-run", runId);
+                return Task.FromResult(status);
+            };
+
+        Mounted<TicketRunDetail> page =
+            await fixture.Renderer.MountAsync<TicketRunDetail>(
+                Parameters(
+                    (nameof(TicketRunDetail.Workflow), "prepare"),
+                    (nameof(TicketRunDetail.RunId), "reconciliation-run")));
+        await page.Rendering.WaitAsync(HangGuard);
+        Markup markup = await fixture.Renderer.WaitForAsync(
+            page.Id,
+            value => value.Html.Contains(
+                "Frozen ticket delta and source revisions.",
+                StringComparison.Ordinal));
+        string text = Normalize(
+            Regex.Replace(markup.Html, "<[^>]*>", " "));
+
+        Assert.Contains("Publication reconciliation", text);
+        Assert.Contains("Stable Jira generation jira-generation-42", text);
+        Assert.Contains("Accepted tickets 2", text);
+        Assert.Contains("Carried forward 1", text);
+        Assert.Contains("Changed / re-authored 1", text);
+        Assert.Contains("Promotion state staged", text);
+        Assert.Contains(
+            "Recovery journal grouping-complete · mutation fence held",
+            text);
+        Assert.Contains(
+            "Later Jira revisions invalidated staged work.",
+            text);
+        Assert.Contains(
+            "FHIR-1 carry-forward revision-1 revision-1",
+            text);
+        Assert.Contains(
+            "FHIR-2 re-author revision-1 revision-2",
+            text);
+        Assert.Equal(1, fixture.Authoring.ReconciliationStatusCalls);
+        Assert.Equal(
+            ("Preparer", "reconciliation-run"),
+            Assert.Single(
+                fixture.Authoring.ReconciliationStatusRequests));
+    }
+
+    [Fact]
+    public async Task PendingReconciliationOffersRetryAndShowsPromotionWarning()
+    {
+        await using Fixture fixture = new();
+        PublicationReconciliationStatusResult pending =
+            ReconciliationStatus(
+                "snapshot-publish-pending",
+                "snapshot-publish-pending");
+        PublicationReconciliationStatusResult ready =
+            ReconciliationStatus("ready", "ready");
+        fixture.Authoring.GetHandler = (_, _, _) =>
+            Task.FromResult(
+                new AuthoringRunResponse(pending.Run, pending.Items));
+        fixture.Authoring.ReconciliationStatusHandler =
+            (_, _, _) => Task.FromResult(pending);
+        fixture.Authoring.ReconciliationRetryHandler =
+            (serviceName, runId, _) =>
+            {
+                Assert.Equal("Preparer", serviceName);
+                Assert.Equal("reconciliation-run", runId);
+                return Task.FromResult(
+                    new PublicationReconciliationRetryResult(
+                        ready,
+                        RecoveryStarted: true));
+            };
+
+        Mounted<TicketRunDetail> page =
+            await fixture.Renderer.MountAsync<TicketRunDetail>(
+                Parameters(
+                    (nameof(TicketRunDetail.Workflow), "prepare"),
+                    (nameof(TicketRunDetail.RunId), "reconciliation-run")));
+        await page.Rendering.WaitAsync(HangGuard);
+        Markup pendingMarkup = await fixture.Renderer.WaitForAsync(
+            page.Id,
+            value => value.Html.Contains(
+                "Snapshot publication recovery is pending.",
+                StringComparison.Ordinal));
+        string pendingText = Normalize(
+            Regex.Replace(pendingMarkup.Html, "<[^>]*>", " "));
+
+        Assert.Contains(
+            "Canonical database promotion has already occurred and competing mutations remain blocked.",
+            pendingText);
+        Assert.False(
+            pendingMarkup.Button("Retry snapshot publication").Disabled);
+        Assert.False(
+            pendingMarkup.Button("Abandon without publication\u2026").Disabled);
+
+        await fixture.Renderer.ClickAsync(
+            page.Id,
+            "Retry snapshot publication");
+        Markup retried = await fixture.Renderer.WaitForAsync(
+            page.Id,
+            value => Normalize(
+                Regex.Replace(value.Html, "<[^>]*>", " "))
+                .Contains("Promotion state ready", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(
+            "Snapshot publication recovery is pending.",
+            retried.Html);
+        Assert.DoesNotContain("Retry snapshot publication", retried.Html);
+        Assert.DoesNotContain("Abandon without publication", retried.Html);
+        Assert.Equal(1, fixture.Authoring.ReconciliationRetryCalls);
+        Assert.Equal(
+            ("Preparer", "reconciliation-run"),
+            Assert.Single(
+                fixture.Authoring.ReconciliationRetryRequests));
+    }
+
+    [Fact]
+    public async Task PendingReconciliationWarnsBeforeAuditedAbandonment()
+    {
+        await using Fixture fixture = new();
+        PublicationReconciliationStatusResult pending =
+            ReconciliationStatus(
+                "snapshot-publish-pending",
+                "snapshot-publish-pending");
+        PublicationReconciliationStatusResult abandoned =
+            ReconciliationStatus(
+                "canonical-unpublished",
+                "canonical-unpublished");
+        fixture.Authoring.GetHandler = (_, _, _) =>
+            Task.FromResult(
+                new AuthoringRunResponse(pending.Run, pending.Items));
+        fixture.Authoring.ReconciliationStatusHandler =
+            (_, _, _) => Task.FromResult(pending);
+        fixture.Authoring.ReconciliationAbandonHandler =
+            (serviceName, runId, reason, _) =>
+            {
+                Assert.Equal("Preparer", serviceName);
+                Assert.Equal("reconciliation-run", runId);
+                Assert.Equal("storage incident", reason);
+                return Task.FromResult(
+                    new PublicationReconciliationAbandonResult(
+                        abandoned,
+                        ReadTime,
+                        reason));
+            };
+
+        Mounted<TicketRunDetail> page =
+            await fixture.Renderer.MountAsync<TicketRunDetail>(
+                Parameters(
+                    (nameof(TicketRunDetail.Workflow), "prepare"),
+                    (nameof(TicketRunDetail.RunId), "reconciliation-run")));
+        await page.Rendering.WaitAsync(HangGuard);
+        await fixture.Renderer.WaitForAsync(
+            page.Id,
+            value => value.Html.Contains(
+                "Snapshot publication recovery is pending.",
+                StringComparison.Ordinal));
+
+        await fixture.Renderer.ClickAsync(
+            page.Id,
+            "Abandon without publication\u2026");
+        Markup warning = await fixture.Renderer.MarkupAsync(page.Id);
+        string warningText = Normalize(
+            Regex.Replace(warning.Html, "<[^>]*>", " "));
+
+        Assert.Contains(
+            "Abandonment does not roll back canonical data.",
+            warningText);
+        Assert.Contains(
+            "It leaves this database epoch canonical without a replacement publication and restricts later snapshot-producing workflows.",
+            warningText);
+        Assert.True(
+            warning.Button(
+                "Confirm canonical-unpublished abandonment").Disabled);
+
+        await fixture.Renderer.ChangeAsync(
+            page.Id,
+            "abandonment-reason",
+            "  storage incident  ");
+        Assert.False(
+            (await fixture.Renderer.MarkupAsync(page.Id))
+                .Button("Confirm canonical-unpublished abandonment")
+                .Disabled);
+        await fixture.Renderer.ClickAsync(
+            page.Id,
+            "Confirm canonical-unpublished abandonment");
+        Markup completed = await fixture.Renderer.WaitForAsync(
+            page.Id,
+            value => value.Html.Contains(
+                "Canonical data is unpublished.",
+                StringComparison.Ordinal));
+        string completedText = Normalize(
+            Regex.Replace(completed.Html, "<[^>]*>", " "));
+
+        Assert.Contains(
+            "No replacement snapshot was produced; snapshot-producing workflows remain restricted for this canonical epoch.",
+            completedText);
+        Assert.DoesNotContain("Retry snapshot publication", completed.Html);
+        Assert.DoesNotContain("Abandon without publication", completed.Html);
+        Assert.Equal(1, fixture.Authoring.ReconciliationAbandonCalls);
+        Assert.Equal(
+            ("Preparer", "reconciliation-run", "storage incident"),
+            Assert.Single(
+                fixture.Authoring.ReconciliationAbandonRequests));
+    }
+
+    private static PublicationReconciliationStatusResult
+        ReconciliationStatus(
+            string promotionState,
+            string? journalState,
+            IReadOnlyList<string>? invalidatedTicketKeys = null)
+    {
+        IReadOnlyList<string> invalidated =
+            invalidatedTicketKeys ?? [];
+        bool fenceHeld = string.Equals(
+            promotionState,
+            "snapshot-publish-pending",
+            StringComparison.Ordinal) ||
+            string.Equals(
+                promotionState,
+                "staged",
+                StringComparison.Ordinal);
+        AuthoringRunReconciliationCounts counts =
+            new(2, 1, 1, invalidated.Count);
+        AuthoringRunStatus run =
+            Run("reconciliation-run", "completed", terminal: true) with
+            {
+                Purpose = "publication-reconciliation",
+                SourceRunId = "source-run",
+                ReconciliationCounts = counts,
+                Recovery = new(
+                    promotionState,
+                    journalState,
+                    fenceHeld,
+                    invalidated.Count > 0
+                        ? "revision-invalidation"
+                        : null),
+            };
+        PublicationReconciliationComparison comparison = new(
+            1,
+            "source-run",
+            "source-snapshot",
+            "source-snapshot-sha",
+            "jira-generation-42",
+            ReadTime,
+            "corpus-fingerprint",
+            [
+                new PublicationReconciliationItemDecision(
+                    "FHIR-1",
+                    "carry-forward",
+                    "revision-1",
+                    "revision-1",
+                    "receipt-1",
+                    "source-item-1",
+                    "source-run",
+                    "authored-1",
+                    "grouping-1"),
+                new PublicationReconciliationItemDecision(
+                    "FHIR-2",
+                    "re-author",
+                    "revision-1",
+                    "revision-2",
+                    "receipt-2",
+                    "source-item-2",
+                    "source-run",
+                    "authored-2",
+                    "grouping-2"),
+            ]);
+        PublicationReconciliationPromotionStatus promotion = new(
+            promotionState,
+            journalState,
+            fenceHeld,
+            LastRecoveryAttemptAt: string.Equals(
+                promotionState,
+                "snapshot-publish-pending",
+                StringComparison.Ordinal)
+                    ? ReadTime
+                    : null,
+            FailureCode: invalidated.Count > 0
+                ? "revision-invalidation"
+                : null,
+            FailureDetail: invalidated.Count > 0
+                ? "A ticket changed after the frozen comparison."
+                : null,
+            AbandonedAt: string.Equals(
+                promotionState,
+                "canonical-unpublished",
+                StringComparison.Ordinal)
+                    ? ReadTime
+                    : null,
+            AbandonmentReason: string.Equals(
+                promotionState,
+                "canonical-unpublished",
+                StringComparison.Ordinal)
+                    ? "storage incident"
+                    : null);
+        return new PublicationReconciliationStatusResult(
+            run,
+            [],
+            comparison,
+            counts,
+            [
+                new PublicationReconciliationGroupingImpact(
+                    "fhir-core",
+                    ["FHIR-2"],
+                    "baseline-corpus",
+                    "baseline-output",
+                    "baseline-protected",
+                    "staged-corpus",
+                    "staged-output",
+                    "staged-protected",
+                    Complete: true),
+            ],
+            promotion,
+            invalidated);
     }
 
     private static TicketRunDetails Details(
@@ -1439,6 +1818,10 @@ public sealed class TicketWorkspaceRenderingTests
         private int _startCalls;
         private int _getCalls;
         private int _refreshCalls;
+        private int _reconciliationStartCalls;
+        private int _reconciliationStatusCalls;
+        private int _reconciliationRetryCalls;
+        private int _reconciliationAbandonCalls;
 
         public ReadQueue<AuthoringRunListResponse> Preparer { get; } = new(unexpected, "Preparer history");
 
@@ -1451,6 +1834,18 @@ public sealed class TicketWorkspaceRenderingTests
         public int GetCalls => Volatile.Read(ref _getCalls);
 
         public int RefreshCalls => Volatile.Read(ref _refreshCalls);
+
+        public int ReconciliationStartCalls =>
+            Volatile.Read(ref _reconciliationStartCalls);
+
+        public int ReconciliationStatusCalls =>
+            Volatile.Read(ref _reconciliationStatusCalls);
+
+        public int ReconciliationRetryCalls =>
+            Volatile.Read(ref _reconciliationRetryCalls);
+
+        public int ReconciliationAbandonCalls =>
+            Volatile.Read(ref _reconciliationAbandonCalls);
 
         public Func<string, object?, CancellationToken, Task<AuthoringStartResult>> StartHandler { get; set; } =
             (_, _, _) => Task.FromResult(new AuthoringStartResult(null));
@@ -1467,8 +1862,65 @@ public sealed class TicketWorkspaceRenderingTests
                     new InvalidOperationException(
                         "Publication refresh handler was not configured."));
 
+        public Func<
+            string,
+            string,
+            CancellationToken,
+            Task<PublicationReconciliationStartResult>>
+            ReconciliationStartHandler { get; set; } =
+            (_, _, _) =>
+                Task.FromException<PublicationReconciliationStartResult>(
+                    new InvalidOperationException(
+                        "Publication reconciliation start handler was not configured."));
+
+        public Func<
+            string,
+            string,
+            CancellationToken,
+            Task<PublicationReconciliationStatusResult>>
+            ReconciliationStatusHandler { get; set; } =
+            (_, _, _) =>
+                Task.FromException<PublicationReconciliationStatusResult>(
+                    new InvalidOperationException(
+                        "Publication reconciliation status handler was not configured."));
+
+        public Func<
+            string,
+            string,
+            CancellationToken,
+            Task<PublicationReconciliationRetryResult>>
+            ReconciliationRetryHandler { get; set; } =
+            (_, _, _) =>
+                Task.FromException<PublicationReconciliationRetryResult>(
+                    new InvalidOperationException(
+                        "Publication reconciliation retry handler was not configured."));
+
+        public Func<
+            string,
+            string,
+            string,
+            CancellationToken,
+            Task<PublicationReconciliationAbandonResult>>
+            ReconciliationAbandonHandler { get; set; } =
+            (_, _, _, _) =>
+                Task.FromException<PublicationReconciliationAbandonResult>(
+                    new InvalidOperationException(
+                        "Publication reconciliation abandon handler was not configured."));
+
         public ConcurrentQueue<(string Service, string SourceRunId)>
             RefreshRequests { get; } = new();
+
+        public ConcurrentQueue<(string Service, string SourceRunId)>
+            ReconciliationStartRequests { get; } = new();
+
+        public ConcurrentQueue<(string Service, string RunId)>
+            ReconciliationStatusRequests { get; } = new();
+
+        public ConcurrentQueue<(string Service, string RunId)>
+            ReconciliationRetryRequests { get; } = new();
+
+        public ConcurrentQueue<(string Service, string RunId, string Reason)>
+            ReconciliationAbandonRequests { get; } = new();
 
         public Task<AuthoringRunListResponse> ListAsync(string serviceName, int? limit, CancellationToken ct)
         {
@@ -1497,6 +1949,68 @@ public sealed class TicketWorkspaceRenderingTests
             Interlocked.Increment(ref _refreshCalls);
             RefreshRequests.Enqueue((serviceName, sourceRunId));
             return RefreshHandler(serviceName, sourceRunId, ct);
+        }
+
+        public Task<PublicationReconciliationStartResult>
+            StartPublicationReconciliationAsync(
+                string serviceName,
+                string sourceRunId,
+                CancellationToken ct)
+        {
+            Interlocked.Increment(ref _reconciliationStartCalls);
+            ReconciliationStartRequests.Enqueue(
+                (serviceName, sourceRunId));
+            return ReconciliationStartHandler(
+                serviceName,
+                sourceRunId,
+                ct);
+        }
+
+        public Task<PublicationReconciliationStatusResult>
+            GetPublicationReconciliationAsync(
+                string serviceName,
+                string runId,
+                CancellationToken ct)
+        {
+            Interlocked.Increment(ref _reconciliationStatusCalls);
+            ReconciliationStatusRequests.Enqueue(
+                (serviceName, runId));
+            return ReconciliationStatusHandler(
+                serviceName,
+                runId,
+                ct);
+        }
+
+        public Task<PublicationReconciliationRetryResult>
+            RetryPublicationReconciliationAsync(
+                string serviceName,
+                string runId,
+                CancellationToken ct)
+        {
+            Interlocked.Increment(ref _reconciliationRetryCalls);
+            ReconciliationRetryRequests.Enqueue(
+                (serviceName, runId));
+            return ReconciliationRetryHandler(
+                serviceName,
+                runId,
+                ct);
+        }
+
+        public Task<PublicationReconciliationAbandonResult>
+            AbandonPublicationReconciliationAsync(
+                string serviceName,
+                string runId,
+                string reason,
+                CancellationToken ct)
+        {
+            Interlocked.Increment(ref _reconciliationAbandonCalls);
+            ReconciliationAbandonRequests.Enqueue(
+                (serviceName, runId, reason));
+            return ReconciliationAbandonHandler(
+                serviceName,
+                runId,
+                reason,
+                ct);
         }
 
         public Task<AuthoringRunResponse> GetAsync(

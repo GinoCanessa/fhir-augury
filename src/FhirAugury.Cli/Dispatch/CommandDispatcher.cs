@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Text.Json;
 using FhirAugury.Cli.Dispatch.Handlers;
 using FhirAugury.Cli.Models;
+using FhirAugury.Processing.Client;
 
 namespace FhirAugury.Cli.Dispatch;
 
@@ -156,6 +157,17 @@ public static class CommandDispatcher
             object responseData = data is IHasWarnings hw ? hw.GetData() : data;
             return OutputEnvelope.Ok(commandName, responseData, metadata, warnings);
         }
+        catch (AuthoringControlException ex)
+        {
+            return CreateAuthoringControlFailure(commandName, ex);
+        }
+        catch (AuthoringMutationOutcomeUnknownException ex)
+        {
+            return OutputEnvelope.Fail(
+                commandName,
+                "OUTCOME_UNKNOWN",
+                ex.Message);
+        }
         catch (HttpRequestException ex) when (ex.StatusCode is null)
         {
             return OutputEnvelope.Fail(commandName, "CONNECTION_FAILED",
@@ -177,6 +189,15 @@ public static class CommandDispatcher
             return OutputEnvelope.Fail(commandName, "INTERNAL_ERROR", ex.Message, ex.ToString());
         }
     }
+
+    internal static OutputEnvelope CreateAuthoringControlFailure(
+        string commandName,
+        AuthoringControlException error) =>
+        OutputEnvelope.Fail(
+            commandName,
+            error.ErrorCode,
+            error.Detail ?? error.Message,
+            error.Message);
 
     private static Task<object> DispatchAsync(CliRequest request, string orchestratorAddr, CancellationToken ct) =>
         request switch

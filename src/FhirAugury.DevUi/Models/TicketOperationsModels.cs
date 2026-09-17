@@ -1,4 +1,5 @@
 using FhirAugury.Common.Api;
+using FhirAugury.Processing.Client;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Publishing.Tickets;
 
@@ -108,7 +109,8 @@ public sealed record TicketRunDetails(
     AuthoringRunResponse Response,
     TicketRunOutcome Outcome,
     ReviewSitePublication? Publication,
-    string? PublicationError = null);
+    string? PublicationError = null,
+    PublicationReconciliationStatusResult? Reconciliation = null);
 
 public enum TicketOperationDisposition
 {
@@ -186,4 +188,16 @@ public sealed record TicketPublicationRefreshResult(
 
     public IReadOnlyList<AuthoringRunStatus> Candidates =>
         InspectionCandidates ?? [];
+}
+
+public sealed record TicketPublicationReconciliationResult(
+    TicketOperationDisposition Disposition,
+    TicketWorkflowDefinition Workflow,
+    string RunId,
+    PublicationReconciliationStatusResult? Status = null,
+    IReadOnlyList<string>? RelatedRunIds = null,
+    string? Message = null)
+{
+    public IReadOnlyList<string> ConflictingRunIds =>
+        RelatedRunIds ?? [];
 }

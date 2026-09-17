@@ -138,6 +138,80 @@ public class ProcessingController(
                 ct));
     }
 
+    [HttpPost("{name}/authoring/runs/{sourceRunId}/publication-reconciliation")]
+    public async Task<IActionResult> StartPublicationReconciliation(
+        string name,
+        string sourceRunId,
+        CancellationToken ct)
+    {
+        if (!processingHttpClient.IsProcessingServiceEnabled(name))
+        {
+            return NotFound(new { error = $"Processing service '{name}' is not configured or disabled." });
+        }
+
+        return ToActionResult(
+            await processingHttpClient.StartPublicationReconciliationAsync(
+                name,
+                sourceRunId,
+                ct));
+    }
+
+    [HttpGet("{name}/authoring/runs/{runId}/publication-reconciliation")]
+    public async Task<IActionResult> GetPublicationReconciliation(
+        string name,
+        string runId,
+        CancellationToken ct)
+    {
+        if (!processingHttpClient.IsProcessingServiceEnabled(name))
+        {
+            return NotFound(new { error = $"Processing service '{name}' is not configured or disabled." });
+        }
+
+        return ToActionResult(
+            await processingHttpClient.GetPublicationReconciliationAsync(
+                name,
+                runId,
+                ct));
+    }
+
+    [HttpPost("{name}/authoring/runs/{runId}/publication-reconciliation/retry")]
+    public async Task<IActionResult> RetryPublicationReconciliation(
+        string name,
+        string runId,
+        CancellationToken ct)
+    {
+        if (!processingHttpClient.IsProcessingServiceEnabled(name))
+        {
+            return NotFound(new { error = $"Processing service '{name}' is not configured or disabled." });
+        }
+
+        return ToActionResult(
+            await processingHttpClient.RetryPublicationReconciliationAsync(
+                name,
+                runId,
+                ct));
+    }
+
+    [HttpPost("{name}/authoring/runs/{runId}/publication-reconciliation/abandon")]
+    public async Task<IActionResult> AbandonPublicationReconciliation(
+        string name,
+        string runId,
+        [FromBody] JsonElement request,
+        CancellationToken ct)
+    {
+        if (!processingHttpClient.IsProcessingServiceEnabled(name))
+        {
+            return NotFound(new { error = $"Processing service '{name}' is not configured or disabled." });
+        }
+
+        return ToActionResult(
+            await processingHttpClient.AbandonPublicationReconciliationAsync(
+                name,
+                runId,
+                request,
+                ct));
+    }
+
     [HttpGet("{name}/authoring/runs/{runId}")]
     public async Task<IActionResult> GetAuthoringRun(
         string name,

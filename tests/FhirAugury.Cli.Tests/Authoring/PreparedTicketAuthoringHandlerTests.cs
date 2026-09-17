@@ -5,6 +5,7 @@ using FhirAugury.Cli.Dispatch.Handlers;
 using FhirAugury.Cli.Models;
 using FhirAugury.Processing.Client;
 using FhirAugury.Processing.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 
 namespace FhirAugury.Cli.Tests.Authoring;
@@ -122,6 +123,156 @@ public sealed class PreparedTicketAuthoringHandlerTests
         Assert.Equal("publication-refresh", run.Run.Purpose);
         Assert.Equal("source-run", run.Run.SourceRunId);
         Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
+    public async Task ReconcilePublicationUsesDistinctTypedOrchestratorRoute()
+    {
+        AuthoringHttpClient.EnsureOuterMode();
+        DelegateHttpHandler handler = new((request, _, _) =>
+        {
+            Assert.Equal(HttpMethod.Post, request.Method);
+            Assert.Equal(
+                "/api/v1/processing-services/Preparer/authoring/runs/source-run/publication-reconciliation",
+                request.RequestUri!.AbsolutePath);
+            Assert.Null(request.Content);
+            return Task.FromResult(
+                DelegateHttpHandler.Json(ReconciliationStartResult()));
+        });
+
+        object result = await PreparedTicketAuthoringHandler.HandleAsync(
+            new PreparedTicketAuthoringRequest
+            {
+                Action = "reconcile-publication",
+                SourceRunId = "source-run",
+            },
+            "http://orchestrator",
+            CancellationToken.None,
+            handler);
+
+        PublicationReconciliationStartResult start =
+            Assert.IsType<PublicationReconciliationStartResult>(result);
+        Assert.Equal("reconciliation-run", start.Run.RunId);
+        Assert.Equal("stable-generation", start.Comparison.StableJiraGeneration);
+        Assert.Equal(1, handler.Calls);
+    }
+
+    [Theory]
+    [InlineData("reconciliation-status", "GET", "")]
+    [InlineData("retry-reconciliation", "POST", "/retry")]
+    public async Task ReconciliationStatusAndRetryReturnTypedState(
+        string action,
+        string method,
+        string suffix)
+    {
+        AuthoringHttpClient.EnsureOuterMode();
+        DelegateHttpHandler handler = new((request, _, _) =>
+        {
+            Assert.Equal(method, request.Method.Method);
+            Assert.Equal(
+                $"/api/v1/processing-services/Preparer/authoring/runs/reconciliation-run/publication-reconciliation{suffix}",
+                request.RequestUri!.AbsolutePath);
+            object response = action == "retry-reconciliation"
+                ? new PublicationReconciliationRetryResult(
+                    ReconciliationStatusResult(),
+                    true)
+                : ReconciliationStatusResult();
+            return Task.FromResult(DelegateHttpHandler.Json(response));
+        });
+
+        object result = await PreparedTicketAuthoringHandler.HandleAsync(
+            new PreparedTicketAuthoringRequest
+            {
+                Action = action,
+                RunId = "reconciliation-run",
+            },
+            "http://orchestrator",
+            CancellationToken.None,
+            handler);
+
+        if (action == "retry-reconciliation")
+        {
+            Assert.True(
+                Assert.IsType<
+                    PublicationReconciliationRetryResult>(
+                    result).RecoveryStarted);
+        }
+        else
+        {
+            Assert.Equal(
+                "snapshot-publish-pending",
+                Assert.IsType<
+                    PublicationReconciliationStatusResult>(
+                    result).Promotion.State);
+        }
+    }
+
+    [Fact]
+    public async Task AbandonReconciliationSendsAuditedReason()
+    {
+        AuthoringHttpClient.EnsureOuterMode();
+        DelegateHttpHandler handler = new(async (request, _, ct) =>
+        {
+            Assert.Equal(HttpMethod.Post, request.Method);
+            Assert.Equal(
+                "/api/v1/processing-services/Preparer/authoring/runs/reconciliation-run/publication-reconciliation/abandon",
+                request.RequestUri!.AbsolutePath);
+            JsonElement body = JsonDocument.Parse(
+                await request.Content!.ReadAsStringAsync(ct)).RootElement;
+            Assert.Equal(
+                "snapshot cannot be recovered",
+                body.GetProperty("reason").GetString());
+            return DelegateHttpHandler.Json(
+                new PublicationReconciliationAbandonResult(
+                    ReconciliationStatusResult("canonical-unpublished"),
+                    DateTimeOffset.Parse("2026-09-16T12:00:00Z"),
+                    "snapshot cannot be recovered"));
+        });
+
+        object result = await PreparedTicketAuthoringHandler.HandleAsync(
+            new PreparedTicketAuthoringRequest
+            {
+                Action = "abandon-reconciliation",
+                RunId = "reconciliation-run",
+                Reason = "snapshot cannot be recovered",
+            },
+            "http://orchestrator",
+            CancellationToken.None,
+            handler);
+
+        PublicationReconciliationAbandonResult abandoned =
+            Assert.IsType<PublicationReconciliationAbandonResult>(result);
+        Assert.Equal("canonical-unpublished", abandoned.Status.Promotion.State);
+    }
+
+    [Fact]
+    public async Task ReconciliationConflictPreservesMachineReadableFailureCode()
+    {
+        AuthoringHttpClient.EnsureOuterMode();
+        DelegateHttpHandler handler = new((_, _, _) =>
+            Task.FromResult(
+                DelegateHttpHandler.Json(
+                    new PreparedTicketPublicationReconciliationFailure(
+                        "recovery-in-progress",
+                        "Promotion recovery owns the mutation fence.",
+                        RunId: "pending-run"),
+                    HttpStatusCode.Conflict)));
+
+        AuthoringControlException error =
+            await Assert.ThrowsAsync<AuthoringControlException>(() =>
+                PreparedTicketAuthoringHandler.HandleAsync(
+                    new PreparedTicketAuthoringRequest
+                    {
+                        Action = "reconcile-publication",
+                        SourceRunId = "source-run",
+                    },
+                    "http://orchestrator",
+                    CancellationToken.None,
+                    handler));
+
+        Assert.Equal("recovery-in-progress", error.ErrorCode);
+        Assert.Equal(["pending-run"], error.RelatedRunIds);
+        Assert.Equal(HttpStatusCode.Conflict, error.StatusCode);
     }
 
     [Fact]
@@ -535,6 +686,65 @@ public sealed class PreparedTicketAuthoringHandlerTests
         Recommendation = PreparedTicketRecommendationValues.ProposalA,
         RecommendationJustification = "Because",
     };
+
+    private static PublicationReconciliationStartResult
+        ReconciliationStartResult() => new(
+            ReconciliationRunStatus(),
+            [],
+            ReconciliationComparison(),
+            new AuthoringRunReconciliationCounts(1, 0, 1));
+
+    private static PublicationReconciliationStatusResult
+        ReconciliationStatusResult(
+            string promotionState = "snapshot-publish-pending") => new(
+                ReconciliationRunStatus(),
+                [],
+                ReconciliationComparison(),
+                new AuthoringRunReconciliationCounts(1, 0, 1),
+                [],
+                new PublicationReconciliationPromotionStatus(
+                    promotionState,
+                    "database-promoted",
+                    promotionState == "snapshot-publish-pending"),
+                []);
+
+    private static AuthoringRunStatus ReconciliationRunStatus() => new(
+        "reconciliation-run",
+        "jira-fhir",
+        1,
+        "running",
+        false,
+        1,
+        0,
+        0,
+        DateTimeOffset.Parse("2026-09-16T12:00:00Z"),
+        null,
+        null,
+        null,
+        Purpose: "publication-reconciliation",
+        SourceRunId: "source-run");
+
+    private static PublicationReconciliationComparison
+        ReconciliationComparison() => new(
+            1,
+            "source-run",
+            "snapshot-1",
+            new string('a', 64),
+            "stable-generation",
+            DateTimeOffset.Parse("2026-09-16T12:00:00Z"),
+            new string('b', 64),
+            [
+                new PublicationReconciliationItemDecision(
+                    "FHIR-1",
+                    "re-author",
+                    "revision-1",
+                    "revision-2",
+                    "receipt-1",
+                    "source-item-1",
+                    "source-run",
+                    new string('c', 64),
+                    new string('d', 64)),
+            ]);
 
     private static object RunEnvelope(
         string runId = "run-1",

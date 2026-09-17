@@ -251,6 +251,88 @@ internal sealed class TicketSnapshotFixture
         await WriteDescriptorAsync(DescriptorPath, Descriptor);
     }
 
+    public async Task AttachValidPublicationReconciliationProofAsync(
+        DateTimeOffset capturedAt,
+        long stableJiraGeneration)
+    {
+        if (Descriptor.SchemaVersion != PreparedTicketSnapshotSchemaV3.Version)
+        {
+            throw new InvalidOperationException(
+                "Publication-reconciliation proof fixtures require snapshot schema v3.");
+        }
+
+        PreparedTicketPublicationFingerprints fingerprints =
+            await PreparedTicketPublicationFingerprintReader.ReadAsync(
+                DatabasePath);
+        string sourceRunId = Descriptor.RunId;
+        string reconciliationRunId =
+            $"reconciliation-{Guid.NewGuid():N}";
+        DateTimeOffset utcCapturedAt = capturedAt.ToUniversalTime();
+        string groupingImpactFingerprint = Convert.ToHexString(
+                SHA256.HashData(
+                    JsonSerializer.SerializeToUtf8Bytes(new
+                    {
+                        purpose = PreparedTicketPublicationContract
+                            .PublicationReconciliationPurpose,
+                        sourceRunId,
+                        sourceSnapshotId = Descriptor.SnapshotId,
+                        stableJiraGeneration,
+                        grouping = fingerprints.Grouping,
+                    })))
+            .ToLowerInvariant();
+
+        await using (SqliteConnection connection = new(
+            $"Data Source={DatabasePath};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO authoring_runs(
+                    Id, ProcessorKind, AuthoringEpoch, Status, DatabaseOnly,
+                    TotalItems, CreatedAt, StartedAt, CompletedAt, SnapshotId)
+                SELECT @reconciliationRunId, ProcessorKind, AuthoringEpoch,
+                       'finalizing', 0,
+                       (SELECT COUNT(*) FROM prepared_tickets),
+                       @capturedAt, @capturedAt, NULL, @snapshotId
+                FROM authoring_runs
+                WHERE Id = @sourceRunId;
+
+                DELETE FROM prepared_ticket_partition_receipts;
+                """,
+                ("@reconciliationRunId", reconciliationRunId),
+                ("@sourceRunId", sourceRunId),
+                ("@capturedAt", utcCapturedAt.ToString("O")),
+                ("@snapshotId", Descriptor.SnapshotId));
+            await connection.CloseAsync();
+        }
+
+        AuthoringSnapshotPublicationProof proof = new(
+            PreparedTicketPublicationContract.CurrentVersion,
+            PreparedTicketPublicationContract
+                .PublicationReconciliationPurpose,
+            sourceRunId,
+            PreparedTicketPublicationContract.JiraSourceName,
+            utcCapturedAt,
+            stableJiraGeneration,
+            0,
+            fingerprints.Corpus,
+            groupingImpactFingerprint,
+            utcCapturedAt);
+        Descriptor = await CreateDescriptorAsync(
+            DatabasePath,
+            reconciliationRunId,
+            Descriptor.SnapshotId,
+            Descriptor.Sequence,
+            Descriptor.SchemaVersion,
+            Descriptor.TableCounts,
+            Descriptor.CreatedAt,
+            Descriptor.ItemCount,
+            Descriptor.ReceiptCount,
+            proof);
+        await WriteDescriptorAsync(DescriptorPath, Descriptor);
+    }
+
     public async Task SetPublicationProofAsync(
         AuthoringSnapshotPublicationProof? proof)
     {

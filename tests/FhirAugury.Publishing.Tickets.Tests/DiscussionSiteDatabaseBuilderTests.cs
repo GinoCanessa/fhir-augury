@@ -1211,6 +1211,99 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
     }
 
     [Fact]
+    public async Task ReconciliationProofQualifiesOnlyMatchingReadySnapshot()
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePreparerAsync(
+                _root,
+                schemaVersion: PreparedTicketSnapshotSchemaV3.Version);
+        DateTimeOffset capturedAt =
+            new(2026, 9, 16, 18, 30, 0, TimeSpan.Zero);
+        await fixture.AttachValidPublicationReconciliationProofAsync(
+            capturedAt,
+            stableJiraGeneration: 5252);
+
+        DiscussionSiteDatabaseBuilder.BuildResult ready =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath,
+                fixture.Descriptor,
+                "Tickets",
+                ResolvedFilters.None);
+        try
+        {
+            Assert.True(ready.Presentation.Readiness.IsReady);
+            Assert.Equal(
+                DiscussionPublicationReadinessEvidence
+                    .PublicationReconciliation,
+                ready.Presentation.Readiness.Evidence);
+            Assert.Equal(
+                5252,
+                ready.Presentation.Readiness.JiraSourceContentRevision);
+            Assert.Equal(
+                capturedAt,
+                ready.Presentation.JiraSourceLastSuccessfulRefreshAt);
+            Assert.Empty(ready.Presentation.Readiness.Reasons);
+            await DiscussionSiteDatabaseValidator.ValidateAsync(
+                ready.TempDbPath,
+                fixture.DatabasePath,
+                fixture.Descriptor,
+                "Tickets",
+                ResolvedFilters.None);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(ready.TempDbPath);
+        }
+
+        AuthoringSnapshotPublicationProof proof =
+            Assert.IsType<AuthoringSnapshotPublicationProof>(
+                fixture.Descriptor.PublicationProof);
+        await fixture.SetPublicationProofAsync(
+            proof with
+            {
+                CorpusFingerprint = new string('0', 64),
+            });
+        DiscussionSiteDatabaseBuilder.BuildResult degraded =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath,
+                fixture.Descriptor,
+                "Tickets",
+                ResolvedFilters.None);
+        try
+        {
+            Assert.False(degraded.Presentation.Readiness.IsReady);
+            Assert.Equal(
+                DiscussionPublicationReadinessEvidence
+                    .PublicationReconciliation,
+                degraded.Presentation.Readiness.Evidence);
+            Assert.Null(
+                degraded.Presentation.Readiness.JiraSourceContentRevision);
+            Assert.Null(
+                degraded.Presentation.JiraSourceLastSuccessfulRefreshAt);
+            Assert.Contains(
+                degraded.Presentation.Readiness.Reasons,
+                reason => reason.Code ==
+                    DiscussionPublicationReadinessReasonCodes
+                        .InvalidReconciliationProof);
+            Assert.DoesNotContain(
+                degraded.Presentation.Readiness.Reasons,
+                reason => reason.Code ==
+                    DiscussionPublicationReadinessReasonCodes
+                        .InvalidRefreshProof);
+            await DiscussionSiteDatabaseValidator.ValidateAsync(
+                degraded.TempDbPath,
+                fixture.DatabasePath,
+                fixture.Descriptor,
+                "Tickets",
+                ResolvedFilters.None);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(degraded.TempDbPath);
+        }
+    }
+
+    [Fact]
     public async Task RefreshProofRejectsUnreceiptedLiveTopicPartition()
     {
         TicketSnapshotFixture fixture =

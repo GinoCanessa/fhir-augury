@@ -155,6 +155,129 @@ public sealed class AuthoringControlClientTests
         Assert.Equal(1, handler.Calls);
     }
 
+    [Fact]
+    public async Task PublicationReconciliationUsesTypedOrchestratorRoutes()
+    {
+        List<string> targets = [];
+        DelegateHttpHandler handler = new(async (request, _, ct) =>
+        {
+            targets.Add(
+                $"{request.Method} {request.RequestUri!.PathAndQuery}");
+            string path = request.RequestUri.AbsolutePath;
+            PublicationReconciliationStatusResult status =
+                PublicationReconciliationStatus();
+            if (path.EndsWith("/retry", StringComparison.Ordinal))
+            {
+                return DelegateHttpHandler.Json(
+                    new PublicationReconciliationRetryResult(status, true));
+            }
+            if (path.EndsWith("/abandon", StringComparison.Ordinal))
+            {
+                JsonElement body = JsonDocument.Parse(
+                    await request.Content!.ReadAsStringAsync(ct))
+                    .RootElement;
+                Assert.Equal(
+                    "operator accepted risk",
+                    body.GetProperty("reason").GetString());
+                return DelegateHttpHandler.Json(
+                    new PublicationReconciliationAbandonResult(
+                        status with
+                        {
+                            Promotion = status.Promotion with
+                            {
+                                State = "canonical-unpublished",
+                            },
+                        },
+                        new DateTimeOffset(
+                            2026, 9, 16, 18, 0, 0, TimeSpan.Zero),
+                        "operator accepted risk"));
+            }
+            if (request.Method == HttpMethod.Post)
+            {
+                return DelegateHttpHandler.Json(
+                    new PublicationReconciliationStartResult(
+                        status.Run,
+                        status.Items,
+                        status.Comparison,
+                        status.Counts),
+                    HttpStatusCode.Accepted);
+            }
+            return DelegateHttpHandler.Json(status);
+        });
+        AuthoringControlClient client =
+            AuthoringClientTestData.CreateClient(handler);
+
+        PublicationReconciliationStartResult started =
+            await client.StartPublicationReconciliationAsync(
+                "preparer",
+                "source-run",
+                CancellationToken.None);
+        PublicationReconciliationStatusResult status =
+            await client.GetPublicationReconciliationAsync(
+                "Preparer",
+                "reconciliation-run",
+                CancellationToken.None);
+        PublicationReconciliationRetryResult retried =
+            await client.RetryPublicationReconciliationAsync(
+                "Preparer",
+                "reconciliation-run",
+                CancellationToken.None);
+        PublicationReconciliationAbandonResult abandoned =
+            await client.AbandonPublicationReconciliationAsync(
+                "Preparer",
+                "reconciliation-run",
+                "operator accepted risk",
+                CancellationToken.None);
+
+        Assert.Equal("jira-generation-9", started.Comparison.StableJiraGeneration);
+        Assert.Equal(1, status.Counts.ReAuthorTicketCount);
+        Assert.True(retried.RecoveryStarted);
+        Assert.Equal("canonical-unpublished", abandoned.Status.Promotion.State);
+        Assert.Equal(
+            [
+                "POST /api/v1/processing-services/Preparer/authoring/runs/source-run/publication-reconciliation",
+                "GET /api/v1/processing-services/Preparer/authoring/runs/reconciliation-run/publication-reconciliation",
+                "POST /api/v1/processing-services/Preparer/authoring/runs/reconciliation-run/publication-reconciliation/retry",
+                "POST /api/v1/processing-services/Preparer/authoring/runs/reconciliation-run/publication-reconciliation/abandon",
+            ],
+            targets);
+    }
+
+    [Fact]
+    public async Task PublicationReconciliationConflictRetainsTypedFailure()
+    {
+        DelegateHttpHandler handler = new((_, _, _) =>
+        {
+            HttpResponseMessage response = DelegateHttpHandler.Json(
+                new AuthoringConflictResponse(
+                    "recovery-in-progress",
+                    "Snapshot publication is still pending.",
+                    ["reconciliation-run"],
+                    "reconciliation-run"),
+                HttpStatusCode.Conflict);
+            response.Headers.RetryAfter =
+                new RetryConditionHeaderValue(TimeSpan.FromSeconds(21));
+            return Task.FromResult(response);
+        });
+        AuthoringControlClient client =
+            AuthoringClientTestData.CreateClient(handler);
+
+        AuthoringControlException error =
+            await Assert.ThrowsAsync<AuthoringControlException>(
+                () => client.RetryPublicationReconciliationAsync(
+                    "Preparer",
+                    "reconciliation-run",
+                    CancellationToken.None));
+
+        Assert.Equal("recovery-in-progress", error.ErrorCode);
+        Assert.Equal(["reconciliation-run"], error.RelatedRunIds);
+        Assert.Equal(TimeSpan.FromSeconds(21), error.RetryAfter);
+        Assert.EndsWith(
+            "/publication-reconciliation/retry",
+            error.Endpoint,
+            StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("purpose")]
     [InlineData("source-run")]
@@ -548,6 +671,67 @@ public sealed class AuthoringControlClientTests
                 SourceRunId = "source-run",
             },
         };
+    }
+
+    private static PublicationReconciliationStatusResult
+        PublicationReconciliationStatus()
+    {
+        AuthoringRunResponse response =
+            AuthoringClientTestData.RunResponse("reconciliation-run");
+        AuthoringRunStatus run = response.Run with
+        {
+            Purpose = "publication-reconciliation",
+            SourceRunId = "source-run",
+            ReconciliationCounts = new(1, 0, 1),
+            Recovery = new(
+                "snapshot-publish-pending",
+                "database-promoted",
+                true),
+        };
+        AuthoringRunItemStatus[] items =
+        [
+            response.Items[0] with
+            {
+                RunId = run.RunId,
+                Reconciliation = new(
+                    "re-author",
+                    "revision-1",
+                    "revision-2",
+                    new string('a', 64),
+                    new string('b', 64)),
+            },
+        ];
+        PublicationReconciliationComparison comparison = new(
+            1,
+            "source-run",
+            "source-snapshot",
+            new string('c', 64),
+            "jira-generation-9",
+            new DateTimeOffset(2026, 9, 16, 17, 0, 0, TimeSpan.Zero),
+            new string('d', 64),
+            [
+                new(
+                    "FHIR-1",
+                    "re-author",
+                    "revision-1",
+                    "revision-2",
+                    "receipt-1",
+                    "item-1",
+                    "source-run",
+                    new string('a', 64),
+                    new string('b', 64)),
+            ]);
+        return new(
+            run,
+            items,
+            comparison,
+            new(1, 0, 1),
+            [],
+            new(
+                "snapshot-publish-pending",
+                "database-promoted",
+                true),
+            []);
     }
 
     private sealed class InterruptedReadStream : Stream

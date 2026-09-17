@@ -153,6 +153,61 @@ public class ProcessingHttpClientTests
     }
 
     [Fact]
+    public async Task PublicationReconciliation_ForwardsTypedLifecycleRoutes()
+    {
+        RecordingHandler handler = new();
+        ProcessingHttpClient client = CreateClient(handler);
+        JsonElement abandon = JsonDocument.Parse(
+            """{"reason":"operator accepted risk"}""")
+            .RootElement.Clone();
+
+        ProcessingProxyResponse started =
+            await client.StartPublicationReconciliationAsync(
+                "Preparer",
+                "source-run",
+                CancellationToken.None);
+        ProcessingProxyResponse status =
+            await client.GetPublicationReconciliationAsync(
+                "Preparer",
+                "reconciliation-run",
+                CancellationToken.None);
+        ProcessingProxyResponse retried =
+            await client.RetryPublicationReconciliationAsync(
+                "Preparer",
+                "reconciliation-run",
+                CancellationToken.None);
+        ProcessingProxyResponse abandoned =
+            await client.AbandonPublicationReconciliationAsync(
+                "Preparer",
+                "reconciliation-run",
+                abandon,
+                CancellationToken.None);
+
+        Assert.Equal(HttpStatusCode.Accepted, started.StatusCode);
+        Assert.Equal(
+            "/api/v1/processing-services/Preparer/authoring/runs/reconciliation-run/publication-reconciliation",
+            started.Location);
+        Assert.Equal(HttpStatusCode.OK, status.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, retried.StatusCode);
+        Assert.Equal("17", retried.RetryAfter);
+        Assert.Contains("recovery-in-progress", Encoding.UTF8.GetString(retried.Content));
+        Assert.Equal(HttpStatusCode.OK, abandoned.StatusCode);
+        Assert.Equal(
+            [
+                "POST /processing/authoring/runs/source-run/publication-reconciliation",
+                "GET /processing/authoring/runs/reconciliation-run/publication-reconciliation",
+                "POST /processing/authoring/runs/reconciliation-run/publication-reconciliation/retry",
+                "POST /processing/authoring/runs/reconciliation-run/publication-reconciliation/abandon",
+            ],
+            handler.Requests);
+        Assert.Contains(
+            handler.Bodies,
+            body => JsonDocument.Parse(body).RootElement
+                .GetProperty("reason").GetString() ==
+                "operator accepted risk");
+    }
+
+    [Fact]
     public async Task SnapshotBytes_AreStreamedWithConditionalHeadersAndDisposed()
     {
         RecordingHandler handler = new();
@@ -321,6 +376,14 @@ public class ProcessingHttpClientTests
                 "/processing/authoring/runs/run-1" => RunEnvelope,
                 "/processing/authoring/runs/source-run/publication-refresh" =>
                     RefreshRunEnvelope,
+                "/processing/authoring/runs/source-run/publication-reconciliation" =>
+                    ReconciliationStartEnvelope,
+                "/processing/authoring/runs/reconciliation-run/publication-reconciliation" =>
+                    ReconciliationStatusEnvelope,
+                "/processing/authoring/runs/reconciliation-run/publication-reconciliation/retry" =>
+                    """{"error":"recovery-in-progress","detail":"Snapshot publication is still pending.","conflictingRunIds":["reconciliation-run"],"runId":"reconciliation-run"}""",
+                "/processing/authoring/runs/reconciliation-run/publication-reconciliation/abandon" =>
+                    ReconciliationAbandonEnvelope,
                 "/processing/authoring/runs/run-1/items/item-1/retry" =>
                     """{"itemId":"item-1","requiresAuthoring":true}""",
                 "/processing/authoring/runs/run-1/items/item-1/supersede" =>
@@ -334,6 +397,12 @@ public class ProcessingHttpClientTests
                 ? HttpStatusCode.Accepted
                 : path == "/processing/authoring/runs/source-run/publication-refresh"
                     ? HttpStatusCode.Accepted
+                : path == "/processing/authoring/runs/source-run/publication-reconciliation"
+                    ? HttpStatusCode.Accepted
+                : path.EndsWith(
+                    "/publication-reconciliation/retry",
+                    StringComparison.Ordinal)
+                    ? HttpStatusCode.Conflict
                 : path.EndsWith("/supersede", StringComparison.Ordinal)
                     ? HttpStatusCode.Conflict
                 : path.EndsWith("/snapshot/bytes", StringComparison.Ordinal)
@@ -398,7 +467,21 @@ public class ProcessingHttpClientTests
                     new RetryConditionHeaderValue(
                         TimeSpan.FromSeconds(5));
             }
-            if (path.EndsWith("/retry", StringComparison.Ordinal))
+            if (path == "/processing/authoring/runs/source-run/publication-reconciliation")
+            {
+                response.Headers.Location = new Uri(
+                    "/processing/authoring/runs/reconciliation-run/publication-reconciliation",
+                    UriKind.Relative);
+            }
+            if (path.EndsWith(
+                "/publication-reconciliation/retry",
+                StringComparison.Ordinal))
+            {
+                response.Headers.RetryAfter =
+                    new RetryConditionHeaderValue(
+                        TimeSpan.FromSeconds(17));
+            }
+            else if (path.EndsWith("/retry", StringComparison.Ordinal))
             {
                 response.Headers.RetryAfter =
                     new System.Net.Http.Headers.RetryConditionHeaderValue(
@@ -418,6 +501,15 @@ public class ProcessingHttpClientTests
 
         private const string RefreshRunEnvelope =
             """{"run":{"runId":"refresh-run","processorKind":"jira-fhir","authoringEpoch":1,"status":"queued","databaseOnly":false,"totalItems":1,"completedItems":1,"failedItems":0,"createdAt":"2026-09-14T00:00:00Z","startedAt":null,"completedAt":null,"error":null,"purpose":"publication-refresh","sourceRunId":"source-run"},"items":[{"itemId":"item-1","runId":"refresh-run","businessKey":"FHIR-1","itemKind":"jira-ticket","expectedSourceRevision":"rev-1","status":"completed","currentOperationId":null,"acceptedReceiptId":"receipt-1","attemptCount":0,"createdAt":"2026-09-14T00:00:00Z","startedAt":null,"completedAt":"2026-09-14T00:00:00Z","error":null}]}""";
+
+        private const string ReconciliationStartEnvelope =
+            """{"run":{"runId":"reconciliation-run","processorKind":"jira-fhir","authoringEpoch":1,"status":"queued","databaseOnly":false,"totalItems":1,"completedItems":0,"failedItems":0,"createdAt":"2026-09-16T00:00:00Z","startedAt":null,"completedAt":null,"error":null,"purpose":"publication-reconciliation","sourceRunId":"source-run"},"items":[],"comparison":{"contractVersion":1,"sourceRunId":"source-run","sourceSnapshotId":"snapshot-1","sourceSnapshotSha256":"abc","stableJiraGeneration":"generation-1","capturedAt":"2026-09-16T00:00:00Z","corpusFingerprint":"def","items":[]},"counts":{"acceptedTicketCount":1,"carryForwardTicketCount":0,"reAuthorTicketCount":1,"invalidatedTicketCount":0}}""";
+
+        private const string ReconciliationStatusEnvelope =
+            """{"run":{"runId":"reconciliation-run","processorKind":"jira-fhir","authoringEpoch":1,"status":"finalizing","databaseOnly":false,"totalItems":1,"completedItems":1,"failedItems":0,"createdAt":"2026-09-16T00:00:00Z","startedAt":null,"completedAt":null,"error":null,"purpose":"publication-reconciliation","sourceRunId":"source-run"},"items":[],"comparison":{"contractVersion":1,"sourceRunId":"source-run","sourceSnapshotId":"snapshot-1","sourceSnapshotSha256":"abc","stableJiraGeneration":"generation-1","capturedAt":"2026-09-16T00:00:00Z","corpusFingerprint":"def","items":[]},"counts":{"acceptedTicketCount":1,"carryForwardTicketCount":0,"reAuthorTicketCount":1,"invalidatedTicketCount":0},"groupingImpacts":[],"promotion":{"state":"snapshot-publish-pending","journalState":"database-promoted","mutationFenceHeld":true},"invalidatedTicketKeys":[]}""";
+
+        private const string ReconciliationAbandonEnvelope =
+            """{"status":{"run":{"runId":"reconciliation-run","processorKind":"jira-fhir","authoringEpoch":1,"status":"failed","databaseOnly":false,"totalItems":1,"completedItems":1,"failedItems":0,"createdAt":"2026-09-16T00:00:00Z","startedAt":null,"completedAt":null,"error":null,"purpose":"publication-reconciliation","sourceRunId":"source-run"},"items":[],"comparison":{"contractVersion":1,"sourceRunId":"source-run","sourceSnapshotId":"snapshot-1","sourceSnapshotSha256":"abc","stableJiraGeneration":"generation-1","capturedAt":"2026-09-16T00:00:00Z","corpusFingerprint":"def","items":[]},"counts":{"acceptedTicketCount":1,"carryForwardTicketCount":0,"reAuthorTicketCount":1,"invalidatedTicketCount":0},"groupingImpacts":[],"promotion":{"state":"canonical-unpublished","journalState":"abandoned","mutationFenceHeld":false},"invalidatedTicketKeys":[]},"abandonedAt":"2026-09-16T18:00:00Z","reason":"operator accepted risk"}""";
     }
 
     private sealed class TrackingStream(byte[] buffer) : MemoryStream(buffer)

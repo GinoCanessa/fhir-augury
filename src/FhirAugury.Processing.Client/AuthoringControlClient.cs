@@ -18,6 +18,88 @@ public sealed record AuthoringRetryResponse(
     string ItemId,
     bool RequiresAuthoring);
 
+public sealed record PublicationReconciliationItemDecision(
+    string TicketKey,
+    string Disposition,
+    string BaselineSourceRevision,
+    string CurrentSourceRevision,
+    string BaselineReceiptId,
+    string BaselineRunItemId,
+    string BaselineContributingRunId,
+    string BaselineAuthoredFingerprint,
+    string BaselineGroupingFingerprint);
+
+public sealed record PublicationReconciliationComparison(
+    int ContractVersion,
+    string SourceRunId,
+    string SourceSnapshotId,
+    string SourceSnapshotSha256,
+    string StableJiraGeneration,
+    DateTimeOffset CapturedAt,
+    string CorpusFingerprint,
+    IReadOnlyList<PublicationReconciliationItemDecision> Items);
+
+public sealed record PublicationReconciliationGroupingImpact(
+    string PartitionKey,
+    IReadOnlyList<string> RevisedTicketKeys,
+    string BaselineCorpusFingerprint,
+    string BaselineOutputFingerprint,
+    string BaselineProtectedRowsFingerprint,
+    string? StagedCorpusFingerprint = null,
+    string? StagedOutputFingerprint = null,
+    string? StagedProtectedRowsFingerprint = null,
+    bool Complete = false);
+
+public sealed record PublicationReconciliationPromotionStatus(
+    string State,
+    string? JournalState,
+    bool MutationFenceHeld,
+    DateTimeOffset? LastRecoveryAttemptAt = null,
+    string? FailureCode = null,
+    string? FailureDetail = null,
+    DateTimeOffset? AbandonedAt = null,
+    string? AbandonmentReason = null);
+
+public sealed record PublicationReconciliationProof(
+    int ContractVersion,
+    string Purpose,
+    string SourceRunId,
+    string SourceSnapshotId,
+    string StableJiraGeneration,
+    int AcceptedTicketCount,
+    int CarryForwardTicketCount,
+    int ReAuthorTicketCount,
+    string CorpusFingerprint,
+    string GroupingImpactFingerprint,
+    DateTimeOffset CapturedAt);
+
+public sealed record PublicationReconciliationStartResult(
+    AuthoringRunStatus Run,
+    IReadOnlyList<AuthoringRunItemStatus> Items,
+    PublicationReconciliationComparison Comparison,
+    AuthoringRunReconciliationCounts Counts);
+
+public sealed record PublicationReconciliationStatusResult(
+    AuthoringRunStatus Run,
+    IReadOnlyList<AuthoringRunItemStatus> Items,
+    PublicationReconciliationComparison Comparison,
+    AuthoringRunReconciliationCounts Counts,
+    IReadOnlyList<PublicationReconciliationGroupingImpact> GroupingImpacts,
+    PublicationReconciliationPromotionStatus Promotion,
+    IReadOnlyList<string> InvalidatedTicketKeys,
+    PublicationReconciliationProof? PublicationProof = null,
+    string? FailureCode = null,
+    string? FailureDetail = null);
+
+public sealed record PublicationReconciliationRetryResult(
+    PublicationReconciliationStatusResult Status,
+    bool RecoveryStarted);
+
+public sealed record PublicationReconciliationAbandonResult(
+    PublicationReconciliationStatusResult Status,
+    DateTimeOffset AbandonedAt,
+    string Reason);
+
 public interface IAuthoringControlClient
 {
     Task<AuthoringStartResult> StartAsync<TRequest>(
@@ -29,6 +111,43 @@ public interface IAuthoringControlClient
         string serviceName,
         string sourceRunId,
         CancellationToken ct);
+
+    Task<PublicationReconciliationStartResult>
+        StartPublicationReconciliationAsync(
+            string serviceName,
+            string sourceRunId,
+            CancellationToken ct) =>
+        Task.FromException<PublicationReconciliationStartResult>(
+            new NotSupportedException(
+                "Publication reconciliation start is not supported by this authoring client."));
+
+    Task<PublicationReconciliationStatusResult>
+        GetPublicationReconciliationAsync(
+            string serviceName,
+            string runId,
+            CancellationToken ct) =>
+        Task.FromException<PublicationReconciliationStatusResult>(
+            new NotSupportedException(
+                "Publication reconciliation status is not supported by this authoring client."));
+
+    Task<PublicationReconciliationRetryResult>
+        RetryPublicationReconciliationAsync(
+            string serviceName,
+            string runId,
+            CancellationToken ct) =>
+        Task.FromException<PublicationReconciliationRetryResult>(
+            new NotSupportedException(
+                "Publication reconciliation recovery is not supported by this authoring client."));
+
+    Task<PublicationReconciliationAbandonResult>
+        AbandonPublicationReconciliationAsync(
+            string serviceName,
+            string runId,
+            string reason,
+            CancellationToken ct) =>
+        Task.FromException<PublicationReconciliationAbandonResult>(
+            new NotSupportedException(
+                "Publication reconciliation abandonment is not supported by this authoring client."));
 
     Task<AuthoringRunListResponse> ListAsync(
         string serviceName,
@@ -65,6 +184,8 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
     private const int DefaultStreamRetries = 3;
     private const string PublicationRefreshPurpose =
         "publication-refresh";
+    private const string PublicationReconciliationPurpose =
+        "publication-reconciliation";
 
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web)
@@ -192,6 +313,118 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
         {
             throw new InvalidOperationException(
                 $"Publication refresh response processor '{response.Run.ProcessorKind}' does not match authoring service '{service}'.");
+        }
+        return response;
+    }
+
+    public async Task<PublicationReconciliationStartResult>
+        StartPublicationReconciliationAsync(
+            string serviceName,
+            string sourceRunId,
+            CancellationToken ct)
+    {
+        string service = AuthoringServiceBinding.Normalize(serviceName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceRunId);
+        string path =
+            $"{ControlPath(service)}/{Uri.EscapeDataString(sourceRunId)}/publication-reconciliation";
+        MutationResponse raw = await SendMutationAsync(
+            PublicationReconciliationPurpose,
+            service,
+            sourceRunId,
+            itemId: null,
+            path,
+            body: null,
+            ct);
+        PublicationReconciliationStartResult response =
+            Deserialize<PublicationReconciliationStartResult>(
+                raw.Content,
+                path);
+        ValidateReconciliationRun(
+            response.Run,
+            response.Items,
+            service,
+            expectedRunId: null,
+            sourceRunId);
+        ValidateComparisonAndCounts(
+            response.Comparison,
+            response.Counts,
+            sourceRunId);
+        return response;
+    }
+
+    public async Task<PublicationReconciliationStatusResult>
+        GetPublicationReconciliationAsync(
+            string serviceName,
+            string runId,
+            CancellationToken ct)
+    {
+        string service = AuthoringServiceBinding.Normalize(serviceName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        string path =
+            $"{ControlPath(service)}/{Uri.EscapeDataString(runId)}/publication-reconciliation";
+        PublicationReconciliationStatusResult response =
+            await SendReadJsonAsync<PublicationReconciliationStatusResult>(
+                path,
+                ct);
+        ValidateReconciliationStatus(response, service, runId);
+        return response;
+    }
+
+    public async Task<PublicationReconciliationRetryResult>
+        RetryPublicationReconciliationAsync(
+            string serviceName,
+            string runId,
+            CancellationToken ct)
+    {
+        string service = AuthoringServiceBinding.Normalize(serviceName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        string path =
+            $"{ControlPath(service)}/{Uri.EscapeDataString(runId)}/publication-reconciliation/retry";
+        MutationResponse raw = await SendMutationAsync(
+            "publication-reconciliation-retry",
+            service,
+            runId,
+            itemId: null,
+            path,
+            body: null,
+            ct);
+        PublicationReconciliationRetryResult response =
+            Deserialize<PublicationReconciliationRetryResult>(
+                raw.Content,
+                path);
+        ValidateReconciliationStatus(response.Status, service, runId);
+        return response;
+    }
+
+    public async Task<PublicationReconciliationAbandonResult>
+        AbandonPublicationReconciliationAsync(
+            string serviceName,
+            string runId,
+            string reason,
+            CancellationToken ct)
+    {
+        string service = AuthoringServiceBinding.Normalize(serviceName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        string path =
+            $"{ControlPath(service)}/{Uri.EscapeDataString(runId)}/publication-reconciliation/abandon";
+        MutationResponse raw = await SendMutationAsync(
+            "publication-reconciliation-abandon",
+            service,
+            runId,
+            itemId: null,
+            path,
+            new { reason },
+            ct);
+        PublicationReconciliationAbandonResult response =
+            Deserialize<PublicationReconciliationAbandonResult>(
+                raw.Content,
+                path);
+        ValidateReconciliationStatus(response.Status, service, runId);
+        if (!string.Equals(response.Reason, reason, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Publication reconciliation abandonment response does not match the requested reason.");
         }
         return response;
     }
@@ -847,6 +1080,131 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
         {
             throw new InvalidOperationException(
                 "Authoring run response contains inconsistent coordinates.");
+        }
+    }
+
+    private static void ValidateReconciliationStatus(
+        PublicationReconciliationStatusResult response,
+        string serviceName,
+        string runId)
+    {
+        ValidateReconciliationRun(
+            response.Run,
+            response.Items,
+            serviceName,
+            runId,
+            expectedSourceRunId: null);
+        ValidateComparisonAndCounts(
+            response.Comparison,
+            response.Counts,
+            response.Run.SourceRunId);
+        if (response.GroupingImpacts is null ||
+            response.InvalidatedTicketKeys is null ||
+            response.Promotion is null ||
+            response.InvalidatedTicketKeys
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count() != response.InvalidatedTicketKeys.Count ||
+            response.Counts.InvalidatedTicketCount !=
+                response.InvalidatedTicketKeys.Count)
+        {
+            throw new InvalidOperationException(
+                "Publication reconciliation response has inconsistent recovery state.");
+        }
+        if (!string.Equals(
+                response.Promotion.State,
+                "staged",
+                StringComparison.Ordinal) &&
+            !string.Equals(
+                response.Promotion.State,
+                "snapshot-publish-pending",
+                StringComparison.Ordinal) &&
+            !string.Equals(
+                response.Promotion.State,
+                "ready",
+                StringComparison.Ordinal) &&
+            !string.Equals(
+                response.Promotion.State,
+                "canonical-unpublished",
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Publication reconciliation response has unknown promotion state '{response.Promotion.State}'.");
+        }
+    }
+
+    private static void ValidateReconciliationRun(
+        AuthoringRunStatus run,
+        IReadOnlyList<AuthoringRunItemStatus> items,
+        string serviceName,
+        string? expectedRunId,
+        string? expectedSourceRunId)
+    {
+        ValidateRunResponse(new AuthoringRunResponse(run, items), expectedRunId);
+        if (!string.Equals(
+                run.Purpose,
+                PublicationReconciliationPurpose,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Publication reconciliation response purpose '{run.Purpose}' does not match '{PublicationReconciliationPurpose}'.");
+        }
+        if (expectedSourceRunId is not null &&
+            !string.Equals(
+                run.SourceRunId,
+                expectedSourceRunId,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Publication reconciliation response source run '{run.SourceRunId}' does not match requested run '{expectedSourceRunId}'.");
+        }
+        string expectedProcessorKind =
+            AuthoringServiceBinding.GetProcessorKind(serviceName);
+        if (!string.Equals(
+                run.ProcessorKind,
+                expectedProcessorKind,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Publication reconciliation response processor '{run.ProcessorKind}' does not match authoring service '{serviceName}'.");
+        }
+    }
+
+    private static void ValidateComparisonAndCounts(
+        PublicationReconciliationComparison comparison,
+        AuthoringRunReconciliationCounts counts,
+        string? expectedSourceRunId)
+    {
+        if (comparison is null ||
+            counts is null ||
+            comparison.Items is null ||
+            string.IsNullOrWhiteSpace(comparison.SourceRunId) ||
+            expectedSourceRunId is not null &&
+            !string.Equals(
+                comparison.SourceRunId,
+                expectedSourceRunId,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Publication reconciliation comparison has inconsistent source coordinates.");
+        }
+        counts.Validate();
+        int carryForward = comparison.Items.Count(item =>
+            string.Equals(
+                item.Disposition,
+                "carry-forward",
+                StringComparison.Ordinal));
+        int reAuthor = comparison.Items.Count(item =>
+            string.Equals(
+                item.Disposition,
+                "re-author",
+                StringComparison.Ordinal));
+        if (comparison.Items.Count != counts.AcceptedTicketCount ||
+            carryForward != counts.CarryForwardTicketCount ||
+            reAuthor != counts.ReAuthorTicketCount ||
+            carryForward + reAuthor != comparison.Items.Count)
+        {
+            throw new InvalidOperationException(
+                "Publication reconciliation comparison does not match its reported counts.");
         }
     }
 

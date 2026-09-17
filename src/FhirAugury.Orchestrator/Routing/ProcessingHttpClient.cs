@@ -113,6 +113,51 @@ public class ProcessingHttpClient
             body: null,
             ct);
 
+    public Task<ProcessingProxyResponse> StartPublicationReconciliationAsync(
+        string name,
+        string sourceRunId,
+        CancellationToken ct) =>
+        ForwardAsync(
+            name,
+            HttpMethod.Post,
+            $"{GetAuthoringPath(name)}/{Uri.EscapeDataString(sourceRunId)}/publication-reconciliation",
+            body: null,
+            ct);
+
+    public Task<ProcessingProxyResponse> GetPublicationReconciliationAsync(
+        string name,
+        string runId,
+        CancellationToken ct) =>
+        ForwardAsync(
+            name,
+            HttpMethod.Get,
+            $"{GetAuthoringPath(name)}/{Uri.EscapeDataString(runId)}/publication-reconciliation",
+            body: null,
+            ct);
+
+    public Task<ProcessingProxyResponse> RetryPublicationReconciliationAsync(
+        string name,
+        string runId,
+        CancellationToken ct) =>
+        ForwardAsync(
+            name,
+            HttpMethod.Post,
+            $"{GetAuthoringPath(name)}/{Uri.EscapeDataString(runId)}/publication-reconciliation/retry",
+            body: null,
+            ct);
+
+    public Task<ProcessingProxyResponse> AbandonPublicationReconciliationAsync(
+        string name,
+        string runId,
+        JsonElement request,
+        CancellationToken ct) =>
+        ForwardAsync(
+            name,
+            HttpMethod.Post,
+            $"{GetAuthoringPath(name)}/{Uri.EscapeDataString(runId)}/publication-reconciliation/abandon",
+            request,
+            ct);
+
     public Task<ProcessingProxyResponse> GetAuthoringRunAsync(
         string name,
         string runId,

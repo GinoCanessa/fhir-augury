@@ -81,6 +81,19 @@ public sealed class TicketOperationsService : IDisposable
                 ct);
         ReviewSitePublication? publication = null;
         string? publicationError = null;
+        PublicationReconciliationStatusResult?
+            reconciliation = null;
+        if (string.Equals(
+                response.Run.Purpose,
+                PreparedTicketPublicationReconciliationContract.Purpose,
+                StringComparison.Ordinal))
+        {
+            reconciliation = await _authoringClient
+                .GetPublicationReconciliationAsync(
+                    definition.ProcessingServiceName,
+                    runId,
+                    ct);
+        }
         try
         {
             publication =
@@ -115,7 +128,8 @@ public sealed class TicketOperationsService : IDisposable
                 publication,
                 publicationError: publicationError),
             publication,
-            publicationError);
+            publicationError,
+            reconciliation);
     }
 
     public async Task<TicketStartResult> StartAsync(
@@ -378,6 +392,203 @@ public sealed class TicketOperationsService : IDisposable
             ct);
     }
 
+    public async Task<TicketPublicationReconciliationResult>
+        StartPublicationReconciliationAsync(
+            string workflow,
+            string sourceRunId,
+            CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        TicketWorkflowDefinition definition = _catalog.Get(workflow);
+        if (!IsPrepareWorkflow(definition))
+        {
+            return new(
+                TicketOperationDisposition.NotAllowed,
+                definition,
+                sourceRunId,
+                Message:
+                    "Publication reconciliation is available only for the Prepare workflow.");
+        }
+        if (!await _mutationGate.WaitAsync(0, ct))
+        {
+            return new(
+                TicketOperationDisposition.Busy,
+                definition,
+                sourceRunId,
+                Message:
+                    "Another mutation is already in progress in this UI circuit.");
+        }
+
+        try
+        {
+            PublicationReconciliationStartResult started =
+                await _authoringClient.StartPublicationReconciliationAsync(
+                    definition.ProcessingServiceName,
+                    sourceRunId,
+                    ct);
+            PublicationReconciliationStatusResult status =
+                await _authoringClient.GetPublicationReconciliationAsync(
+                    definition.ProcessingServiceName,
+                    started.Run.RunId,
+                    ct);
+            return new(
+                TicketOperationDisposition.Succeeded,
+                definition,
+                started.Run.RunId,
+                status,
+                Message:
+                    "Publication reconciliation started. Changed tickets will be re-authored while unchanged accepted output is carried forward.");
+        }
+        catch (AuthoringControlException ex)
+            when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            return new(
+                TicketOperationDisposition.Conflict,
+                definition,
+                sourceRunId,
+                RelatedRunIds: ex.RelatedRunIds,
+                Message: ex.Detail ?? ex.Message);
+        }
+        catch (Exception ex) when (IsOperationFailure(ex))
+        {
+            return new(
+                TicketOperationDisposition.Failed,
+                definition,
+                sourceRunId,
+                Message: ex.Message);
+        }
+        finally
+        {
+            _mutationGate.Release();
+        }
+    }
+
+    public Task<TicketPublicationReconciliationResult>
+        RetryPublicationReconciliationAsync(
+            string workflow,
+            string runId,
+            CancellationToken ct = default) =>
+        MutatePublicationReconciliationAsync(
+            workflow, runId, reason: null, abandon: false, ct);
+
+    public Task<TicketPublicationReconciliationResult>
+        AbandonPublicationReconciliationAsync(
+            string workflow,
+            string runId,
+            string reason,
+            CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            TicketWorkflowDefinition definition = _catalog.Get(workflow);
+            return Task.FromResult(new TicketPublicationReconciliationResult(
+                TicketOperationDisposition.InvalidInput,
+                definition,
+                runId,
+                Message: "An abandonment reason is required."));
+        }
+        return MutatePublicationReconciliationAsync(
+            workflow, runId, reason.Trim(), abandon: true, ct);
+    }
+
+    private async Task<TicketPublicationReconciliationResult>
+        MutatePublicationReconciliationAsync(
+            string workflow,
+            string runId,
+            string? reason,
+            bool abandon,
+            CancellationToken ct)
+    {
+        ThrowIfDisposed();
+        TicketWorkflowDefinition definition = _catalog.Get(workflow);
+        if (!IsPrepareWorkflow(definition))
+        {
+            return new(
+                TicketOperationDisposition.NotAllowed,
+                definition,
+                runId,
+                Message:
+                    "Publication reconciliation is available only for the Prepare workflow.");
+        }
+        if (!await _mutationGate.WaitAsync(0, ct))
+        {
+            return new(
+                TicketOperationDisposition.Busy,
+                definition,
+                runId,
+                Message:
+                    "Another mutation is already in progress in this UI circuit.");
+        }
+
+        try
+        {
+            PublicationReconciliationStatusResult status;
+            if (abandon)
+            {
+                status = (await _authoringClient
+                    .AbandonPublicationReconciliationAsync(
+                        definition.ProcessingServiceName,
+                        runId,
+                        reason!,
+                        ct)).Status;
+            }
+            else
+            {
+                status = (await _authoringClient
+                    .RetryPublicationReconciliationAsync(
+                        definition.ProcessingServiceName,
+                        runId,
+                        ct)).Status;
+            }
+            return new(
+                TicketOperationDisposition.Succeeded,
+                definition,
+                runId,
+                status,
+                Message: abandon
+                    ? "Reconciliation was abandoned without a replacement publication."
+                    : "Reconciliation recovery was retried.");
+        }
+        catch (AuthoringControlException ex)
+            when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            return new(
+                TicketOperationDisposition.Conflict,
+                definition,
+                runId,
+                RelatedRunIds: ex.RelatedRunIds,
+                Message: ex.Detail ?? ex.Message);
+        }
+        catch (Exception ex) when (IsOperationFailure(ex))
+        {
+            return new(
+                TicketOperationDisposition.Failed,
+                definition,
+                runId,
+                Message: ex.Message);
+        }
+        finally
+        {
+            _mutationGate.Release();
+        }
+    }
+
+    private static bool IsPrepareWorkflow(
+        TicketWorkflowDefinition definition) =>
+        definition.SiteKind == TicketSiteKind.Discussion &&
+        string.Equals(
+            definition.ProcessingServiceName,
+            "Preparer",
+            StringComparison.Ordinal);
+
+    private static bool IsOperationFailure(Exception ex) =>
+        ex is AuthoringControlException or
+            AuthoringMutationOutcomeUnknownException or
+            HttpRequestException or IOException or
+            InvalidOperationException or JsonException or
+            NotSupportedException or ArgumentException or
+            TimeoutException or OperationCanceledException;
+
     public async Task<TicketPublicationRefreshResult>
         RefreshPublicationAsync(
             string workflow,
@@ -394,6 +605,7 @@ public sealed class TicketOperationsService : IDisposable
         {
             return pendingReview;
         }
+
         if (!await _mutationGate.WaitAsync(0, ct))
         {
             return new TicketPublicationRefreshResult(

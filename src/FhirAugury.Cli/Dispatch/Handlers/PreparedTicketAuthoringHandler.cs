@@ -55,8 +55,29 @@ public static class PreparedTicketAuthoringHandler
                     client,
                     timeProvider ?? TimeProvider.System,
                     ct),
+            "reconcile-publication" =>
+                await client.StartPublicationReconciliationAsync(
+                    "Preparer",
+                    Required(request.SourceRunId, "sourceRunId"),
+                    ct),
+            "reconciliation-status" =>
+                await client.GetPublicationReconciliationStatusAsync(
+                    "Preparer",
+                    Required(request.RunId, "runId"),
+                    ct),
+            "retry-reconciliation" =>
+                await client.RetryPublicationReconciliationAsync(
+                    "Preparer",
+                    Required(request.RunId, "runId"),
+                    ct),
+            "abandon-reconciliation" =>
+                await client.AbandonPublicationReconciliationAsync(
+                    "Preparer",
+                    Required(request.RunId, "runId"),
+                    Required(request.Reason, "reason"),
+                    ct),
             _ => throw new ArgumentException(
-                "Action must be start, status, retry, supersede, submit, snapshot, or refresh-publication."),
+                "Action must be start, status, retry, supersede, submit, snapshot, refresh-publication, reconcile-publication, reconciliation-status, retry-reconciliation, or abandon-reconciliation."),
         };
     }
 

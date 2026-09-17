@@ -302,6 +302,64 @@ public static class OrchestratorCatalog
             Destructive: true),
 
         new ApiEndpointDescriptor(
+            Id: "processing.authoring.publication-reconciliation.start",
+            DisplayName: "Start Publication Reconciliation",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{sourceRunId}/publication-reconciliation",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("sourceRunId", ApiParameterKind.Path, Required: true),
+            ],
+            Destructive: true),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.publication-reconciliation.status",
+            DisplayName: "Publication Reconciliation Status",
+            Group: "Processing",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("runId", ApiParameterKind.Path, Required: true),
+            ]),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.publication-reconciliation.retry",
+            DisplayName: "Retry Publication Reconciliation",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation/retry",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("runId", ApiParameterKind.Path, Required: true),
+            ],
+            Destructive: true),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.publication-reconciliation.abandon",
+            DisplayName: "Abandon Publication Reconciliation",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation/abandon",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("runId", ApiParameterKind.Path, Required: true),
+                new ApiParameter(
+                    "body",
+                    ApiParameterKind.Body,
+                    Required: true,
+                    DefaultValue: "{ \"reason\": \"snapshot publication cannot be recovered\" }",
+                    ValueType: ApiParameterValueType.Json),
+            ],
+            Destructive: true,
+            Description: "Leaves promoted canonical data unpublished and restricts later snapshot-producing workflows."),
+
+        new ApiEndpointDescriptor(
             Id: "processing.authoring.status",
             DisplayName: "Authoring Run Status",
             Group: "Processing",

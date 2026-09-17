@@ -394,7 +394,9 @@ internal static class DiscussionSiteDatabaseValidator
                 .Count() != readiness.Reasons.Count ||
             readiness.Evidence is not
                 DiscussionPublicationReadinessEvidence.OrdinarySnapshot and not
-                DiscussionPublicationReadinessEvidence.PublicationRefresh ||
+                DiscussionPublicationReadinessEvidence.PublicationRefresh and not
+                DiscussionPublicationReadinessEvidence
+                    .PublicationReconciliation ||
             readiness.PublicDisplayNamePolicyVersion is not null and not
                 PublicDisplayNamePolicy.CurrentVersion ||
             readiness.JiraSourceContentRevision is < 0)
@@ -427,8 +429,10 @@ internal static class DiscussionSiteDatabaseValidator
             readiness.IsReady &&
             readiness.PublicDisplayNamePolicyVersion !=
                 PublicDisplayNamePolicy.CurrentVersion ||
-            readiness.Evidence ==
-                DiscussionPublicationReadinessEvidence.PublicationRefresh &&
+            (readiness.Evidence is
+                DiscussionPublicationReadinessEvidence.PublicationRefresh or
+                DiscussionPublicationReadinessEvidence
+                    .PublicationReconciliation) &&
             readiness.IsReady &&
             (refresh is null ||
              readiness.JiraSourceContentRevision is null))

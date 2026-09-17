@@ -672,6 +672,276 @@ public sealed class TicketOperationsServiceTests : IDisposable
             (await first).Disposition);
     }
 
+    [Fact]
+    public async Task OpenReconciliationRunLoadsTypedLifecycleStatus()
+    {
+        PublicationReconciliationStatusResult status =
+            ReconciliationStatus("staged", "grouping-complete");
+        FakeAuthoringClient authoring = new()
+        {
+            GetHandler = (serviceName, runId, _) =>
+            {
+                Assert.Equal("Preparer", serviceName);
+                Assert.Equal("reconciliation-run", runId);
+                return Task.FromResult(
+                    new AuthoringRunResponse(
+                        status.Run,
+                        status.Items));
+            },
+            ReconciliationStatusHandler =
+                (serviceName, runId, _) =>
+                {
+                    Assert.Equal("Preparer", serviceName);
+                    Assert.Equal("reconciliation-run", runId);
+                    return Task.FromResult(status);
+                },
+        };
+        using TicketOperationsService service =
+            CreateService(authoring);
+
+        TicketRunDetails details =
+            await service.OpenRunAsync(
+                "prepare",
+                "reconciliation-run");
+
+        Assert.Same(status, details.Reconciliation);
+        Assert.Equal(
+            "jira-generation-42",
+            details.Reconciliation?.Comparison
+                .StableJiraGeneration);
+        Assert.Equal(1, authoring.GetCalls);
+        Assert.Equal(1, authoring.ReconciliationStatusCalls);
+        Assert.Equal(
+            ("Preparer", "reconciliation-run"),
+            Assert.Single(
+                authoring.ReconciliationStatusRequests));
+    }
+
+    [Fact]
+    public async Task PublicationReconciliationStartsThroughPreparerWithTypedDelta()
+    {
+        PublicationReconciliationStatusResult status =
+            ReconciliationStatus("staged", "comparison-frozen");
+        PublicationReconciliationStartResult start = new(
+            status.Run,
+            status.Items,
+            status.Comparison,
+            status.Counts);
+        FakeAuthoringClient authoring = new()
+        {
+            ReconciliationStartHandler =
+                (serviceName, sourceRunId, _) =>
+                {
+                    Assert.Equal("Preparer", serviceName);
+                    Assert.Equal("source-run", sourceRunId);
+                    return Task.FromResult(start);
+                },
+            ReconciliationStatusHandler =
+                (serviceName, runId, _) =>
+                {
+                    Assert.Equal("Preparer", serviceName);
+                    Assert.Equal("reconciliation-run", runId);
+                    return Task.FromResult(status);
+                },
+        };
+        using TicketOperationsService service =
+            CreateService(authoring);
+
+        TicketPublicationReconciliationResult result =
+            await service.StartPublicationReconciliationAsync(
+                "PREPARE",
+                "source-run");
+
+        Assert.Equal(
+            TicketOperationDisposition.Succeeded,
+            result.Disposition);
+        Assert.Equal("reconciliation-run", result.RunId);
+        Assert.Same(status, result.Status);
+        Assert.Contains("Changed tickets will be re-authored", result.Message);
+        Assert.Contains("unchanged accepted output is carried forward", result.Message);
+        Assert.Equal(1, authoring.ReconciliationStartCalls);
+        Assert.Equal(1, authoring.ReconciliationStatusCalls);
+        Assert.Equal(
+            ("Preparer", "source-run"),
+            Assert.Single(
+                authoring.ReconciliationStartRequests));
+        Assert.Equal(
+            ("Preparer", "reconciliation-run"),
+            Assert.Single(
+                authoring.ReconciliationStatusRequests));
+        Assert.Equal(0, authoring.RefreshCalls);
+        Assert.Equal(0, authoring.GetCalls);
+    }
+
+    [Fact]
+    public async Task PublicationReconciliationConflictPreservesRelatedRuns()
+    {
+        FakeAuthoringClient authoring = new()
+        {
+            ReconciliationStartHandler =
+                (_, _, _) =>
+                    Task.FromException<PublicationReconciliationStartResult>(
+                        new AuthoringControlException(
+                            HttpStatusCode.Conflict,
+                            "recovery-in-progress",
+                            "Snapshot publication recovery is pending.",
+                            relatedRunIds:
+                            [
+                                "pending-run",
+                                "source-run",
+                            ])),
+        };
+        using TicketOperationsService service =
+            CreateService(authoring);
+
+        TicketPublicationReconciliationResult result =
+            await service.StartPublicationReconciliationAsync(
+                "prepare",
+                "source-run");
+
+        Assert.Equal(
+            TicketOperationDisposition.Conflict,
+            result.Disposition);
+        Assert.Equal(
+            ["pending-run", "source-run"],
+            result.ConflictingRunIds);
+        Assert.Equal(
+            "Snapshot publication recovery is pending.",
+            result.Message);
+        Assert.Equal(1, authoring.ReconciliationStartCalls);
+        Assert.Equal(0, authoring.ReconciliationStatusCalls);
+    }
+
+    [Fact]
+    public async Task PublicationReconciliationRetryAndAbandonUseTypedLifecycleRoutes()
+    {
+        PublicationReconciliationStatusResult pending =
+            ReconciliationStatus(
+                "snapshot-publish-pending",
+                "snapshot-publish-pending");
+        PublicationReconciliationStatusResult abandoned =
+            ReconciliationStatus(
+                "canonical-unpublished",
+                "canonical-unpublished");
+        FakeAuthoringClient authoring = new()
+        {
+            ReconciliationRetryHandler =
+                (serviceName, runId, _) =>
+                {
+                    Assert.Equal("Preparer", serviceName);
+                    Assert.Equal("reconciliation-run", runId);
+                    return Task.FromResult(
+                        new PublicationReconciliationRetryResult(
+                            pending,
+                            RecoveryStarted: true));
+                },
+            ReconciliationAbandonHandler =
+                (serviceName, runId, reason, _) =>
+                {
+                    Assert.Equal("Preparer", serviceName);
+                    Assert.Equal("reconciliation-run", runId);
+                    Assert.Equal("storage incident", reason);
+                    return Task.FromResult(
+                        new PublicationReconciliationAbandonResult(
+                            abandoned,
+                            _now,
+                            reason));
+                },
+        };
+        using TicketOperationsService service =
+            CreateService(authoring);
+
+        TicketPublicationReconciliationResult invalid =
+            await service.AbandonPublicationReconciliationAsync(
+                "prepare",
+                "reconciliation-run",
+                "   ");
+        TicketPublicationReconciliationResult retried =
+            await service.RetryPublicationReconciliationAsync(
+                "prepare",
+                "reconciliation-run");
+        TicketPublicationReconciliationResult abandonedResult =
+            await service.AbandonPublicationReconciliationAsync(
+                "prepare",
+                "reconciliation-run",
+                "  storage incident  ");
+
+        Assert.Equal(
+            TicketOperationDisposition.InvalidInput,
+            invalid.Disposition);
+        Assert.Contains("reason is required", invalid.Message);
+        Assert.Equal(
+            TicketOperationDisposition.Succeeded,
+            retried.Disposition);
+        Assert.Same(pending, retried.Status);
+        Assert.Equal(
+            TicketOperationDisposition.Succeeded,
+            abandonedResult.Disposition);
+        Assert.Same(abandoned, abandonedResult.Status);
+        Assert.Contains(
+            "without a replacement publication",
+            abandonedResult.Message);
+        Assert.Equal(1, authoring.ReconciliationRetryCalls);
+        Assert.Equal(1, authoring.ReconciliationAbandonCalls);
+        Assert.Equal(
+            ("Preparer", "reconciliation-run"),
+            Assert.Single(
+                authoring.ReconciliationRetryRequests));
+        Assert.Equal(
+            ("Preparer", "reconciliation-run", "storage incident"),
+            Assert.Single(
+                authoring.ReconciliationAbandonRequests));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PublicationReconciliationRecoveryConflictIsTyped(
+        bool abandon)
+    {
+        AuthoringControlException conflict = new(
+            HttpStatusCode.Conflict,
+            "promotion-recovery-failure",
+            "Recovery evidence conflicts.",
+            relatedRunIds: ["reconciliation-run"]);
+        FakeAuthoringClient authoring = new()
+        {
+            ReconciliationRetryHandler =
+                (_, _, _) =>
+                    Task.FromException<PublicationReconciliationRetryResult>(
+                        conflict),
+            ReconciliationAbandonHandler =
+                (_, _, _, _) =>
+                    Task.FromException<PublicationReconciliationAbandonResult>(
+                        conflict),
+        };
+        using TicketOperationsService service =
+            CreateService(authoring);
+
+        TicketPublicationReconciliationResult result = abandon
+            ? await service.AbandonPublicationReconciliationAsync(
+                "prepare",
+                "reconciliation-run",
+                "operator reviewed evidence")
+            : await service.RetryPublicationReconciliationAsync(
+                "prepare",
+                "reconciliation-run");
+
+        Assert.Equal(
+            TicketOperationDisposition.Conflict,
+            result.Disposition);
+        Assert.Equal(
+            ["reconciliation-run"],
+            result.ConflictingRunIds);
+        Assert.Equal("Recovery evidence conflicts.", result.Message);
+        Assert.Equal(
+            abandon ? 0 : 1,
+            authoring.ReconciliationRetryCalls);
+        Assert.Equal(
+            abandon ? 1 : 0,
+            authoring.ReconciliationAbandonCalls);
+    }
+
     [Theory]
     [InlineData("legacy")]
     [InlineData("degraded")]
@@ -1564,6 +1834,88 @@ public sealed class TicketOperationsServiceTests : IDisposable
         return new AuthoringRunResponse(run, [item]);
     }
 
+    private PublicationReconciliationStatusResult
+        ReconciliationStatus(
+            string promotionState,
+            string? journalState)
+    {
+        bool fenceHeld = promotionState is
+            "staged" or "snapshot-publish-pending";
+        bool terminal = promotionState is
+            "ready" or "canonical-unpublished";
+        AuthoringRunReconciliationCounts counts =
+            new(2, 1, 1);
+        AuthoringRunStatus run = RunStatus(
+            "reconciliation-run",
+            terminal
+                ? "completed"
+                : "running",
+            _now.AddMinutes(-1),
+            terminal,
+            purpose: "publication-reconciliation",
+            sourceRunId: "source-run") with
+        {
+            TotalItems = 2,
+            ReconciliationCounts = counts,
+            Recovery = new(
+                promotionState,
+                journalState,
+                fenceHeld),
+        };
+        PublicationReconciliationComparison comparison = new(
+            1,
+            "source-run",
+            "source-snapshot",
+            "source-snapshot-sha",
+            "jira-generation-42",
+            _now,
+            "corpus-fingerprint",
+            [
+                new PublicationReconciliationItemDecision(
+                    "FHIR-1",
+                    "carry-forward",
+                    "revision-1",
+                    "revision-1",
+                    "receipt-1",
+                    "source-item-1",
+                    "source-run",
+                    "authored-1",
+                    "grouping-1"),
+                new PublicationReconciliationItemDecision(
+                    "FHIR-2",
+                    "re-author",
+                    "revision-1",
+                    "revision-2",
+                    "receipt-2",
+                    "source-item-2",
+                    "source-run",
+                    "authored-2",
+                    "grouping-2"),
+            ]);
+        return new PublicationReconciliationStatusResult(
+            run,
+            [],
+            comparison,
+            counts,
+            [
+                new PublicationReconciliationGroupingImpact(
+                    "fhir-core",
+                    ["FHIR-2"],
+                    "baseline-corpus",
+                    "baseline-output",
+                    "baseline-protected",
+                    "staged-corpus",
+                    "staged-output",
+                    "staged-protected",
+                    Complete: true),
+            ],
+            new PublicationReconciliationPromotionStatus(
+                promotionState,
+                journalState,
+                fenceHeld),
+            []);
+    }
+
     private static AuthoringRunStatus RunStatus(
         string runId,
         string status,
@@ -1812,6 +2164,51 @@ public sealed class TicketOperationsServiceTests : IDisposable
             string,
             string,
             CancellationToken,
+            Task<PublicationReconciliationStartResult>>
+            ReconciliationStartHandler { get; set; } =
+            (_, _, _) =>
+                Task.FromException<PublicationReconciliationStartResult>(
+                    new InvalidOperationException(
+                        "Publication reconciliation start handler was not configured."));
+
+        public Func<
+            string,
+            string,
+            CancellationToken,
+            Task<PublicationReconciliationStatusResult>>
+            ReconciliationStatusHandler { get; set; } =
+            (_, _, _) =>
+                Task.FromException<PublicationReconciliationStatusResult>(
+                    new InvalidOperationException(
+                        "Publication reconciliation status handler was not configured."));
+
+        public Func<
+            string,
+            string,
+            CancellationToken,
+            Task<PublicationReconciliationRetryResult>>
+            ReconciliationRetryHandler { get; set; } =
+            (_, _, _) =>
+                Task.FromException<PublicationReconciliationRetryResult>(
+                    new InvalidOperationException(
+                        "Publication reconciliation retry handler was not configured."));
+
+        public Func<
+            string,
+            string,
+            string,
+            CancellationToken,
+            Task<PublicationReconciliationAbandonResult>>
+            ReconciliationAbandonHandler { get; set; } =
+            (_, _, _, _) =>
+                Task.FromException<PublicationReconciliationAbandonResult>(
+                    new InvalidOperationException(
+                        "Publication reconciliation abandon handler was not configured."));
+
+        public Func<
+            string,
+            string,
+            CancellationToken,
             Task<AuthoringRunResponse>> GetHandler { get; set; } =
             (_, _, _) => Task.FromException<AuthoringRunResponse>(
                 new InvalidOperationException(
@@ -1859,6 +2256,14 @@ public sealed class TicketOperationsServiceTests : IDisposable
 
         public int RefreshCalls { get; private set; }
 
+        public int ReconciliationStartCalls { get; private set; }
+
+        public int ReconciliationStatusCalls { get; private set; }
+
+        public int ReconciliationRetryCalls { get; private set; }
+
+        public int ReconciliationAbandonCalls { get; private set; }
+
         public int GetCalls { get; private set; }
 
         public int RetryCalls { get; private set; }
@@ -1871,6 +2276,18 @@ public sealed class TicketOperationsServiceTests : IDisposable
 
         public List<(string Service, string SourceRunId)>
             RefreshRequests { get; } = [];
+
+        public List<(string Service, string SourceRunId)>
+            ReconciliationStartRequests { get; } = [];
+
+        public List<(string Service, string RunId)>
+            ReconciliationStatusRequests { get; } = [];
+
+        public List<(string Service, string RunId)>
+            ReconciliationRetryRequests { get; } = [];
+
+        public List<(string Service, string RunId, string Reason)>
+            ReconciliationAbandonRequests { get; } = [];
 
         public Task<AuthoringStartResult> StartAsync<TRequest>(
             string serviceName,
@@ -1894,6 +2311,68 @@ public sealed class TicketOperationsServiceTests : IDisposable
             return RefreshHandler(
                 serviceName,
                 sourceRunId,
+                ct);
+        }
+
+        public Task<PublicationReconciliationStartResult>
+            StartPublicationReconciliationAsync(
+                string serviceName,
+                string sourceRunId,
+                CancellationToken ct)
+        {
+            ReconciliationStartCalls++;
+            ReconciliationStartRequests.Add(
+                (serviceName, sourceRunId));
+            return ReconciliationStartHandler(
+                serviceName,
+                sourceRunId,
+                ct);
+        }
+
+        public Task<PublicationReconciliationStatusResult>
+            GetPublicationReconciliationAsync(
+                string serviceName,
+                string runId,
+                CancellationToken ct)
+        {
+            ReconciliationStatusCalls++;
+            ReconciliationStatusRequests.Add(
+                (serviceName, runId));
+            return ReconciliationStatusHandler(
+                serviceName,
+                runId,
+                ct);
+        }
+
+        public Task<PublicationReconciliationRetryResult>
+            RetryPublicationReconciliationAsync(
+                string serviceName,
+                string runId,
+                CancellationToken ct)
+        {
+            ReconciliationRetryCalls++;
+            ReconciliationRetryRequests.Add(
+                (serviceName, runId));
+            return ReconciliationRetryHandler(
+                serviceName,
+                runId,
+                ct);
+        }
+
+        public Task<PublicationReconciliationAbandonResult>
+            AbandonPublicationReconciliationAsync(
+                string serviceName,
+                string runId,
+                string reason,
+                CancellationToken ct)
+        {
+            ReconciliationAbandonCalls++;
+            ReconciliationAbandonRequests.Add(
+                (serviceName, runId, reason));
+            return ReconciliationAbandonHandler(
+                serviceName,
+                runId,
+                reason,
                 ct);
         }
 

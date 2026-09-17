@@ -641,7 +641,7 @@ public static class SchemaGenerator
         ),
         ["prepared-ticket-authoring"] = AuthoringSchema(
             "prepared-ticket-authoring",
-            "Typed Preparer run control, publication refresh, worker submission, retry, supersession, and snapshot download",
+            "Typed Preparer run control, changed-ticket publication reconciliation, metadata-only publication refresh, worker submission, retry, supersession, and snapshot download",
             "ticketKeys",
             "PreparedTicketPayload",
             supportsPublicationRefresh: true),
@@ -692,6 +692,10 @@ public static class SchemaGenerator
                 "submit",
                 "snapshot",
                 "refresh-publication",
+                "reconcile-publication",
+                "reconciliation-status",
+                "retry-reconciliation",
+                "abandon-reconciliation",
             ]
             : [
                 "start",
@@ -702,13 +706,13 @@ public static class SchemaGenerator
                 "snapshot",
             ];
         string runIdDescription = supportsPublicationRefresh
-            ? "Run identifier for status, retry, supersede, or snapshot; source run identifier for refresh-publication"
+            ? "Run identifier for status, retry, supersede, snapshot, reconciliation-status, retry-reconciliation, or abandon-reconciliation; source run identifier for metadata-only refresh-publication"
             : "Run identifier for status, retry, supersede, or snapshot";
         object outputSchema = supportsPublicationRefresh
             ? new
             {
                 type = "object",
-                description = "Typed run, retry, supersede, receipt, snapshot, or publication-refresh result for the selected action",
+                description = "Typed run, retry, supersede, receipt, snapshot, metadata-only publication-refresh, or publication-reconciliation result for the selected action",
                 properties = new Dictionary<string, object>
                 {
                     ["run"] = Prop(
@@ -722,7 +726,52 @@ public static class SchemaGenerator
                         "outcome-unknown when refresh transport did not establish whether the POST succeeded"),
                     ["sourceRunId"] = Prop(
                         "string",
-                        "Source Preparer run selected for refresh-publication"),
+                        "Source Preparer run selected for metadata-only refresh-publication or changed-ticket reconcile-publication"),
+                    ["comparison"] = Prop(
+                        "object",
+                        "Frozen baseline-to-current comparison, including stable Jira generation and per-ticket dispositions"),
+                    ["counts"] = Prop(
+                        "object",
+                        "Machine-readable accepted, carried, and re-authored ticket counts"),
+                    ["groupingImpacts"] = ArrayProp(
+                        "object",
+                        "Grouping containers affected by revised tickets"),
+                    ["promotion"] = Prop(
+                        "object",
+                        "Promotion state, journal state, mutation fence, and recovery failure details"),
+                    ["invalidatedTicketKeys"] = ArrayProp(
+                        "string",
+                        "Tickets whose current Jira revision no longer matches the frozen comparison"),
+                    ["publicationProof"] = new
+                    {
+                        type = new[] { "object", "null" },
+                        description =
+                            "Verified immutable replacement publication proof when reconciliation is ready",
+                    },
+                    ["failureCode"] = new
+                    {
+                        type = new[] { "string", "null" },
+                        description =
+                            "Stable reconciliation failure code, including revision-invalidation, recovery-in-progress, promotion-recovery-failure, and canonical-unpublished-restriction",
+                    },
+                    ["failureDetail"] = new
+                    {
+                        type = new[] { "string", "null" },
+                        description =
+                            "Human-readable detail accompanying the stable reconciliation failure code",
+                    },
+                    ["status"] = Prop(
+                        "object",
+                        "Machine-readable reconciliation status returned by retry-reconciliation or abandon-reconciliation"),
+                    ["recoveryStarted"] = Prop(
+                        "boolean",
+                        "Whether retry-reconciliation started recovery"),
+                    ["abandonedAt"] = Prop(
+                        "string",
+                        "Timestamp when reconciliation entered canonical-unpublished"),
+                    ["reason"] = Prop(
+                        "string",
+                        "Audited abandonment reason"),
                     ["reconciliation"] = Prop(
                         "string",
                         "succeeded or failed for the single bounded read-only reconciliation"),
@@ -771,12 +820,15 @@ public static class SchemaGenerator
                 ["runId"] = Prop(
                     "string",
                     runIdDescription),
+                ["sourceRunId"] = Prop(
+                    "string",
+                    "Baseline source run identifier required when action is reconcile-publication"),
                 ["itemId"] = Prop(
                     "string",
                     "Run item identifier for retry or supersede"),
                 ["reason"] = Prop(
                     "string",
-                    "Required non-blank reason when action is supersede"),
+                    "Required non-blank reason when action is supersede or abandon-reconciliation"),
                 ["payload"] = Prop(
                     "object",
                     $"{submissionType} used by prepared/planned worker submit"),

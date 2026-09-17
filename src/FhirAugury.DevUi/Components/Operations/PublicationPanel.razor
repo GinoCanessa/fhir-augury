@@ -392,24 +392,38 @@
             <button class="btn btn-primary"
                     type="button"
                     disabled="@(Busy || Refreshing || Disabled || RefreshDisabled)"
-                    @onclick="RefreshPublicationAsync">
+                    @onclick="ReconcilePublicationAsync">
                 @if (Refreshing)
                 {
                     <span class="spinner-border spinner-border-sm"
                           aria-hidden="true"></span>
-                    <span>Starting publication refresh…</span>
+                    <span>Starting reconciliation…</span>
                 }
                 else
                 {
                     <i class="bi bi-arrow-repeat" aria-hidden="true"></i>
-                    <span>Refresh publication data and snapshot</span>
+                    <span>Reconcile changed tickets and refresh snapshot</span>
                 }
             </button>
             <p class="form-text mb-0">
-                This starts one linked Preparer maintenance run. It does not
-                replay authoring or grouping; publish the returned run's
-                verified pair as a separate step.
+                This compares every accepted ticket with the source
+                publication, re-authors changed tickets, carries unchanged
+                output forward, and creates a verified replacement snapshot.
             </p>
+            <details>
+                <summary>Advanced: repair publication metadata only</summary>
+                <p class="form-text">
+                    Metadata repair does not re-author tickets or recompute
+                    grouping. It refuses changed Jira revisions.
+                </p>
+                <button class="btn btn-outline-secondary"
+                        type="button"
+                        disabled="@(Busy || Refreshing || Disabled || RefreshDisabled)"
+                        @onclick="RefreshPublicationAsync">
+                    <i class="bi bi-tools" aria-hidden="true"></i>
+                    Repair publication metadata and snapshot
+                </button>
+            </details>
             <p class="form-text mb-0">
                 Source people population is separate. In the
                 <a href="/api-test?source=Jira">Jira API catalog</a>,
@@ -549,6 +563,9 @@
 
     [Parameter]
     public EventCallback OnRefreshPublication { get; set; }
+
+    [Parameter]
+    public EventCallback OnReconcilePublication { get; set; }
 
     private readonly string _id =
         Guid.NewGuid().ToString("N");
@@ -710,6 +727,9 @@
 
     private Task RefreshPublicationAsync() =>
         OnRefreshPublication.InvokeAsync();
+
+    private Task ReconcilePublicationAsync() =>
+        OnReconcilePublication.InvokeAsync();
 
     private Task BeginReplacementAsync()
     {

@@ -8,6 +8,8 @@ public static class DiscussionPublicationReadinessReasonCodes
     public const string MissingOrdinaryProvenance =
         "missing-ordinary-provenance";
     public const string InvalidRefreshProof = "invalid-refresh-proof";
+    public const string InvalidReconciliationProof =
+        "invalid-reconciliation-proof";
     public const string MissingPeoplePolicyProof =
         "missing-people-policy-proof";
 }
@@ -16,6 +18,8 @@ public static class DiscussionPublicationReadinessEvidence
 {
     public const string OrdinarySnapshot = "ordinary-snapshot";
     public const string PublicationRefresh = "publication-refresh";
+    public const string PublicationReconciliation =
+        "publication-reconciliation";
 }
 
 public sealed record DiscussionPublicationReadinessReason(
@@ -80,6 +84,11 @@ public sealed record DiscussionPublicationReadiness(
                     code,
                     "The publication-refresh proof does not match this snapshot's corpus and grouping output."),
             DiscussionPublicationReadinessReasonCodes
+                    .InvalidReconciliationProof =>
+                new(
+                    code,
+                    "The publication-reconciliation proof does not match this ready snapshot's corpus and grouping output."),
+            DiscussionPublicationReadinessReasonCodes
                     .MissingPeoplePolicyProof =>
                 new(
                     code,
@@ -98,7 +107,9 @@ public sealed record DiscussionPublicationReadiness(
                 .MissingOrdinaryProvenance => 1,
             DiscussionPublicationReadinessReasonCodes.InvalidRefreshProof => 2,
             DiscussionPublicationReadinessReasonCodes
-                .MissingPeoplePolicyProof => 3,
+                .InvalidReconciliationProof => 3,
+            DiscussionPublicationReadinessReasonCodes
+                .MissingPeoplePolicyProof => 4,
             _ => int.MaxValue,
         };
 }

@@ -624,6 +624,52 @@ internal static class DiscussionSiteDatabaseBuilder
         if (descriptor?.PublicationProof is
             AuthoringSnapshotPublicationProof proof)
         {
+            bool reconciliationProof =
+                string.Equals(
+                    proof.Purpose,
+                    PreparedTicketPublicationContract
+                        .PublicationReconciliationPurpose,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    proof.Purpose,
+                    PreparedTicketPublicationContract
+                        .PublicationRefreshPurpose,
+                    StringComparison.Ordinal) &&
+                proof.PublicDisplayNamePolicyVersion == 0;
+            if (reconciliationProof)
+            {
+                bool reconciliationValid =
+                    await IsValidReconciliationProofAsync(
+                    source,
+                    descriptor,
+                    proof,
+                    currentPeoplePolicy,
+                    ct).ConfigureAwait(false);
+                if (!reconciliationValid)
+                {
+                    reasonCodes.Add(
+                        DiscussionPublicationReadinessReasonCodes
+                            .InvalidReconciliationProof);
+                }
+
+                DiscussionPublicationReadiness reconciliationReadiness =
+                    DiscussionPublicationReadiness.Create(
+                        DiscussionPublicationReadinessEvidence
+                            .PublicationReconciliation,
+                        reconciliationValid
+                            ? proof.SourceContentRevision
+                            : null,
+                        currentPeoplePolicy
+                            ? PublicDisplayNamePolicy.CurrentVersion
+                            : null,
+                        reasonCodes);
+                return (
+                    reconciliationValid
+                        ? proof.SourceLastSuccessfulRefreshAt.ToUniversalTime()
+                        : null,
+                    reconciliationReadiness);
+            }
+
             bool valid = await IsValidRefreshProofAsync(
                 source,
                 descriptor,
@@ -750,6 +796,97 @@ internal static class DiscussionSiteDatabaseBuilder
                        proof.GroupingFingerprint,
                        fingerprints.Grouping,
                        StringComparison.Ordinal);
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or InvalidOperationException or
+            NotSupportedException or FormatException or OverflowException)
+        {
+            return false;
+        }
+    }
+
+    private static async Task<bool> IsValidReconciliationProofAsync(
+        SqliteConnection source,
+        AuthoringSnapshotDescriptor descriptor,
+        AuthoringSnapshotPublicationProof proof,
+        bool currentPeoplePolicy,
+        CancellationToken ct)
+    {
+        try
+        {
+            PreparedTicketPublicationContract.EnsureSupportedVersion(
+                proof.ContractVersion);
+            if (descriptor.SchemaVersion !=
+                    PreparedTicketSnapshotSchemaV3.Version ||
+                !string.Equals(
+                    descriptor.ProcessorKind,
+                    PreparedTicketSnapshotSchemaV3.ProcessorKind,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    proof.Purpose,
+                    PreparedTicketPublicationContract
+                        .PublicationReconciliationPurpose,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    proof.SourceName,
+                    PreparedTicketPublicationContract.JiraSourceName,
+                    StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrWhiteSpace(proof.SourceRunId) ||
+                string.Equals(
+                    proof.SourceRunId,
+                    descriptor.RunId,
+                    StringComparison.Ordinal) ||
+                proof.SourceLastSuccessfulRefreshAt.Offset != TimeSpan.Zero ||
+                proof.CapturedAt.Offset != TimeSpan.Zero ||
+                proof.SourceLastSuccessfulRefreshAt != proof.CapturedAt ||
+                proof.SourceContentRevision < 0 ||
+                proof.PublicDisplayNamePolicyVersion != 0 ||
+                !IsCanonicalSha256(proof.GroupingFingerprint) ||
+                !currentPeoplePolicy ||
+                !await HasCurrentPeoplePolicyForEntireCorpusAsync(
+                    source,
+                    ct).ConfigureAwait(false))
+            {
+                return false;
+            }
+
+            long matchingRuns = await ScalarInt64Async(
+                source,
+                """
+                SELECT COUNT(*)
+                FROM authoring_runs
+                WHERE ProcessorKind = @processorKind
+                  AND Id IN (@descriptorRunId, @sourceRunId)
+                """,
+                ct,
+                ("@processorKind", descriptor.ProcessorKind),
+                ("@descriptorRunId", descriptor.RunId),
+                ("@sourceRunId", proof.SourceRunId))
+                .ConfigureAwait(false);
+            if (matchingRuns != 2)
+            {
+                return false;
+            }
+
+            IReadOnlyList<PreparedTicketPublicationCorpusItem> corpus =
+                await ReadPublicationCorpusAsync(source, ct)
+                    .ConfigureAwait(false);
+            if (!string.Equals(
+                    proof.CorpusFingerprint,
+                    PreparedTicketPublicationContract
+                        .ComputeCorpusFingerprint(
+                            corpus,
+                            proof.ContractVersion),
+                    StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            _ = await ReadCurrentGroupingFingerprintsAsync(
+                source,
+                proof.ContractVersion,
+                ct).ConfigureAwait(false);
+            return true;
         }
         catch (Exception exception) when (
             exception is ArgumentException or InvalidOperationException or
@@ -1117,6 +1254,34 @@ internal static class DiscussionSiteDatabaseBuilder
                 "Prepared-ticket retained partition receipts do not exactly cover the current grouping partitions.");
         }
 
+        return await ReadCurrentGroupingFingerprintsAsync(
+            source,
+            contractVersion,
+            currentPartitions,
+            ct).ConfigureAwait(false);
+    }
+
+    private static async Task<
+        IReadOnlyList<PreparedTicketPublicationGroupingPartition>>
+        ReadCurrentGroupingFingerprintsAsync(
+            SqliteConnection source,
+            int contractVersion,
+            CancellationToken ct)
+        => await ReadCurrentGroupingFingerprintsAsync(
+            source,
+            contractVersion,
+            await ReadCurrentGroupingPartitionsAsync(source, ct)
+                .ConfigureAwait(false),
+            ct).ConfigureAwait(false);
+
+    private static async Task<
+        IReadOnlyList<PreparedTicketPublicationGroupingPartition>>
+        ReadCurrentGroupingFingerprintsAsync(
+            SqliteConnection source,
+            int contractVersion,
+            IEnumerable<GroupingPartitionCoordinate> currentPartitions,
+            CancellationToken ct)
+    {
         List<PreparedTicketPublicationGroupingPartition> fingerprints = [];
         foreach (GroupingPartitionCoordinate partition in currentPartitions
             .OrderBy(FormatGroupingPartitionKey, StringComparer.Ordinal))
@@ -1137,6 +1302,11 @@ internal static class DiscussionSiteDatabaseBuilder
         }
         return fingerprints.AsReadOnly();
     }
+
+    private static bool IsCanonicalSha256(string? value) =>
+        value is { Length: 64 } &&
+        value.All(character =>
+            character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
     private static async Task<HashSet<GroupingPartitionCoordinate>>
         ReadCurrentGroupingPartitionsAsync(

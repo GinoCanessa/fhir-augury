@@ -2,7 +2,9 @@ using System.Net;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using FhirAugury.Cli.Dispatch;
+using FhirAugury.Cli.Models;
 using FhirAugury.Cli.Schemas;
+using FhirAugury.Processing.Client;
 
 namespace FhirAugury.Cli.Tests.Authoring;
 
@@ -37,6 +39,20 @@ public sealed class AuthoringSchemaTests
             SchemaGenerator.GenerateForCommand("prepared-ticket-authoring"));
         Assert.Contains("observedSourceRevision", authoringSchema);
         Assert.Contains("\"refresh-publication\"", authoringSchema);
+        Assert.Contains("\"reconcile-publication\"", authoringSchema);
+        Assert.Contains("\"reconciliation-status\"", authoringSchema);
+        Assert.Contains("\"retry-reconciliation\"", authoringSchema);
+        Assert.Contains("\"abandon-reconciliation\"", authoringSchema);
+        Assert.Contains("\"sourceRunId\"", authoringSchema);
+        Assert.Contains("\"comparison\"", authoringSchema);
+        Assert.Contains("\"counts\"", authoringSchema);
+        Assert.Contains("\"groupingImpacts\"", authoringSchema);
+        Assert.Contains("\"promotion\"", authoringSchema);
+        Assert.Contains("\"invalidatedTicketKeys\"", authoringSchema);
+        Assert.Contains("\"publicationProof\"", authoringSchema);
+        Assert.Contains("\"failureCode\"", authoringSchema);
+        Assert.Contains("canonical-unpublished", authoringSchema);
+        Assert.Contains("metadata-only", authoringSchema);
         Assert.Contains("source run identifier", authoringSchema);
         Assert.Contains("outcome-unknown", authoringSchema);
         Assert.Contains("\"candidates\"", authoringSchema);
@@ -50,6 +66,11 @@ public sealed class AuthoringSchemaTests
             System.Text.Json.JsonSerializer.Serialize(
                 SchemaGenerator.GenerateForCommand(
                     "ballot-note-authoring")));
+        Assert.DoesNotContain(
+            "\"reconcile-publication\"",
+            System.Text.Json.JsonSerializer.Serialize(
+                SchemaGenerator.GenerateForCommand(
+                    "planned-ticket-authoring")));
         Assert.DoesNotContain(
             "commands/prepared-ticket-write",
             SchemaGenerator.GenerateForCommand("prepared-ticket-write").Keys);
@@ -89,6 +110,27 @@ public sealed class AuthoringSchemaTests
                 .EnumerateArray()
                 .Select(type => type.GetString()!)
                 .ToArray());
+    }
+
+    [Fact]
+    public void DispatcherPreservesTypedAuthoringFailureCodeAtTopLevel()
+    {
+        OutputEnvelope envelope =
+            CommandDispatcher.CreateAuthoringControlFailure(
+                "prepared-ticket-authoring",
+                new AuthoringControlException(
+                    HttpStatusCode.Conflict,
+                    "recovery-in-progress",
+                    "Snapshot publication is still pending.",
+                    relatedRunIds: ["reconciliation-run"]));
+
+        Assert.False(envelope.Success);
+        Assert.Equal(
+            "recovery-in-progress",
+            Assert.IsType<ErrorInfo>(envelope.Error).Code);
+        Assert.Contains(
+            "Snapshot publication is still pending.",
+            envelope.Error.Message);
     }
 
     [Fact]
