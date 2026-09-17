@@ -3253,6 +3253,189 @@ public sealed class AuthoringRunStore
         }
     }
 
+    public static async Task CompleteRunAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string runId,
+        string snapshotId,
+        DateTimeOffset? now = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(transaction);
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(snapshotId);
+        if (!ReferenceEquals(transaction.Connection, connection))
+        {
+            throw new ArgumentException(
+                "The transaction must belong to the supplied connection.",
+                nameof(transaction));
+        }
+
+        DateTimeOffset timestamp = now ?? DateTimeOffset.UtcNow;
+        string processorKind;
+        long authoringEpoch;
+        string status;
+        bool databaseOnly;
+        string? existingSnapshotId;
+        await using (SqliteCommand readRun = connection.CreateCommand())
+        {
+            readRun.Transaction = transaction;
+            readRun.CommandText =
+                """
+                SELECT ProcessorKind, AuthoringEpoch, Status, DatabaseOnly,
+                       SnapshotId
+                FROM authoring_runs
+                WHERE Id = @runId
+                """;
+            readRun.Parameters.AddWithValue("@runId", runId);
+            await using SqliteDataReader reader =
+                await readRun.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct))
+            {
+                throw new KeyNotFoundException(
+                    $"Authoring run '{runId}' was not found.");
+            }
+            processorKind = reader.GetString(0);
+            authoringEpoch = reader.GetInt64(1);
+            status = reader.GetString(2);
+            databaseOnly = reader.GetBoolean(3);
+            existingSnapshotId =
+                reader.IsDBNull(4) ? null : reader.GetString(4);
+        }
+
+        if (status == AuthoringStatusValues.Runs.Completed)
+        {
+            if (databaseOnly ||
+                !string.Equals(
+                    existingSnapshotId,
+                    snapshotId,
+                    StringComparison.Ordinal))
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.RunNotActive,
+                    $"Run '{runId}' is already complete with a different outcome.");
+            }
+            return;
+        }
+        if (databaseOnly ||
+            !string.Equals(
+                status,
+                AuthoringStatusValues.Runs.Finalizing,
+                StringComparison.Ordinal))
+        {
+            throw new AuthoringConflictException(
+                AuthoringConflictCode.RunNotActive,
+                $"Run '{runId}' cannot complete with a snapshot from status '{status}'.");
+        }
+
+        await using (SqliteCommand readiness = connection.CreateCommand())
+        {
+            readiness.Transaction = transaction;
+            readiness.CommandText =
+                """
+                SELECT
+                    (SELECT COUNT(*)
+                     FROM authoring_run_items
+                     WHERE RunId = @runId
+                       AND Status NOT IN (@complete, @superseded)),
+                    (SELECT COUNT(*)
+                     FROM authoring_run_stages
+                     WHERE RunId = @runId AND Status <> @stageComplete),
+                    (SELECT COUNT(*)
+                     FROM authoring_mutation_fences
+                     WHERE ProcessorKind = @processorKind
+                       AND RunId = @runId),
+                    (SELECT COUNT(*)
+                     FROM authoring_review_snapshots
+                     WHERE Id = @snapshotId
+                       AND RunId = @runId
+                       AND ProcessorKind = @processorKind
+                       AND AuthoringEpoch = @authoringEpoch
+                       AND Status = @ready)
+                """;
+            readiness.Parameters.AddWithValue("@runId", runId);
+            readiness.Parameters.AddWithValue(
+                "@complete",
+                AuthoringStatusValues.Items.Complete);
+            readiness.Parameters.AddWithValue(
+                "@superseded",
+                AuthoringStatusValues.Items.Superseded);
+            readiness.Parameters.AddWithValue(
+                "@stageComplete",
+                AuthoringStatusValues.Stages.Complete);
+            readiness.Parameters.AddWithValue(
+                "@processorKind",
+                processorKind);
+            readiness.Parameters.AddWithValue(
+                "@snapshotId",
+                snapshotId);
+            readiness.Parameters.AddWithValue(
+                "@authoringEpoch",
+                authoringEpoch);
+            readiness.Parameters.AddWithValue(
+                "@ready",
+                AuthoringStatusValues.Snapshots.Ready);
+            await using SqliteDataReader reader =
+                await readiness.ExecuteReaderAsync(ct);
+            _ = await reader.ReadAsync(ct);
+            if (reader.GetInt32(0) != 0 ||
+                reader.GetInt32(1) != 0 ||
+                reader.GetInt32(2) != 1 ||
+                reader.GetInt32(3) != 1)
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.RunNotActive,
+                    $"Run '{runId}' is not ready for atomic completion.");
+            }
+        }
+
+        await using (SqliteCommand update = connection.CreateCommand())
+        {
+            update.Transaction = transaction;
+            update.CommandText =
+                """
+                UPDATE authoring_runs
+                SET Status = @completed, SnapshotId = @snapshotId,
+                    CompletedAt = @completedAt, Error = NULL
+                WHERE Id = @runId AND Status = @finalizing
+                """;
+            update.Parameters.AddWithValue(
+                "@completed",
+                AuthoringStatusValues.Runs.Completed);
+            update.Parameters.AddWithValue("@snapshotId", snapshotId);
+            update.Parameters.AddWithValue(
+                "@completedAt",
+                Format(timestamp));
+            update.Parameters.AddWithValue("@runId", runId);
+            update.Parameters.AddWithValue(
+                "@finalizing",
+                AuthoringStatusValues.Runs.Finalizing);
+            if (await update.ExecuteNonQueryAsync(ct) != 1)
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.RunNotActive,
+                    $"Run '{runId}' changed before atomic completion.");
+            }
+        }
+
+        await using SqliteCommand release = connection.CreateCommand();
+        release.Transaction = transaction;
+        release.CommandText =
+            """
+            DELETE FROM authoring_mutation_fences
+            WHERE ProcessorKind = @processorKind AND RunId = @runId
+            """;
+        release.Parameters.AddWithValue("@processorKind", processorKind);
+        release.Parameters.AddWithValue("@runId", runId);
+        if (await release.ExecuteNonQueryAsync(ct) != 1)
+        {
+            throw new AuthoringConflictException(
+                AuthoringConflictCode.MutationFenceUnavailable,
+                $"Run '{runId}' lost its mutation fence before atomic completion.");
+        }
+    }
+
     public async Task CompleteRunAsync(
         string runId,
         string? snapshotId,
@@ -3597,6 +3780,141 @@ public sealed class AuthoringRunStore
             await RollbackAsync(connection);
             throw;
         }
+    }
+
+    public static async Task<AuthoringSnapshotDescriptor>
+        MarkSnapshotReadyAsync(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            string snapshotId,
+            string checksumSha256,
+            long sizeBytes,
+            DateTimeOffset? now = null,
+            CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(transaction);
+        ArgumentException.ThrowIfNullOrWhiteSpace(snapshotId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(checksumSha256);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(sizeBytes);
+        if (!ReferenceEquals(transaction.Connection, connection))
+        {
+            throw new ArgumentException(
+                "The transaction must belong to the supplied connection.",
+                nameof(transaction));
+        }
+
+        DateTimeOffset timestamp = now ?? DateTimeOffset.UtcNow;
+        AuthoringReviewSnapshotRecord record;
+        await using (SqliteCommand read = connection.CreateCommand())
+        {
+            read.Transaction = transaction;
+            read.CommandText =
+                """
+                SELECT RowId, Id, ProcessorKind, RunId, AuthoringEpoch,
+                       Sequence, SchemaVersion, Status, TempPath, Path,
+                       ChecksumSha256, SizeBytes, ItemCount, ReceiptCount,
+                       TableCountsJson, PublicationProofJson, CreatedAt,
+                       FinalizedAt, Error
+                FROM authoring_review_snapshots
+                WHERE Id = @snapshotId
+                """;
+            read.Parameters.AddWithValue("@snapshotId", snapshotId);
+            await using SqliteDataReader reader =
+                await read.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct))
+            {
+                throw new KeyNotFoundException(
+                    $"Snapshot '{snapshotId}' was not found.");
+            }
+            record = new AuthoringReviewSnapshotRecord
+            {
+                RowId = reader.GetInt32(0),
+                Id = reader.GetString(1),
+                ProcessorKind = reader.GetString(2),
+                RunId = reader.GetString(3),
+                AuthoringEpoch = reader.GetInt64(4),
+                Sequence = reader.GetInt64(5),
+                SchemaVersion = reader.GetInt32(6),
+                Status = reader.GetString(7),
+                TempPath = reader.GetString(8),
+                Path = reader.GetString(9),
+                ChecksumSha256 =
+                    reader.IsDBNull(10) ? null : reader.GetString(10),
+                SizeBytes = reader.GetInt64(11),
+                ItemCount = reader.GetInt32(12),
+                ReceiptCount = reader.GetInt32(13),
+                TableCountsJson = reader.GetString(14),
+                PublicationProofJson =
+                    reader.IsDBNull(15) ? null : reader.GetString(15),
+                CreatedAt = reader.GetDateTimeOffset(16),
+                FinalizedAt =
+                    reader.IsDBNull(17)
+                        ? null
+                        : reader.GetDateTimeOffset(17),
+                Error = reader.IsDBNull(18) ? null : reader.GetString(18),
+            };
+        }
+
+        if (!string.Equals(
+                record.ChecksumSha256,
+                checksumSha256,
+                StringComparison.Ordinal) ||
+            record.SizeBytes != sizeBytes)
+        {
+            throw new InvalidOperationException(
+                $"Snapshot '{snapshotId}' does not match the verified final file.");
+        }
+        if (record.Status == AuthoringStatusValues.Snapshots.Ready)
+        {
+            return ToDescriptor(record);
+        }
+        if (record.Status is not (
+                AuthoringStatusValues.Snapshots.Creating or
+                AuthoringStatusValues.Snapshots.Promoted))
+        {
+            throw new InvalidOperationException(
+                $"Snapshot '{snapshotId}' cannot become ready from '{record.Status}'.");
+        }
+
+        await using (SqliteCommand update = connection.CreateCommand())
+        {
+            update.Transaction = transaction;
+            update.CommandText =
+                """
+                UPDATE authoring_review_snapshots
+                SET Status = @ready, FinalizedAt = @finalizedAt,
+                    Error = NULL
+                WHERE Id = @snapshotId
+                  AND Status IN (@creating, @promoted)
+                  AND ChecksumSha256 = @checksum
+                  AND SizeBytes = @sizeBytes
+                """;
+            update.Parameters.AddWithValue(
+                "@ready",
+                AuthoringStatusValues.Snapshots.Ready);
+            update.Parameters.AddWithValue(
+                "@finalizedAt",
+                Format(timestamp));
+            update.Parameters.AddWithValue("@snapshotId", snapshotId);
+            update.Parameters.AddWithValue(
+                "@creating",
+                AuthoringStatusValues.Snapshots.Creating);
+            update.Parameters.AddWithValue(
+                "@promoted",
+                AuthoringStatusValues.Snapshots.Promoted);
+            update.Parameters.AddWithValue("@checksum", checksumSha256);
+            update.Parameters.AddWithValue("@sizeBytes", sizeBytes);
+            if (await update.ExecuteNonQueryAsync(ct) != 1)
+            {
+                throw new InvalidOperationException(
+                    $"Snapshot '{snapshotId}' changed before atomic readiness.");
+            }
+        }
+        record.Status = AuthoringStatusValues.Snapshots.Ready;
+        record.FinalizedAt = timestamp;
+        record.Error = null;
+        return ToDescriptor(record);
     }
 
     public async Task MarkSnapshotErrorAsync(

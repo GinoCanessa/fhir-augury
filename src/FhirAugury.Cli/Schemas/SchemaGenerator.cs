@@ -697,6 +697,9 @@ public static class SchemaGenerator
                 "retry-reconciliation",
                 "cancel-reconciliation",
                 "abandon-reconciliation",
+                "recover-canonical-epoch",
+                "canonical-epoch-recovery-status",
+                "retry-canonical-epoch-recovery",
             ]
             : [
                 "start",
@@ -707,13 +710,13 @@ public static class SchemaGenerator
                 "snapshot",
             ];
         string runIdDescription = supportsPublicationRefresh
-            ? "Run identifier for status, retry, supersede, snapshot, reconciliation-status, retry-reconciliation, cancel-reconciliation, or abandon-reconciliation; source run identifier for metadata-only refresh-publication"
+            ? "Run identifier for status, retry, supersede, snapshot, reconciliation-status, retry-reconciliation, cancel-reconciliation, abandon-reconciliation, canonical-epoch-recovery-status, or retry-canonical-epoch-recovery; source run identifier for metadata-only refresh-publication"
             : "Run identifier for status, retry, supersede, or snapshot";
         object outputSchema = supportsPublicationRefresh
             ? new
             {
                 type = "object",
-                description = "Typed run, retry, supersede, receipt, snapshot, metadata-only publication-refresh, or publication-reconciliation result for the selected action",
+                description = "Typed run, retry, supersede, receipt, snapshot, metadata-only publication-refresh, publication-reconciliation, or canonical-epoch-recovery result for the selected action",
                 properties = new Dictionary<string, object>
                 {
                     ["run"] = Prop(
@@ -727,7 +730,7 @@ public static class SchemaGenerator
                         "outcome-unknown when refresh transport did not establish whether the POST succeeded"),
                     ["sourceRunId"] = Prop(
                         "string",
-                        "Source Preparer run selected for metadata-only refresh-publication or changed-ticket reconcile-publication"),
+                        "Source Preparer run selected for metadata-only refresh-publication or changed-ticket reconcile-publication, or abandoned reconciliation selected for canonical-epoch recovery"),
                     ["comparison"] = Prop(
                         "object",
                         "Frozen baseline-to-current comparison, including stable Jira generation and per-ticket dispositions"),
@@ -749,11 +752,29 @@ public static class SchemaGenerator
                         description =
                             "Verified immutable replacement publication proof when reconciliation is ready",
                     },
+                    ["sourceAbandonment"] = Prop(
+                        "object",
+                        "Immutable canonical-unpublished source reconciliation coordinate for canonical-epoch recovery"),
+                    ["frozen"] = Prop(
+                        "object",
+                        "Frozen receipt-backed corpus and complete grouping fingerprints"),
+                    ["recovery"] = Prop(
+                        "object",
+                        "Canonical-epoch recovery journal, mutation fence, and typed failure state"),
+                    ["snapshot"] = new
+                    {
+                        type = new[] { "object", "null" },
+                        description =
+                            "New verified schema-v3 snapshot after successful canonical-epoch recovery",
+                    },
+                    ["existingRun"] = Prop(
+                        "boolean",
+                        "Whether duplicate recovery start returned the existing active or retryable run"),
                     ["failureCode"] = new
                     {
                         type = new[] { "string", "null" },
                         description =
-                            "Stable reconciliation failure code, including revision-invalidation, cancellation-not-allowed, recovery-in-progress, promotion-recovery-failure, and canonical-unpublished-restriction",
+                            "Stable reconciliation or canonical-epoch-recovery failure code, including revision-invalidation, cancellation-not-allowed, canonical-state-changed, snapshot-recovery-failure, recovery-in-progress, promotion-recovery-failure, and canonical-unpublished-restriction",
                     },
                     ["failureDetail"] = new
                     {
@@ -763,10 +784,10 @@ public static class SchemaGenerator
                     },
                     ["status"] = Prop(
                         "object",
-                        "Machine-readable reconciliation status returned by retry-reconciliation or abandon-reconciliation"),
+                        "Machine-readable reconciliation or canonical-epoch-recovery status returned by lifecycle actions"),
                     ["recoveryStarted"] = Prop(
                         "boolean",
-                        "Whether retry-reconciliation started recovery"),
+                        "Whether a reconciliation or canonical-epoch retry started recovery"),
                     ["abandonedAt"] = Prop(
                         "string",
                         "Timestamp when reconciliation entered canonical-unpublished"),
@@ -826,7 +847,7 @@ public static class SchemaGenerator
                     runIdDescription),
                 ["sourceRunId"] = Prop(
                     "string",
-                    "Baseline source run identifier required when action is reconcile-publication"),
+                    "Baseline source run identifier required by reconcile-publication, or abandoned reconciliation run identifier required by recover-canonical-epoch"),
                 ["itemId"] = Prop(
                     "string",
                     "Run item identifier for retry or supersede"),

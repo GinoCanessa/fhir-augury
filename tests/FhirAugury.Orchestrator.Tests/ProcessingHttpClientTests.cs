@@ -252,6 +252,50 @@ public class ProcessingHttpClientTests
     }
 
     [Fact]
+    public async Task CanonicalEpochRecovery_ForwardsTypedLifecycleRoutes()
+    {
+        RecordingHandler handler = new();
+        ProcessingHttpClient client = CreateClient(handler);
+
+        ProcessingProxyResponse started =
+            await client.StartCanonicalEpochRecoveryAsync(
+                "Preparer",
+                "abandoned-run",
+                CancellationToken.None);
+        ProcessingProxyResponse status =
+            await client.GetCanonicalEpochRecoveryAsync(
+                "Preparer",
+                "recovery-run",
+                CancellationToken.None);
+        ProcessingProxyResponse retried =
+            await client.RetryCanonicalEpochRecoveryAsync(
+                "Preparer",
+                "recovery-run",
+                CancellationToken.None);
+
+        Assert.Equal(HttpStatusCode.Accepted, started.StatusCode);
+        Assert.Equal(
+            "/api/v1/processing-services/Preparer/authoring/runs/recovery-run/canonical-epoch-recovery",
+            started.Location);
+        Assert.Equal(HttpStatusCode.OK, status.StatusCode);
+        Assert.Contains(
+            "snapshot-publish-pending",
+            Encoding.UTF8.GetString(status.Content));
+        Assert.Equal(HttpStatusCode.Conflict, retried.StatusCode);
+        Assert.Equal("23", retried.RetryAfter);
+        Assert.Contains(
+            "canonical-state-changed",
+            Encoding.UTF8.GetString(retried.Content));
+        Assert.Equal(
+            [
+                "POST /processing/authoring/runs/abandoned-run/canonical-epoch-recovery",
+                "GET /processing/authoring/runs/recovery-run/canonical-epoch-recovery",
+                "POST /processing/authoring/runs/recovery-run/canonical-epoch-recovery/retry",
+            ],
+            handler.Requests.TakeLast(3));
+    }
+
+    [Fact]
     public async Task SnapshotBytes_AreStreamedWithConditionalHeadersAndDisposed()
     {
         RecordingHandler handler = new();
@@ -432,6 +476,12 @@ public class ProcessingHttpClientTests
                     ReconciliationCancelEnvelope,
                 "/processing/authoring/runs/reconciliation-run/publication-reconciliation/abandon" =>
                     ReconciliationAbandonEnvelope,
+                "/processing/authoring/runs/abandoned-run/canonical-epoch-recovery" =>
+                    """{"status":{"run":{"runId":"recovery-run","purpose":"canonical-epoch-recovery","sourceRunId":"abandoned-run"},"sourceAbandonment":{"runId":"abandoned-run"},"recovery":{"state":"materialization-pending"}},"existingRun":false}""",
+                "/processing/authoring/runs/recovery-run/canonical-epoch-recovery" =>
+                    """{"run":{"runId":"recovery-run","purpose":"canonical-epoch-recovery","sourceRunId":"abandoned-run"},"sourceAbandonment":{"runId":"abandoned-run"},"recovery":{"state":"snapshot-publish-pending"}}""",
+                "/processing/authoring/runs/recovery-run/canonical-epoch-recovery/retry" =>
+                    """{"error":"canonical-state-changed","detail":"The frozen canonical grouping changed.","conflictingRunIds":["abandoned-run","recovery-run"],"runId":"recovery-run"}""",
                 "/processing/authoring/runs/run-1/items/item-1/retry" =>
                     """{"itemId":"item-1","requiresAuthoring":true}""",
                 "/processing/authoring/runs/run-1/items/item-1/supersede" =>
@@ -449,6 +499,12 @@ public class ProcessingHttpClientTests
                     ? HttpStatusCode.Conflict
                 : path == "/processing/authoring/runs/source-run/publication-reconciliation"
                     ? HttpStatusCode.Accepted
+                : path == "/processing/authoring/runs/abandoned-run/canonical-epoch-recovery"
+                    ? HttpStatusCode.Accepted
+                : path.EndsWith(
+                    "/canonical-epoch-recovery/retry",
+                    StringComparison.Ordinal)
+                    ? HttpStatusCode.Conflict
                 : path.EndsWith(
                     "/publication-reconciliation/retry",
                     StringComparison.Ordinal)
@@ -523,6 +579,12 @@ public class ProcessingHttpClientTests
                     "/processing/authoring/runs/reconciliation-run/publication-reconciliation",
                     UriKind.Relative);
             }
+            if (path == "/processing/authoring/runs/abandoned-run/canonical-epoch-recovery")
+            {
+                response.Headers.Location = new Uri(
+                    "/processing/authoring/runs/recovery-run/canonical-epoch-recovery",
+                    UriKind.Relative);
+            }
             if (path.EndsWith(
                 "/publication-reconciliation/retry",
                 StringComparison.Ordinal))
@@ -530,6 +592,14 @@ public class ProcessingHttpClientTests
                 response.Headers.RetryAfter =
                     new RetryConditionHeaderValue(
                         TimeSpan.FromSeconds(17));
+            }
+            else if (path.EndsWith(
+                "/canonical-epoch-recovery/retry",
+                StringComparison.Ordinal))
+            {
+                response.Headers.RetryAfter =
+                    new RetryConditionHeaderValue(
+                        TimeSpan.FromSeconds(23));
             }
             else if (path.EndsWith("/retry", StringComparison.Ordinal))
             {

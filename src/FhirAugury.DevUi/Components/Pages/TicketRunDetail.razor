@@ -320,6 +320,33 @@ else if (_details is not null)
         </div>
     }
 
+    @if (_lastCanonicalEpochRecovery is
+            TicketCanonicalEpochRecoveryResult recoveryResult &&
+        recoveryResult.Disposition != TicketOperationDisposition.Succeeded)
+    {
+        <div class="alert alert-warning" role="alert">
+            <strong>Recovery action was not applied.</strong>
+            @if (!string.IsNullOrWhiteSpace(recoveryResult.FailureCode))
+            {
+                <code>@recoveryResult.FailureCode</code>
+            }
+            @recoveryResult.Message
+            @if (recoveryResult.ConflictingRunIds.Count > 0)
+            {
+                <ul class="mb-0">
+                    @foreach (string relatedRunId in recoveryResult.ConflictingRunIds)
+                    {
+                        <li>
+                            <a href="@RunUrl(recoveryResult.Workflow, relatedRunId)">
+                                @relatedRunId
+                            </a>
+                        </li>
+                    }
+                </ul>
+            }
+        </div>
+    }
+
     <div class="run-summary-grid">
         <RunLifecycleTimeline Run="@run" />
         <RunProgressSummary Details="@_details" />
@@ -509,11 +536,54 @@ else if (_details is not null)
                 "canonical-unpublished",
                 StringComparison.Ordinal))
             {
-                <div class="alert alert-danger" role="alert">
-                    <strong>Canonical data is unpublished.</strong>
-                    No replacement snapshot was produced; snapshot-producing
-                    workflows remain restricted for this canonical epoch.
-                </div>
+                @if (reconciliation.CanonicalEpochRecovery?.State == "ready")
+                {
+                    <div class="alert alert-success" role="status">
+                        <strong>Canonical epoch recovered by a separate run.</strong>
+                        This reconciliation remains historically abandoned;
+                        its reason and time have not changed.
+                    </div>
+                }
+                else
+                {
+                    <div class="alert alert-danger" role="alert">
+                        <strong>Canonical data is unpublished.</strong>
+                        No replacement snapshot was produced; snapshot-producing
+                        workflows remain restricted for this canonical epoch until
+                        a dedicated recovery snapshot is verified.
+                    </div>
+                }
+                <p>
+                    Abandoned
+                    <time datetime="@reconciliation.Promotion.AbandonedAt?.ToString("O")">
+                        @reconciliation.Promotion.AbandonedAt?.ToLocalTime().ToString("g")
+                    </time>
+                    · @reconciliation.Promotion.AbandonmentReason
+                </p>
+                @if (reconciliation.CanonicalEpochRecovery is
+                    CanonicalEpochRecoveryLink recoveryLink)
+                {
+                    <a class="btn btn-primary"
+                       href="@RunUrl(_details.Workflow, recoveryLink.RunId)">
+                        Open canonical-epoch recovery
+                    </a>
+                    @if (recoveryLink.State == "ready")
+                    {
+                        <a class="btn btn-outline-primary"
+                           href="@Operations.GetSnapshotUrl(_details.Workflow.RouteKey, recoveryLink.RunId)">
+                            Verified recovery snapshot @recoveryLink.SnapshotId
+                        </a>
+                    }
+                }
+                else
+                {
+                    <button class="btn btn-primary"
+                            type="button"
+                            disabled="@_refreshingPublication"
+                            @onclick="StartCanonicalEpochRecoveryAsync">
+                        Start canonical-epoch recovery
+                    </button>
+                }
             }
             else if (string.Equals(
                 reconciliation.Promotion.State,
@@ -530,6 +600,107 @@ else if (_details is not null)
                             @reconciliation.Promotion.CancellationReason
                         </span>
                     }
+                </div>
+            }
+        </section>
+    }
+
+    @if (_details.CanonicalEpochRecovery is
+        CanonicalEpochRecoveryStatusResult canonicalRecovery)
+    {
+        <section class="operation-panel"
+                 aria-labelledby="canonical-recovery-status-heading">
+            <div class="operation-panel__heading">
+                <div>
+                    <p class="operation-panel__eyebrow">Restricted epoch repair</p>
+                    <h2 id="canonical-recovery-status-heading"
+                        class="h4 mb-0">
+                        Canonical-epoch recovery
+                    </h2>
+                </div>
+                <StatusIndicator Status="@canonicalRecovery.Recovery.State" />
+            </div>
+            @if (!string.IsNullOrWhiteSpace(
+                canonicalRecovery.Recovery.FailureCode))
+            {
+                <div class="alert alert-warning" role="alert">
+                    <strong>Recovery remains pending.</strong>
+                    <code>@canonicalRecovery.Recovery.FailureCode</code>
+                    @canonicalRecovery.Recovery.FailureDetail
+                </div>
+            }
+            <dl class="row">
+                <dt class="col-sm-6">Source abandonment</dt>
+                <dd class="col-sm-6">
+                    <a href="@RunUrl(
+                        _details.Workflow,
+                        canonicalRecovery.SourceAbandonment.RunId)">
+                        <code>@canonicalRecovery.SourceAbandonment.RunId</code>
+                    </a>
+                </dd>
+                <dt class="col-sm-6">Authoring epoch</dt>
+                <dd class="col-sm-6">@canonicalRecovery.SourceAbandonment.AuthoringEpoch</dd>
+                <dt class="col-sm-6">Abandonment reason</dt>
+                <dd class="col-sm-6">@canonicalRecovery.SourceAbandonment.Reason</dd>
+                <dt class="col-sm-6">Abandoned at</dt>
+                <dd class="col-sm-6">
+                    <time datetime="@canonicalRecovery.SourceAbandonment.AbandonedAt.ToString("O")">
+                        @canonicalRecovery.SourceAbandonment.AbandonedAt.ToLocalTime().ToString("g")
+                    </time>
+                </dd>
+                <dt class="col-sm-6">Accepted tickets</dt>
+                <dd class="col-sm-6">@canonicalRecovery.Frozen.AcceptedTicketCount</dd>
+                <dt class="col-sm-6">Grouping partitions</dt>
+                <dd class="col-sm-6">@canonicalRecovery.Frozen.GroupingPartitionCount</dd>
+                <dt class="col-sm-6">Corpus fingerprint</dt>
+                <dd class="col-sm-6"><code>@canonicalRecovery.Frozen.CorpusFingerprint</code></dd>
+                <dt class="col-sm-6">Grouping fingerprint</dt>
+                <dd class="col-sm-6"><code>@canonicalRecovery.Frozen.GroupingFingerprint</code></dd>
+                <dt class="col-sm-6">Journal</dt>
+                <dd class="col-sm-6">
+                    <code>@canonicalRecovery.Recovery.State</code>
+                    · mutation fence
+                    @(canonicalRecovery.Recovery.MutationFenceHeld
+                        ? "held"
+                        : "released")
+                </dd>
+                @if (canonicalRecovery.Snapshot is { } recoverySnapshot)
+                {
+                    <dt class="col-sm-6">Verified snapshot</dt>
+                    <dd class="col-sm-6">
+                        <a href="@Operations.GetSnapshotUrl(_details.Workflow.RouteKey, canonicalRecovery.Run.RunId)">
+                            <code>@recoverySnapshot.SnapshotId</code>
+                        </a>
+                    </dd>
+                }
+            </dl>
+            @if (!string.Equals(
+                canonicalRecovery.Recovery.State,
+                "ready",
+                StringComparison.Ordinal))
+            {
+                <div class="callout callout--warning">
+                    <i class="bi bi-exclamation-triangle-fill"
+                       aria-hidden="true"></i>
+                    <div>
+                        <strong>The canonical restriction remains active.</strong>
+                        Retry resumes this run and its immutable snapshot
+                        journal; it does not create a replacement run.
+                    </div>
+                </div>
+                <button class="btn btn-primary"
+                        type="button"
+                        disabled="@_refreshingPublication"
+                        @onclick="RetryCanonicalEpochRecoveryAsync">
+                    Retry canonical-epoch recovery
+                </button>
+            }
+            else
+            {
+                <div class="alert alert-success" role="status">
+                    <strong>Canonical epoch recovered.</strong>
+                    The new snapshot was verified before the matching
+                    restriction was released.
                 </div>
             }
         </section>
@@ -569,6 +740,8 @@ else if (_details is not null)
     private TicketPublicationResult? _lastPublication;
     private TicketPublicationRefreshResult? _lastPublicationRefresh;
     private TicketPublicationReconciliationResult? _lastReconciliation;
+    private TicketCanonicalEpochRecoveryResult?
+        _lastCanonicalEpochRecovery;
     private ElementReference _refreshButton;
     private string? _coordinate;
     private string? _loadError;
@@ -593,7 +766,8 @@ else if (_details is not null)
     private bool _disposed;
 
     private IReadOnlyList<AuthoringRunItemStatus> VisibleRunItems =>
-        _details?.Reconciliation is null
+        _details?.Reconciliation is null &&
+        _details?.CanonicalEpochRecovery is null
             ? _details?.Response.Items ?? []
             : (_details?.Response.Items ?? [])
                 .Select(item => item with
@@ -762,6 +936,7 @@ else if (_details is not null)
         _lastPublication = null;
         _lastPublicationRefresh = null;
         _lastReconciliation = null;
+        _lastCanonicalEpochRecovery = null;
         _loadError = null;
         _pollError = null;
         _mutationException = null;
@@ -1190,6 +1365,93 @@ else if (_details is not null)
 
     private Task AbandonReconciliationAsync() =>
         MutateReconciliationAsync(ReconciliationMutation.Abandon);
+
+    private async Task StartCanonicalEpochRecoveryAsync()
+    {
+        if (_definition is null || _refreshingPublication)
+        {
+            return;
+        }
+        _refreshingPublication = true;
+        _lastCanonicalEpochRecovery = null;
+        StateHasChanged();
+        try
+        {
+            TicketCanonicalEpochRecoveryResult result =
+                await Operations.StartCanonicalEpochRecoveryAsync(
+                    _definition.RouteKey,
+                    RunId,
+                    _routeLifetime?.Token ?? default);
+            _lastCanonicalEpochRecovery = result;
+            if (result.Disposition ==
+                TicketOperationDisposition.Succeeded)
+            {
+                Navigation.NavigateTo(
+                    RunUrl(result.Workflow, result.RunId));
+            }
+        }
+        catch (OperationCanceledException)
+            when (_routeLifetime?.IsCancellationRequested == true ||
+                _disposed)
+        {
+        }
+        catch (Exception ex)
+        {
+            _publicationRefreshException = ex.Message;
+        }
+        finally
+        {
+            _refreshingPublication = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task RetryCanonicalEpochRecoveryAsync()
+    {
+        if (_definition is null || _refreshingPublication)
+        {
+            return;
+        }
+        _refreshingPublication = true;
+        StateHasChanged();
+        try
+        {
+            TicketCanonicalEpochRecoveryResult result =
+                await Operations.RetryCanonicalEpochRecoveryAsync(
+                    _definition.RouteKey,
+                    RunId,
+                    _routeLifetime?.Token ?? default);
+            _lastCanonicalEpochRecovery = result;
+            if (result.Status is
+                    CanonicalEpochRecoveryStatusResult status &&
+                _details is not null)
+            {
+                _details = _details with
+                {
+                    Response = new(status.Run, status.Items),
+                    CanonicalEpochRecovery = status,
+                    Outcome = new RunOutcomeClassifier().Classify(
+                        status.Run,
+                        _details.Publication,
+                        publicationError: _details.PublicationError),
+                };
+            }
+        }
+        catch (OperationCanceledException)
+            when (_routeLifetime?.IsCancellationRequested == true ||
+                _disposed)
+        {
+        }
+        catch (Exception ex)
+        {
+            _publicationRefreshException = ex.Message;
+        }
+        finally
+        {
+            _refreshingPublication = false;
+            StateHasChanged();
+        }
+    }
 
     private void ToggleCancellationConfirmation() =>
         _confirmingCancellation = !_confirmingCancellation;

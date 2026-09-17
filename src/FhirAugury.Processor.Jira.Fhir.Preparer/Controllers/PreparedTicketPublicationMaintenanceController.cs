@@ -20,6 +20,8 @@ public sealed class PreparedTicketPublicationMaintenanceController
         _reconciliationPlanner;
     private readonly PreparedTicketPublicationRecoveryService?
         _recoveryService;
+    private readonly PreparedTicketCanonicalEpochRecoveryService?
+        _canonicalEpochRecoveryService;
     private readonly PreparerDatabase? _database;
 
     public PreparedTicketPublicationMaintenanceController(
@@ -28,7 +30,6 @@ public sealed class PreparedTicketPublicationMaintenanceController
         _service = service;
     }
 
-    [ActivatorUtilitiesConstructor]
     public PreparedTicketPublicationMaintenanceController(
         PreparedTicketPublicationRefreshService service,
         PreparedTicketPublicationReconciliationPlanner reconciliationPlanner,
@@ -39,6 +40,24 @@ public sealed class PreparedTicketPublicationMaintenanceController
         _reconciliationPlanner = reconciliationPlanner;
         _recoveryService = recoveryService;
         _database = database;
+    }
+
+    [ActivatorUtilitiesConstructor]
+    public PreparedTicketPublicationMaintenanceController(
+        PreparedTicketPublicationRefreshService service,
+        PreparedTicketPublicationReconciliationPlanner reconciliationPlanner,
+        PreparedTicketPublicationRecoveryService recoveryService,
+        PreparedTicketCanonicalEpochRecoveryService
+            canonicalEpochRecoveryService,
+        PreparerDatabase database)
+        : this(
+            service,
+            reconciliationPlanner,
+            recoveryService,
+            database)
+    {
+        _canonicalEpochRecoveryService =
+            canonicalEpochRecoveryService;
     }
 
     [HttpPost("{sourceRunId}/publication-refresh")]
@@ -212,7 +231,9 @@ public sealed class PreparedTicketPublicationMaintenanceController
                 "Publication reconciliation is not configured.");
         try
         {
-            return Ok(await planner.GetStatusAsync(runId, ct));
+            return Ok(await AttachRecoveryLinkAsync(
+                await planner.GetStatusAsync(runId, ct),
+                ct));
         }
         catch (KeyNotFoundException ex)
         {
@@ -248,7 +269,9 @@ public sealed class PreparedTicketPublicationMaintenanceController
         {
             _ = await recovery.RecoverAsync(runId, ct);
             return Ok(new PreparedTicketPublicationReconciliationRetryResult(
-                await planner.GetStatusAsync(runId, ct),
+                await AttachRecoveryLinkAsync(
+                    await planner.GetStatusAsync(runId, ct),
+                    ct),
                 true));
         }
         catch (PreparedTicketPublicationReconciliationException ex)
@@ -325,10 +348,15 @@ public sealed class PreparedTicketPublicationMaintenanceController
 
         try
         {
-            return Ok(await planner.CancelAsync(
+            PreparedTicketPublicationReconciliationCancelResult result =
+                await planner.CancelAsync(
                 runId,
                 request.Reason,
-                ct));
+                ct);
+            return Ok(result with
+            {
+                Status = await AttachRecoveryLinkAsync(result.Status, ct),
+            });
         }
         catch (KeyNotFoundException ex)
         {
@@ -378,7 +406,9 @@ public sealed class PreparedTicketPublicationMaintenanceController
                 ct);
             return Ok(
                 new PreparedTicketPublicationReconciliationAbandonResult(
-                    await planner.GetStatusAsync(runId, ct),
+                    await AttachRecoveryLinkAsync(
+                        await planner.GetStatusAsync(runId, ct),
+                        ct),
                     abandonedAt,
                     request.Reason));
         }
@@ -389,6 +419,129 @@ public sealed class PreparedTicketPublicationMaintenanceController
                 new PreparedTicketPublicationReconciliationFailure(
                     PreparedTicketPublicationReconciliationFailureCodes
                         .PromotionRecoveryFailure,
+                    ex.Message,
+                    RunId: runId));
+        }
+    }
+
+    [HttpPost("{sourceRunId}/canonical-epoch-recovery")]
+    [ProducesResponseType(
+        typeof(PreparedTicketCanonicalEpochRecoveryStartResult),
+        StatusCodes.Status202Accepted)]
+    [ProducesResponseType(
+        typeof(PreparedTicketCanonicalEpochRecoveryFailure),
+        StatusCodes.Status404NotFound)]
+    [ProducesResponseType(
+        typeof(PreparedTicketCanonicalEpochRecoveryFailure),
+        StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> StartCanonicalEpochRecovery(
+        string sourceRunId,
+        CancellationToken ct)
+    {
+        PreparedTicketCanonicalEpochRecoveryService service =
+            RequireCanonicalEpochRecoveryService();
+        try
+        {
+            PreparedTicketCanonicalEpochRecoveryStartResult result =
+                await service.StartAsync(sourceRunId, ct);
+            return Accepted(
+                $"/processing/authoring/runs/{Uri.EscapeDataString(result.Status.Run.RunId)}/canonical-epoch-recovery",
+                result);
+        }
+        catch (PreparedTicketCanonicalEpochRecoveryException ex)
+        {
+            PreparedTicketCanonicalEpochRecoveryFailure failure = new(
+                ex.FailureCode,
+                ex.Message,
+                ex.RelatedRunIds,
+                ex.RelatedRunIds.Count == 1
+                    ? ex.RelatedRunIds[0]
+                    : null);
+            return ex.FailureCode ==
+                PreparedTicketCanonicalEpochRecoveryFailureCodes
+                    .InvalidSourceReconciliation
+                ? NotFound(failure)
+                : Conflict(failure);
+        }
+        catch (AuthoringConflictException ex)
+        {
+            return Conflict(
+                new PreparedTicketCanonicalEpochRecoveryFailure(
+                    PreparedTicketCanonicalEpochRecoveryFailureCodes
+                        .RecoveryInProgress,
+                    ex.Message,
+                    ex.RelatedRunIds,
+                    ex.RelatedRunIds.Count == 1
+                        ? ex.RelatedRunIds[0]
+                        : null));
+        }
+    }
+
+    [HttpGet("{runId}/canonical-epoch-recovery")]
+    [ProducesResponseType(
+        typeof(PreparedTicketCanonicalEpochRecoveryStatusResult),
+        StatusCodes.Status200OK)]
+    [ProducesResponseType(
+        typeof(PreparedTicketCanonicalEpochRecoveryFailure),
+        StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetCanonicalEpochRecoveryStatus(
+        string runId,
+        CancellationToken ct)
+    {
+        try
+        {
+            return Ok(await RequireCanonicalEpochRecoveryService()
+                .GetStatusAsync(runId, ct));
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(
+                new PreparedTicketCanonicalEpochRecoveryFailure(
+                    PreparedTicketCanonicalEpochRecoveryFailureCodes
+                        .InvalidSourceReconciliation,
+                    ex.Message,
+                    RunId: runId));
+        }
+    }
+
+    [HttpPost("{runId}/canonical-epoch-recovery/retry")]
+    [ProducesResponseType(
+        typeof(PreparedTicketCanonicalEpochRecoveryRetryResult),
+        StatusCodes.Status200OK)]
+    [ProducesResponseType(
+        typeof(PreparedTicketCanonicalEpochRecoveryFailure),
+        StatusCodes.Status404NotFound)]
+    [ProducesResponseType(
+        typeof(PreparedTicketCanonicalEpochRecoveryFailure),
+        StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> RetryCanonicalEpochRecovery(
+        string runId,
+        CancellationToken ct)
+    {
+        PreparedTicketCanonicalEpochRecoveryService service =
+            RequireCanonicalEpochRecoveryService();
+        try
+        {
+            _ = await service.RecoverAsync(runId, ct);
+            return Ok(new PreparedTicketCanonicalEpochRecoveryRetryResult(
+                await service.GetStatusAsync(runId, ct),
+                true));
+        }
+        catch (PreparedTicketCanonicalEpochRecoveryException ex)
+        {
+            return Conflict(
+                new PreparedTicketCanonicalEpochRecoveryFailure(
+                    ex.FailureCode,
+                    ex.Message,
+                    ex.RelatedRunIds,
+                    runId));
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(
+                new PreparedTicketCanonicalEpochRecoveryFailure(
+                    PreparedTicketCanonicalEpochRecoveryFailureCodes
+                        .InvalidSourceReconciliation,
                     ex.Message,
                     RunId: runId));
         }
@@ -453,4 +606,20 @@ public sealed class PreparedTicketPublicationMaintenanceController
         }
         return exception;
     }
+
+    private async Task<PreparedTicketPublicationReconciliationStatusResult>
+        AttachRecoveryLinkAsync(
+            PreparedTicketPublicationReconciliationStatusResult status,
+            CancellationToken ct)
+        => _canonicalEpochRecoveryService is null
+            ? status
+            : await _canonicalEpochRecoveryService.AttachRecoveryLinkAsync(
+                status,
+                ct);
+
+    private PreparedTicketCanonicalEpochRecoveryService
+        RequireCanonicalEpochRecoveryService()
+        => _canonicalEpochRecoveryService ??
+           throw new InvalidOperationException(
+               "Canonical-epoch recovery is not configured.");
 }

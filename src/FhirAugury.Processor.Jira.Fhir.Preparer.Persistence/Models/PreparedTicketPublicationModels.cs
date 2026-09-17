@@ -182,3 +182,69 @@ public sealed record PreparedTicketPublicationSnapshotDescriptor(
     string DescriptorJson,
     string Sha256,
     DateTimeOffset PersistedAt);
+
+public sealed record PreparedTicketCanonicalEpochRecoveryRecipe(
+    int ContractVersion,
+    string RunId,
+    string SourceRunId,
+    long AuthoringEpoch,
+    DateTimeOffset AbandonedAt,
+    string AbandonmentReason,
+    IReadOnlyList<PreparedTicketPublicationCorpusItem> Corpus,
+    IReadOnlyList<PreparedTicketPublicationGroupingPartition> Grouping,
+    string CorpusFingerprint,
+    string GroupingFingerprint,
+    string RecipeFingerprint,
+    string CanonicalRowsFingerprint,
+    DateTimeOffset CapturedAt)
+{
+    public PreparedTicketCanonicalEpochRecoveryFrozenState ToFrozenState()
+        => new(
+            Corpus.Count,
+            Grouping.Count,
+            CorpusFingerprint,
+            GroupingFingerprint,
+            RecipeFingerprint,
+            CapturedAt);
+
+    public PreparedTicketCanonicalEpochRecoverySourceAbandonment
+        ToSourceAbandonment()
+        => new(
+            SourceRunId,
+            AuthoringEpoch,
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .CanonicalUnpublished,
+            AbandonedAt,
+            AbandonmentReason);
+}
+
+public sealed record PreparedTicketCanonicalEpochRecoveryJournal(
+    string RunId,
+    string State,
+    string? SnapshotDescriptorJson,
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? LastRecoveryAttemptAt = null,
+    string? FailureCode = null,
+    string? FailureDetail = null);
+
+public sealed record PreparedTicketCanonicalEpochRecoveryResolution(
+    string RunId,
+    string SourceRunId,
+    long AuthoringEpoch,
+    string SnapshotId,
+    string SnapshotSha256,
+    string CorpusFingerprint,
+    string GroupingFingerprint,
+    PreparedTicketCanonicalEpochRecoveryProof Proof,
+    DateTimeOffset ResolvedAt)
+{
+    public PreparedTicketCanonicalEpochRecoveryLink ToLink()
+        => new(
+            RunId,
+            SourceRunId,
+            AuthoringEpoch,
+            PreparedTicketCanonicalEpochRecoveryStateValues.Ready,
+            SnapshotId,
+            SnapshotSha256,
+            ResolvedAt);
+}

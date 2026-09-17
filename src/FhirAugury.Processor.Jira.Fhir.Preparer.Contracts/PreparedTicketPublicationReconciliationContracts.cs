@@ -156,7 +156,8 @@ public sealed record PreparedTicketPublicationReconciliationStatusResult(
     IReadOnlyList<string> InvalidatedTicketKeys,
     PreparedTicketPublicationReconciliationProof? PublicationProof = null,
     string? FailureCode = null,
-    string? FailureDetail = null);
+    string? FailureDetail = null,
+    PreparedTicketCanonicalEpochRecoveryLink? CanonicalEpochRecovery = null);
 
 public sealed record PreparedTicketPublicationReconciliationRetryResult(
     PreparedTicketPublicationReconciliationStatusResult Status,

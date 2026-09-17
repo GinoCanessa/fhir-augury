@@ -930,6 +930,139 @@ public sealed class TicketOperationsServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task CanonicalEpochRecoveryStartAndRetryUseSameTypedRun()
+    {
+        CanonicalEpochRecoveryStatusResult status =
+            CanonicalEpochRecoveryStatus();
+        FakeAuthoringClient authoring = new()
+        {
+            CanonicalRecoveryStartHandler =
+                (serviceName, sourceRunId, _) =>
+                {
+                    Assert.Equal("Preparer", serviceName);
+                    Assert.Equal("abandoned-run", sourceRunId);
+                    return Task.FromResult(
+                        new CanonicalEpochRecoveryStartResult(
+                            status,
+                            ExistingRun: true));
+                },
+            CanonicalRecoveryRetryHandler =
+                (serviceName, runId, _) =>
+                {
+                    Assert.Equal("Preparer", serviceName);
+                    Assert.Equal("recovery-run", runId);
+                    return Task.FromResult(
+                        new CanonicalEpochRecoveryRetryResult(
+                            status,
+                            RecoveryStarted: true));
+                },
+        };
+        using TicketOperationsService service =
+            CreateService(authoring);
+
+        TicketCanonicalEpochRecoveryResult started =
+            await service.StartCanonicalEpochRecoveryAsync(
+                "prepare",
+                "abandoned-run");
+        TicketCanonicalEpochRecoveryResult retried =
+            await service.RetryCanonicalEpochRecoveryAsync(
+                "prepare",
+                "recovery-run");
+
+        Assert.Equal(
+            TicketOperationDisposition.Succeeded,
+            started.Disposition);
+        Assert.Equal("recovery-run", started.RunId);
+        Assert.Same(status, started.Status);
+        Assert.Contains("existing", started.Message);
+        Assert.Equal(
+            TicketOperationDisposition.Succeeded,
+            retried.Disposition);
+        Assert.Equal("recovery-run", retried.RunId);
+        Assert.Same(status, retried.Status);
+        Assert.Equal(1, authoring.CanonicalRecoveryStartCalls);
+        Assert.Equal(1, authoring.CanonicalRecoveryRetryCalls);
+        Assert.Equal(
+            ("Preparer", "abandoned-run"),
+            Assert.Single(authoring.CanonicalRecoveryStartRequests));
+        Assert.Equal(
+            ("Preparer", "recovery-run"),
+            Assert.Single(authoring.CanonicalRecoveryRetryRequests));
+    }
+
+    [Fact]
+    public async Task OpenRecoveryRunLoadsTypedStatusAndUsesOrchestratorSnapshotLink()
+    {
+        CanonicalEpochRecoveryStatusResult status = CanonicalEpochRecoveryStatus();
+        FakeAuthoringClient authoring = new()
+        {
+            GetHandler = (_, _, _) =>
+                Task.FromResult(new AuthoringRunResponse(status.Run, status.Items)),
+            CanonicalRecoveryStatusHandler = (_, _, _) => Task.FromResult(status),
+        };
+        using TicketOperationsService service = CreateService(authoring);
+
+        TicketRunDetails details = await service.OpenRunAsync("prepare", "recovery-run");
+
+        Assert.Same(status, details.CanonicalEpochRecovery);
+        Assert.Null(details.Reconciliation);
+        Assert.Equal(("Preparer", "recovery-run"),
+            Assert.Single(authoring.CanonicalRecoveryStatusRequests));
+        Assert.Equal(
+            "http://localhost:5150/api/v1/processing-services/Preparer/authoring/runs/recovery%20%2F%23/snapshot",
+            service.GetSnapshotUrl("prepare", "recovery /#"));
+    }
+
+    [Fact]
+    public async Task CanonicalEpochRecoveryIsNotOfferedForPlanWorkflow()
+    {
+        FakeAuthoringClient authoring = new();
+        using TicketOperationsService service = CreateService(authoring);
+        Assert.Equal(TicketOperationDisposition.NotAllowed,
+            (await service.StartCanonicalEpochRecoveryAsync("plan", "source-run")).Disposition);
+        Assert.Equal(TicketOperationDisposition.NotAllowed,
+            (await service.RetryCanonicalEpochRecoveryAsync("plan", "recovery-run")).Disposition);
+        Assert.Equal(0, authoring.CanonicalRecoveryStartCalls);
+        Assert.Equal(0, authoring.CanonicalRecoveryRetryCalls);
+    }
+
+    [Fact]
+    public async Task CanonicalEpochRecoveryConflictPreservesTypedCoordinates()
+    {
+        FakeAuthoringClient authoring = new()
+        {
+            CanonicalRecoveryRetryHandler =
+                (_, _, _) =>
+                    Task.FromException<CanonicalEpochRecoveryRetryResult>(
+                        new AuthoringControlException(
+                            HttpStatusCode.Conflict,
+                            "canonical-state-changed",
+                            "The frozen canonical grouping changed.",
+                            relatedRunIds:
+                            [
+                                "abandoned-run",
+                                "recovery-run",
+                            ])),
+        };
+        using TicketOperationsService service =
+            CreateService(authoring);
+
+        TicketCanonicalEpochRecoveryResult result =
+            await service.RetryCanonicalEpochRecoveryAsync(
+                "prepare",
+                "recovery-run");
+
+        Assert.Equal(
+            TicketOperationDisposition.Conflict,
+            result.Disposition);
+        Assert.Equal("canonical-state-changed", result.FailureCode);
+        Assert.Equal(
+            ["abandoned-run", "recovery-run"],
+            result.RelatedRunIds);
+        Assert.Contains("frozen canonical grouping", result.Message);
+    }
+
+    [Fact]
     public async Task PublicationReconciliationCancelPreflightsAndSendsAuditedReason()
     {
         PublicationReconciliationStatusResult staged =
@@ -2128,6 +2261,59 @@ public sealed class TicketOperationsServiceTests : IDisposable
             []);
     }
 
+    private CanonicalEpochRecoveryStatusResult
+        CanonicalEpochRecoveryStatus()
+    {
+        DateTimeOffset capturedAt = _now.AddMinutes(-1);
+        AuthoringRunStatus run = RunStatus(
+            "recovery-run",
+            "error",
+            capturedAt,
+            terminal: false,
+            purpose: "canonical-epoch-recovery",
+            sourceRunId: "abandoned-run") with
+        {
+            CompletedItems = 1,
+            FailedItems = 0,
+        };
+        AuthoringRunItemStatus item = new(
+            "recovery-item",
+            run.RunId,
+            "FHIR-1",
+            "fhir",
+            "revision-1",
+            "complete",
+            null,
+            "receipt-1",
+            0,
+            capturedAt,
+            capturedAt,
+            capturedAt,
+            null);
+        return new(
+            run,
+            [item],
+            new(
+                "abandoned-run",
+                run.AuthoringEpoch,
+                "canonical-unpublished",
+                capturedAt,
+                "snapshot publication could not be completed"),
+            new(
+                1,
+                1,
+                new string('a', 64),
+                new string('b', 64),
+                new string('c', 64),
+                capturedAt),
+            new(
+                "snapshot-publish-pending",
+                MutationFenceHeld: true,
+                LastRecoveryAttemptAt: capturedAt,
+                FailureCode: "snapshot-recovery-failure",
+                FailureDetail: "snapshot file is unavailable"));
+    }
+
     private static AuthoringRunStatus RunStatus(
         string runId,
         string status,
@@ -2433,6 +2619,39 @@ public sealed class TicketOperationsServiceTests : IDisposable
             string,
             string,
             CancellationToken,
+            Task<CanonicalEpochRecoveryStartResult>>
+            CanonicalRecoveryStartHandler { get; set; } =
+            (_, _, _) =>
+                Task.FromException<CanonicalEpochRecoveryStartResult>(
+                    new InvalidOperationException(
+                        "Canonical-epoch recovery start handler was not configured."));
+
+        public Func<
+            string,
+            string,
+            CancellationToken,
+            Task<CanonicalEpochRecoveryStatusResult>>
+            CanonicalRecoveryStatusHandler { get; set; } =
+            (_, _, _) =>
+                Task.FromException<CanonicalEpochRecoveryStatusResult>(
+                    new InvalidOperationException(
+                        "Canonical-epoch recovery status handler was not configured."));
+
+        public Func<
+            string,
+            string,
+            CancellationToken,
+            Task<CanonicalEpochRecoveryRetryResult>>
+            CanonicalRecoveryRetryHandler { get; set; } =
+            (_, _, _) =>
+                Task.FromException<CanonicalEpochRecoveryRetryResult>(
+                    new InvalidOperationException(
+                        "Canonical-epoch recovery retry handler was not configured."));
+
+        public Func<
+            string,
+            string,
+            CancellationToken,
             Task<AuthoringRunResponse>> GetHandler { get; set; } =
             (_, _, _) => Task.FromException<AuthoringRunResponse>(
                 new InvalidOperationException(
@@ -2490,6 +2709,12 @@ public sealed class TicketOperationsServiceTests : IDisposable
 
         public int ReconciliationAbandonCalls { get; private set; }
 
+        public int CanonicalRecoveryStartCalls { get; private set; }
+
+        public int CanonicalRecoveryStatusCalls { get; private set; }
+
+        public int CanonicalRecoveryRetryCalls { get; private set; }
+
         public int GetCalls { get; private set; }
 
         public int RetryCalls { get; private set; }
@@ -2517,6 +2742,15 @@ public sealed class TicketOperationsServiceTests : IDisposable
 
         public List<(string Service, string RunId, string Reason)>
             ReconciliationAbandonRequests { get; } = [];
+
+        public List<(string Service, string SourceRunId)>
+            CanonicalRecoveryStartRequests { get; } = [];
+
+        public List<(string Service, string RunId)>
+            CanonicalRecoveryStatusRequests { get; } = [];
+
+        public List<(string Service, string RunId)>
+            CanonicalRecoveryRetryRequests { get; } = [];
 
         public Task<AuthoringStartResult> StartAsync<TRequest>(
             string serviceName,
@@ -2619,6 +2853,49 @@ public sealed class TicketOperationsServiceTests : IDisposable
                 serviceName,
                 runId,
                 reason,
+                ct);
+        }
+
+        public Task<CanonicalEpochRecoveryStartResult>
+            StartCanonicalEpochRecoveryAsync(
+                string serviceName,
+                string sourceRunId,
+                CancellationToken ct)
+        {
+            CanonicalRecoveryStartCalls++;
+            CanonicalRecoveryStartRequests.Add(
+                (serviceName, sourceRunId));
+            return CanonicalRecoveryStartHandler(
+                serviceName,
+                sourceRunId,
+                ct);
+        }
+
+        public Task<CanonicalEpochRecoveryStatusResult>
+            GetCanonicalEpochRecoveryAsync(
+                string serviceName,
+                string runId,
+                CancellationToken ct)
+        {
+            CanonicalRecoveryStatusCalls++;
+            CanonicalRecoveryStatusRequests.Add((serviceName, runId));
+            return CanonicalRecoveryStatusHandler(
+                serviceName,
+                runId,
+                ct);
+        }
+
+        public Task<CanonicalEpochRecoveryRetryResult>
+            RetryCanonicalEpochRecoveryAsync(
+                string serviceName,
+                string runId,
+                CancellationToken ct)
+        {
+            CanonicalRecoveryRetryCalls++;
+            CanonicalRecoveryRetryRequests.Add((serviceName, runId));
+            return CanonicalRecoveryRetryHandler(
+                serviceName,
+                runId,
                 ct);
         }
 

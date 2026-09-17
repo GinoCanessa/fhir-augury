@@ -71,7 +71,7 @@ Typical run states are `queued`, `running`, `finalizing`, `completed`,
 Run status also carries additive lineage fields. `purpose` is one of
 `authoring`, `initial-revalidation`, `grouping-maintenance`,
 `publication-refresh`, or `publication-reconciliation`;
-`canonical-epoch-recovery` is reserved as the sole snapshot-producing bypass
+`canonical-epoch-recovery` is the dedicated snapshot-producing bypass
 for an unresolved canonical epoch. `sourceRunId` is
 populated when a maintenance run is linked to an earlier run. Each publication
 maintenance operation therefore has its own `runId`, distinct purpose, and the
@@ -587,8 +587,9 @@ insertion, snapshot creation/promotion, run finalization, and reconciliation
 promotion as last-ditch race protection. The only bypass is purpose
 `canonical-epoch-recovery`; ordinary `databaseOnly:true` authoring continues,
 including with configured active capacity one. The state remains visible
-until a separately explicit recovery operation verifies a snapshot for that
-canonical epoch; pending retry and abandonment do not clear it.
+permanently as audit history. Its restriction remains unresolved until a
+separate canonical-epoch recovery verifies a snapshot and appends a matching
+resolution; pending reconciliation retry and abandonment do not clear it.
 
 Stable lifecycle failures are `invalid-baseline`,
 `unstable-jira-generation`, `revision-invalidation`, `staging-mismatch`,
@@ -598,6 +599,75 @@ Stable lifecycle failures are `invalid-baseline`,
 grouping impacts, invalidated keys, promotion/journal/fence state, recovery
 failure details, audit fields, and the nullable replacement proof so callers
 do not infer processor state from private tables.
+
+#### Dedicated canonical-epoch recovery
+
+`PreparedTicketCanonicalEpochRecoveryService` owns admission, status,
+startup recovery, and explicit retry. The workflow registry dispatches
+`canonical-epoch-recovery` directly to this service; it does not call
+ordinary authoring finalization, metadata enrichment, or grouping workers.
+The source must have generic status `abandoned`, reconciliation and journal
+state `canonical-unpublished`, a non-empty abandonment audit, the current
+run-backed authoring epoch, and no successful recovery resolution.
+
+One immediate SQLite transaction captures that source coordinate and the
+current accepted receipt-backed corpus, validates complete grouping, freezes
+canonical fingerprints and exact public canonical row values, and creates a
+new run, all-complete maintenance selection, recipe, journal, and processor
+mutation fence. Receipt IDs are carried from their original contributing
+runs; recovery creates no authored receipt or grouping stage. It includes
+valid database-only work accepted since abandonment rather than assuming
+the abandoned run still describes the entire current corpus.
+
+The recipe is append-only. A duplicate start returns the existing running,
+finalizing, or retryable error run. It never resets the recipe, creates a
+second run for the same abandonment, or changes the source's status,
+`canonical-unpublished`, time, or reason. A resolved source returns
+`canonical-epoch-already-recovered` and the successful recovery coordinate.
+
+Recovery uses these durable boundaries:
+
+1. **Materialization pending.** Revalidate the same abandonment/epoch,
+   all-complete selection, held fence, current receipt-backed corpus,
+   complete grouping, and exact canonical values. Reserve a new snapshot ID,
+   sequence, paths, counts, schema version, and creation time. Sanitize a
+   copy into schema v3, write exactly one matching provenance row,
+   checkpoint, integrity/count-check, and only then hash and size the bytes.
+   Recompute the candidate's complete corpus/grouping proof as well.
+2. **Snapshot publish pending.** Persist the exact candidate descriptor and
+   snapshot record together. Before that trust boundary a partial backup
+   can be rebuilt using the reservation. After it, candidate/final files are
+   read-only evidence: never replace provenance, adopt an unjournaled hash,
+   or overwrite a conflicting final file.
+3. **File published, unresolved.** Move the candidate without overwrite, or
+   authenticate an already-published matching final file. A crash here
+   leaves the run/journal pending and the restriction/fence intact.
+4. **Ready.** After exact final-file verification, keep the verified file
+   open read-only and use one shared connection/immediate SQLite transaction
+   to compare the abandoned epoch, frozen recipe/selection/current state,
+   candidate, and snapshot record; append the unique resolution; mark the
+   snapshot ready; mark the journal ready; complete the new run; and release
+   its fence. The resolution makes the matching restriction ineligible.
+   No file move occurs in this transaction.
+
+Startup scans unresolved dedicated journals before generic snapshot cleanup.
+If one still conflicts, generic cleanup is deferred so it cannot delete a
+trusted candidate or mark a recovery snapshot ready outside the resolution
+transaction. A dedicated retry resumes the same run and journal. Failure
+records typed detail and keeps the unresolved restriction, evidence, and
+fence in a retryable run; no automatic compensation or old-publication
+fallback is performed.
+
+The dedicated proof contract is version 1, independent of reconciliation
+contract v2. It records source abandonment, epoch, capture time, corpus,
+complete grouping, and recipe fingerprints. The generic descriptor proof
+has purpose `canonical-epoch-recovery`; its purpose-specific source time and
+revision represent abandonment time and authoring epoch, not newly fetched
+Jira freshness. Publisher readiness requires matching full corpus and
+grouping fingerprints recomputed from the immutable file and the distinct
+recovery/abandoned run pair. The previous verified publication stays intact.
+The API/CLI/Dev UI expose source and recovery links instead of rewriting the
+historical reconciliation into a successful run.
 
 ### Metadata-only Discussion publication refresh
 

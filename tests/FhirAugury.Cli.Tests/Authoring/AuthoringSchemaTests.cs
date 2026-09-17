@@ -44,6 +44,13 @@ public sealed class AuthoringSchemaTests
         Assert.Contains("\"retry-reconciliation\"", authoringSchema);
         Assert.Contains("\"cancel-reconciliation\"", authoringSchema);
         Assert.Contains("\"abandon-reconciliation\"", authoringSchema);
+        Assert.Contains("\"recover-canonical-epoch\"", authoringSchema);
+        Assert.Contains(
+            "\"canonical-epoch-recovery-status\"",
+            authoringSchema);
+        Assert.Contains(
+            "\"retry-canonical-epoch-recovery\"",
+            authoringSchema);
         Assert.Contains("\"sourceRunId\"", authoringSchema);
         Assert.Contains("\"comparison\"", authoringSchema);
         Assert.Contains("\"counts\"", authoringSchema);
@@ -55,6 +62,11 @@ public sealed class AuthoringSchemaTests
         Assert.Contains("cancellation-not-allowed", authoringSchema);
         Assert.Contains("\"cancelledAt\"", authoringSchema);
         Assert.Contains("canonical-unpublished", authoringSchema);
+        Assert.Contains("\"sourceAbandonment\"", authoringSchema);
+        Assert.Contains("\"frozen\"", authoringSchema);
+        Assert.Contains("\"recovery\"", authoringSchema);
+        Assert.Contains("\"existingRun\"", authoringSchema);
+        Assert.Contains("canonical-state-changed", authoringSchema);
         Assert.Contains("metadata-only", authoringSchema);
         Assert.Contains("source run identifier", authoringSchema);
         Assert.Contains("outcome-unknown", authoringSchema);
@@ -76,6 +88,11 @@ public sealed class AuthoringSchemaTests
                     "planned-ticket-authoring")));
         Assert.DoesNotContain(
             "\"cancel-reconciliation\"",
+            System.Text.Json.JsonSerializer.Serialize(
+                SchemaGenerator.GenerateForCommand(
+                    "planned-ticket-authoring")));
+        Assert.DoesNotContain(
+            "\"recover-canonical-epoch\"",
             System.Text.Json.JsonSerializer.Serialize(
                 SchemaGenerator.GenerateForCommand(
                     "planned-ticket-authoring")));

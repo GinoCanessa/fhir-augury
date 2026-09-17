@@ -170,6 +170,39 @@ public class ProcessingHttpClient
             request,
             ct);
 
+    public Task<ProcessingProxyResponse> StartCanonicalEpochRecoveryAsync(
+        string name,
+        string sourceRunId,
+        CancellationToken ct) =>
+        ForwardAsync(
+            name,
+            HttpMethod.Post,
+            $"{GetAuthoringPath(name)}/{Uri.EscapeDataString(sourceRunId)}/canonical-epoch-recovery",
+            body: null,
+            ct);
+
+    public Task<ProcessingProxyResponse> GetCanonicalEpochRecoveryAsync(
+        string name,
+        string runId,
+        CancellationToken ct) =>
+        ForwardAsync(
+            name,
+            HttpMethod.Get,
+            $"{GetAuthoringPath(name)}/{Uri.EscapeDataString(runId)}/canonical-epoch-recovery",
+            body: null,
+            ct);
+
+    public Task<ProcessingProxyResponse> RetryCanonicalEpochRecoveryAsync(
+        string name,
+        string runId,
+        CancellationToken ct) =>
+        ForwardAsync(
+            name,
+            HttpMethod.Post,
+            $"{GetAuthoringPath(name)}/{Uri.EscapeDataString(runId)}/canonical-epoch-recovery/retry",
+            body: null,
+            ct);
+
     public Task<ProcessingProxyResponse> GetAuthoringRunAsync(
         string name,
         string runId,

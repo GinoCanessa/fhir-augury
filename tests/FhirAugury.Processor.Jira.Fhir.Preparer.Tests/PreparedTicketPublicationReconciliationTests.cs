@@ -28,6 +28,94 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Tests;
 public sealed class PreparedTicketPublicationReconciliationTests
 {
     [Fact]
+    public void CanonicalEpochRecoveryFingerprint_IsCanonicalAndOrderIndependent()
+    {
+        DateTimeOffset abandonedAt =
+            new(2026, 9, 17, 14, 0, 0, TimeSpan.Zero);
+        PreparedTicketPublicationCorpusItem[] corpus =
+        [
+            new("FHIR-2", new string('b', 64), "item-2", "run-2", "fhir", "revision-2"),
+            new("FHIR-1", new string('a', 64), "item-1", "run-1", "fhir", "revision-1"),
+        ];
+        PreparedTicketPublicationGroupingPartition[] grouping =
+        [
+            new("wg\u001fFHIR\u001fQuestion", new string('d', 64)),
+            new("wg\u001fFHIR\u001fChange Request", new string('c', 64)),
+        ];
+
+        string forward = PreparedTicketPublicationContract
+            .ComputeCanonicalEpochRecoveryFingerprint(
+                "abandoned-run",
+                7,
+                abandonedAt,
+                corpus,
+                grouping);
+        string reversed = PreparedTicketPublicationContract
+            .ComputeCanonicalEpochRecoveryFingerprint(
+                "abandoned-run",
+                7,
+                abandonedAt,
+                corpus.Reverse(),
+                grouping.Reverse());
+
+        Assert.Equal(forward, reversed);
+        Assert.Equal(64, forward.Length);
+        Assert.All(
+            forward,
+            character => Assert.True(
+                character is >= '0' and <= '9' or >= 'a' and <= 'f'));
+    }
+
+    [Fact]
+    public void CanonicalEpochRecoveryFingerprint_BindsAbandonmentAndCompleteCorpusGrouping()
+    {
+        DateTimeOffset abandonedAt = new(2026, 9, 17, 14, 0, 0, TimeSpan.Zero);
+        PreparedTicketPublicationCorpusItem[] corpus =
+            [new("FHIR-1", Hash('a'), "item", "source", "fhir", "revision")];
+        PreparedTicketPublicationGroupingPartition[] grouping =
+            [new("wg\u001fFHIR\u001fQuestion", Hash('b'))];
+        string fingerprint = PreparedTicketPublicationContract.ComputeCanonicalEpochRecoveryFingerprint(
+            "abandoned", 7, abandonedAt, corpus, grouping);
+        Assert.NotEqual(fingerprint, PreparedTicketPublicationContract.ComputeCanonicalEpochRecoveryFingerprint(
+            "different-source", 7, abandonedAt, corpus, grouping));
+        Assert.NotEqual(fingerprint, PreparedTicketPublicationContract.ComputeCanonicalEpochRecoveryFingerprint(
+            "abandoned", 8, abandonedAt, corpus, grouping));
+        Assert.NotEqual(fingerprint, PreparedTicketPublicationContract.ComputeCanonicalEpochRecoveryFingerprint(
+            "abandoned", 7, abandonedAt.AddSeconds(1), corpus, grouping));
+        Assert.NotEqual(fingerprint, PreparedTicketPublicationContract.ComputeCanonicalEpochRecoveryFingerprint(
+            "abandoned", 7, abandonedAt, [corpus[0] with { ReceiptId = Hash('c') }], grouping));
+        Assert.NotEqual(fingerprint, PreparedTicketPublicationContract.ComputeCanonicalEpochRecoveryFingerprint(
+            "abandoned", 7, abandonedAt, corpus, [grouping[0] with { OutputFingerprint = Hash('d') }]));
+        Assert.Throws<ArgumentException>(() =>
+            PreparedTicketPublicationContract.ComputeCanonicalEpochRecoveryFingerprint(
+                "abandoned", 7, abandonedAt.ToOffset(TimeSpan.FromHours(1)), corpus, grouping));
+        Assert.Equal(1, PreparedTicketCanonicalEpochRecoveryContract.CurrentVersion);
+        Assert.NotEqual(
+            PreparedTicketPublicationReconciliationContract.Purpose,
+            PreparedTicketCanonicalEpochRecoveryContract.Purpose);
+    }
+
+    [Fact]
+    public void CanonicalEpochRecoveryFailureAndJournalValuesRemainDedicated()
+    {
+        foreach (string failure in new[]
+        {
+            "invalid-source-reconciliation", "source-not-abandoned",
+            "canonical-epoch-already-recovered", "stale-canonical-epoch",
+            "canonical-state-changed", "recovery-in-progress",
+            "snapshot-recovery-failure", "recovery-evidence-conflict", "run-not-retryable",
+        })
+        {
+            Assert.True(PreparedTicketCanonicalEpochRecoveryFailureCodes.IsKnown(failure));
+        }
+        Assert.False(PreparedTicketCanonicalEpochRecoveryFailureCodes.IsKnown("promotion-recovery-failure"));
+        Assert.True(PreparedTicketCanonicalEpochRecoveryStateValues.IsValid("materialization-pending"));
+        Assert.True(PreparedTicketCanonicalEpochRecoveryStateValues.IsValid("snapshot-publish-pending"));
+        Assert.True(PreparedTicketCanonicalEpochRecoveryStateValues.IsValid("ready"));
+        Assert.False(PreparedTicketCanonicalEpochRecoveryStateValues.IsValid("canonical-unpublished"));
+    }
+
+    [Fact]
     public async Task PlannerDiscoversCompleteMixedSetAndRejectsDuplicateStart()
     {
         using Fixture fixture = new();

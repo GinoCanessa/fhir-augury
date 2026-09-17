@@ -300,6 +300,195 @@ public sealed class AuthoringControlClientTests
     }
 
     [Fact]
+    public async Task CanonicalEpochRecoveryUsesTypedOrchestratorRoutes()
+    {
+        List<string> targets = [];
+        DelegateHttpHandler handler = new((request, _, _) =>
+        {
+            targets.Add(
+                $"{request.Method} {request.RequestUri!.PathAndQuery}");
+            Assert.Null(request.Content);
+            CanonicalEpochRecoveryStatusResult status =
+                CanonicalEpochRecoveryStatus();
+            if (request.RequestUri.AbsolutePath.EndsWith(
+                    "/retry",
+                    StringComparison.Ordinal))
+            {
+                return Task.FromResult(DelegateHttpHandler.Json(
+                    new CanonicalEpochRecoveryRetryResult(
+                        status,
+                        RecoveryStarted: true)));
+            }
+            if (request.Method == HttpMethod.Post)
+            {
+                return Task.FromResult(DelegateHttpHandler.Json(
+                    new CanonicalEpochRecoveryStartResult(
+                        status,
+                        ExistingRun: false),
+                    HttpStatusCode.Accepted));
+            }
+            return Task.FromResult(DelegateHttpHandler.Json(status));
+        });
+        AuthoringControlClient client =
+            AuthoringClientTestData.CreateClient(handler);
+
+        CanonicalEpochRecoveryStartResult started =
+            await client.StartCanonicalEpochRecoveryAsync(
+                "preparer",
+                "abandoned-run",
+                CancellationToken.None);
+        CanonicalEpochRecoveryStatusResult status =
+            await client.GetCanonicalEpochRecoveryAsync(
+                "Preparer",
+                "recovery-run",
+                CancellationToken.None);
+        CanonicalEpochRecoveryRetryResult retried =
+            await client.RetryCanonicalEpochRecoveryAsync(
+                "Preparer",
+                "recovery-run",
+                CancellationToken.None);
+
+        Assert.False(started.ExistingRun);
+        Assert.Equal("abandoned-run", status.SourceAbandonment.RunId);
+        Assert.True(retried.RecoveryStarted);
+        Assert.Equal(
+            [
+                "POST /api/v1/processing-services/Preparer/authoring/runs/abandoned-run/canonical-epoch-recovery",
+                "GET /api/v1/processing-services/Preparer/authoring/runs/recovery-run/canonical-epoch-recovery",
+                "POST /api/v1/processing-services/Preparer/authoring/runs/recovery-run/canonical-epoch-recovery/retry",
+            ],
+            targets);
+    }
+
+    [Fact]
+    public async Task CanonicalEpochRecoveryConflictRetainsTypedFailure()
+    {
+        DelegateHttpHandler handler = new((_, _, _) =>
+        {
+            HttpResponseMessage response = DelegateHttpHandler.Json(
+                new AuthoringConflictResponse(
+                    "canonical-state-changed",
+                    "The frozen canonical grouping changed.",
+                    ["abandoned-run", "recovery-run"],
+                    "recovery-run"),
+                HttpStatusCode.Conflict);
+            response.Headers.RetryAfter =
+                new RetryConditionHeaderValue(TimeSpan.FromSeconds(23));
+            return Task.FromResult(response);
+        });
+        AuthoringControlClient client =
+            AuthoringClientTestData.CreateClient(handler);
+
+        AuthoringControlException error =
+            await Assert.ThrowsAsync<AuthoringControlException>(
+                () => client.RetryCanonicalEpochRecoveryAsync(
+                    "Preparer",
+                    "recovery-run",
+                    CancellationToken.None));
+
+        Assert.Equal("canonical-state-changed", error.ErrorCode);
+        Assert.Equal(
+            ["abandoned-run", "recovery-run"],
+            error.RelatedRunIds);
+        Assert.Equal(TimeSpan.FromSeconds(23), error.RetryAfter);
+        Assert.EndsWith(
+            "/canonical-epoch-recovery/retry",
+            error.Endpoint,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CanonicalEpochRecoveryRejectsWorkerPendingItems()
+    {
+        CanonicalEpochRecoveryStatusResult status =
+            CanonicalEpochRecoveryStatus();
+        status = status with
+        {
+            Items =
+            [
+                status.Items[0] with
+                {
+                    Status = "pending",
+                    AcceptedReceiptId = null,
+                },
+            ],
+        };
+        DelegateHttpHandler handler = new((_, _, _) =>
+            Task.FromResult(DelegateHttpHandler.Json(status)));
+        AuthoringControlClient client =
+            AuthoringClientTestData.CreateClient(handler);
+
+        InvalidOperationException error =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => client.GetCanonicalEpochRecoveryAsync(
+                    "Preparer",
+                    "recovery-run",
+                    CancellationToken.None));
+
+        Assert.Contains(
+            "inconsistent coordinates",
+            error.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("valid")]
+    [InlineData("proof-version")]
+    [InlineData("snapshot-run")]
+    [InlineData("snapshot-grouping")]
+    [InlineData("pending-fence")]
+    public async Task CanonicalEpochRecoveryRequiresConsistentReadyProofOrPendingFence(string mutation)
+    {
+        CanonicalEpochRecoveryStatusResult pending = CanonicalEpochRecoveryStatus();
+        CanonicalEpochRecoveryProof proof = new(
+            1, "canonical-epoch-recovery", pending.Run.RunId, pending.SourceAbandonment.RunId,
+            pending.Run.AuthoringEpoch, pending.SourceAbandonment.AbandonedAt,
+            pending.Frozen.CorpusFingerprint, pending.Frozen.GroupingFingerprint,
+            pending.Frozen.RecipeFingerprint, pending.Frozen.CapturedAt);
+        AuthoringSnapshotDescriptor snapshot = new(
+            "jira-fhir", pending.Run.RunId, "snapshot-1", pending.Run.AuthoringEpoch,
+            2, 3, new string('d', 64), 512, 1, 1, new Dictionary<string, long>(),
+            "recovery.db", AuthoringClientTestData.Timestamp,
+            new(1, "canonical-epoch-recovery", pending.SourceAbandonment.RunId, "jira",
+                proof.AbandonedAt, proof.AuthoringEpoch, 0,
+                proof.CorpusFingerprint, proof.GroupingFingerprint, proof.CapturedAt));
+        CanonicalEpochRecoveryStatusResult ready = pending with
+        {
+            Run = pending.Run with { Status = "completed", State = new(true, false) },
+            Recovery = new("ready", false),
+            PublicationProof = proof,
+            Snapshot = snapshot,
+        };
+        CanonicalEpochRecoveryStatusResult response = mutation switch
+        {
+            "proof-version" => ready with { PublicationProof = proof with { ContractVersion = 99 } },
+            "snapshot-run" => ready with { Snapshot = snapshot with { RunId = "different-run" } },
+            "snapshot-grouping" => ready with
+            {
+                Snapshot = snapshot with
+                {
+                    PublicationProof = snapshot.PublicationProof! with { GroupingFingerprint = new string('e', 64) },
+                },
+            },
+            "pending-fence" => pending with { Recovery = pending.Recovery with { MutationFenceHeld = false } },
+            _ => ready,
+        };
+        DelegateHttpHandler handler = new((_, _, _) =>
+            Task.FromResult(DelegateHttpHandler.Json(response)));
+        AuthoringControlClient client = AuthoringClientTestData.CreateClient(handler);
+        if (mutation == "valid")
+        {
+            Assert.Equal("snapshot-1", (await client.GetCanonicalEpochRecoveryAsync(
+                "Preparer", "recovery-run", CancellationToken.None)).Snapshot?.SnapshotId);
+        }
+        else
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                client.GetCanonicalEpochRecoveryAsync("Preparer", "recovery-run", CancellationToken.None));
+        }
+    }
+
+    [Fact]
     public async Task PublicationReconciliationCancellationConflictRetainsTypedFailure()
     {
         DelegateHttpHandler handler = new((request, _, _) =>
@@ -854,6 +1043,47 @@ public sealed class AuthoringControlClientTests
                 "database-promoted",
                 true),
             []);
+    }
+
+    private static CanonicalEpochRecoveryStatusResult
+        CanonicalEpochRecoveryStatus()
+    {
+        AuthoringRunResponse response =
+            AuthoringClientTestData.RunResponse("recovery-run");
+        AuthoringRunStatus run = response.Run with
+        {
+            Status = "finalizing",
+            CompletedItems = 1,
+            Purpose = "canonical-epoch-recovery",
+            SourceRunId = "abandoned-run",
+        };
+        AuthoringRunItemStatus item = response.Items[0] with
+        {
+            RunId = run.RunId,
+            Status = "complete",
+            AcceptedReceiptId = "receipt-1",
+            CompletedAt = AuthoringClientTestData.Timestamp,
+        };
+        return new(
+            run,
+            [item],
+            new(
+                "abandoned-run",
+                run.AuthoringEpoch,
+                "canonical-unpublished",
+                AuthoringClientTestData.Timestamp,
+                "snapshot publication could not be completed"),
+            new(
+                1,
+                1,
+                new string('a', 64),
+                new string('b', 64),
+                new string('c', 64),
+                AuthoringClientTestData.Timestamp),
+            new(
+                "snapshot-publish-pending",
+                MutationFenceHeld: true,
+                AuthoringClientTestData.Timestamp));
     }
 
     private sealed class InterruptedReadStream : Stream

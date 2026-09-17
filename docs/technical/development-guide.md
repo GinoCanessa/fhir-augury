@@ -384,6 +384,52 @@ boundaries when changing it:
   `409 canonical-unpublished-restriction` envelope as proactive rejection.
   Preserve abandoned/recovery run coordinates through Orchestrator, typed
   client, CLI, and Dev UI error projections.
+- **Dedicated canonical recovery:** only an unresolved terminal
+  `abandoned`/`canonical-unpublished` reconciliation in the current active
+  authoring epoch may admit `canonical-epoch-recovery`. Create a distinct
+  run linked through `SourceRunId`, with all items complete and their
+  existing accepted receipts. Freeze current corpus, full grouping, exact
+  canonical row values, source abandonment, recipe, journal, and fence in
+  one immediate transaction. Do not launch authoring/grouping workers,
+  reuse the abandoned run, or assume no database-only output has been
+  accepted since abandonment. Duplicate start returns the same active or
+  retryable run.
+- **Exact-current recovery evidence:** revalidate epoch, abandonment,
+  selection, fence, receipt-backed corpus, grouping, and exact canonical
+  values before materialization and final CAS. Keep canonical output and
+  the old publication unchanged. Recovery's dedicated v1 proof and full
+  grouping serialization are independent of reconciliation contract v2;
+  never reinterpret an impact digest as full grouping output.
+- **Provenance-before-hash recovery:** reserve snapshot coordinates, then
+  copy/sanitize schema v3, write exactly one provenance row, checkpoint,
+  integrity/count-check, and hash the resulting bytes. Recompute the
+  candidate's full corpus/grouping fingerprints. An interrupted untrusted
+  copy can be rebuilt using its reservation; a trusted candidate cannot.
+  Journal its post-provenance hash/size/coordinates and snapshot record
+  together before moving the file without overwrite. On retry neither
+  candidate nor final file is opened for mutation.
+- **One fenced resolution CAS:** after verifying the final file, hold its
+  bytes read-only through one shared-connection SQLite transaction.
+  Revalidate journal, snapshot record, recipe, complete selection, current
+  state, source epoch, and fence; append the resolution; mark snapshot and
+  journal ready; complete the recovery run; and release the fence. The
+  resolution anti-join releases only the matching restriction. Never
+  rewrite abandonment status/time/reason or complete/clear restrictions
+  before this transaction. Filesystem publication remains a separate
+  journaled boundary, not a physical SQLite/filesystem atomic operation.
+- **Same-run startup and retry:** resume unresolved recovery journals before
+  generic snapshot cleanup. If a dedicated recovery still conflicts,
+  defer generic cleanup rather than deleting its evidence or independently
+  advancing its snapshot to ready. A crash after the file move but before
+  CAS must converge on the same verified bytes and resolution. Missing,
+  corrupt, or contradictory evidence retains the restriction, retryable
+  run, and fence; no automatic fallback to the old publication is allowed.
+- **Recovery public surfaces:** preserve typed failure codes and related
+  source/recovery coordinates. The historical run keeps its audit and links
+  to recovery; the recovery links back and exposes its verified snapshot.
+  Publisher readiness must recompute and compare the entire immutable
+  corpus and grouping proof, not merely trust the purpose marker or digest
+  shape. Recovery verifies canonical state, not a new Jira observation.
 
 Credential-free end-to-end tests should create their SQLite corpus and
 immutable snapshots at runtime. Cover multiple revised tickets, a changed
@@ -391,6 +437,14 @@ shared container and order, a partition move, exact unaffected ticket/receipt/
 grouping bytes or fingerprints, each durable promotion boundary, idempotent
 restart, and abandonment eligibility. Do not check in `.db` fixtures or
 require Jira credentials.
+
+For canonical-epoch recovery, also cover invalid/duplicate admission,
+all-complete selections without workers, append-only history, stale epochs,
+changed hydration/grouping/receipts, unhashed reservations, modified
+post-provenance bytes, missing snapshot records, failure at the final shared
+CAS, a published file before restart, explicit same-run retry, publisher
+fingerprint/row tampering, and UI controls/links. Keep fixture-generated
+databases and publications isolated from live caches and services.
 
 ### Error Handling
 

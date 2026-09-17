@@ -239,6 +239,38 @@ public class ProcessingControllerTests
     }
 
     [Fact]
+    public async Task CanonicalEpochRecovery_PreservesLifecycleBodiesAndHeaders()
+    {
+        ProcessingController controller = CreateController(enabled: true);
+
+        ContentResult started = Assert.IsType<ContentResult>(
+            await controller.StartCanonicalEpochRecovery(
+                "Planner",
+                "abandoned-run",
+                CancellationToken.None));
+        ContentResult status = Assert.IsType<ContentResult>(
+            await controller.GetCanonicalEpochRecovery(
+                "Planner",
+                "recovery-run",
+                CancellationToken.None));
+        ContentResult retry = Assert.IsType<ContentResult>(
+            await controller.RetryCanonicalEpochRecovery(
+                "Planner",
+                "recovery-run",
+                CancellationToken.None));
+
+        Assert.Equal(StatusCodes.Status202Accepted, started.StatusCode);
+        Assert.Equal(
+            "/api/v1/processing-services/Planner/authoring/runs/recovery-run/canonical-epoch-recovery",
+            controller.Response.Headers.Location.ToString());
+        Assert.Contains("abandoned-run", started.Content);
+        Assert.Contains("snapshot-publish-pending", status.Content);
+        Assert.Equal(StatusCodes.Status409Conflict, retry.StatusCode);
+        Assert.Contains("canonical-state-changed", retry.Content);
+        Assert.Equal("23", controller.Response.Headers.RetryAfter.ToString());
+    }
+
+    [Fact]
     public async Task SnapshotBytes_PreservesNotModifiedWithoutWritingBody()
     {
         ProcessingController controller = CreateController(
@@ -364,6 +396,12 @@ public class ProcessingControllerTests
                     """{"error":"cancellation-not-allowed","detail":"Canonical promotion already started.","conflictingRunIds":[],"runId":"reconciliation-run"}""",
                 "/processing/authoring/runs/reconciliation-run/publication-reconciliation/abandon" =>
                     ReconciliationAbandonEnvelope,
+                "/processing/authoring/runs/abandoned-run/canonical-epoch-recovery" =>
+                    """{"status":{"run":{"runId":"recovery-run","purpose":"canonical-epoch-recovery","sourceRunId":"abandoned-run"},"sourceAbandonment":{"runId":"abandoned-run"},"recovery":{"state":"materialization-pending"}},"existingRun":false}""",
+                "/processing/authoring/runs/recovery-run/canonical-epoch-recovery" =>
+                    """{"run":{"runId":"recovery-run","purpose":"canonical-epoch-recovery","sourceRunId":"abandoned-run"},"sourceAbandonment":{"runId":"abandoned-run"},"recovery":{"state":"snapshot-publish-pending"}}""",
+                "/processing/authoring/runs/recovery-run/canonical-epoch-recovery/retry" =>
+                    """{"error":"canonical-state-changed","detail":"The frozen canonical grouping changed.","conflictingRunIds":["abandoned-run","recovery-run"],"runId":"recovery-run"}""",
                 "/processing/authoring/runs/run-1/items/item-1/retry" =>
                     """{"itemId":"item-1","requiresAuthoring":true}""",
                 "/processing/authoring/runs/run-1/items/item-1/supersede" =>
@@ -383,6 +421,12 @@ public class ProcessingControllerTests
                     ? HttpStatusCode.Conflict
                 : path == "/processing/authoring/runs/source-run/publication-reconciliation"
                     ? HttpStatusCode.Accepted
+                : path == "/processing/authoring/runs/abandoned-run/canonical-epoch-recovery"
+                    ? HttpStatusCode.Accepted
+                : path.EndsWith(
+                    "/canonical-epoch-recovery/retry",
+                    StringComparison.Ordinal)
+                    ? HttpStatusCode.Conflict
                 : path.EndsWith(
                     "/publication-reconciliation/retry",
                     StringComparison.Ordinal)
@@ -447,7 +491,21 @@ public class ProcessingControllerTests
                     "/processing/authoring/runs/reconciliation-run/publication-reconciliation",
                     UriKind.Relative);
             }
+            if (path == "/processing/authoring/runs/abandoned-run/canonical-epoch-recovery")
+            {
+                response.Headers.Location = new Uri(
+                    "/processing/authoring/runs/recovery-run/canonical-epoch-recovery",
+                    UriKind.Relative);
+            }
             if (path.EndsWith(
+                "/canonical-epoch-recovery/retry",
+                StringComparison.Ordinal))
+            {
+                response.Headers.RetryAfter =
+                    new RetryConditionHeaderValue(
+                        TimeSpan.FromSeconds(23));
+            }
+            else if (path.EndsWith(
                 "/publication-reconciliation/retry",
                 StringComparison.Ordinal))
             {

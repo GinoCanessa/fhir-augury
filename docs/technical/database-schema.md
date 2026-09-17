@@ -830,8 +830,8 @@ Run purpose and repair lineage are additive live-state fields:
 
 | Table | Column | Type | Description |
 |-------|--------|------|-------------|
-| `authoring_runs` | `Purpose` | TEXT NOT NULL | `authoring` by default; also `initial-revalidation`, `grouping-maintenance`, `publication-refresh`, `publication-reconciliation`, or reserved `canonical-epoch-recovery` |
-| `authoring_runs` | `SourceRunId` | TEXT? | Earlier run selected as maintenance lineage; required for publication refresh and reconciliation |
+| `authoring_runs` | `Purpose` | TEXT NOT NULL | `authoring` by default; also `initial-revalidation`, `grouping-maintenance`, `publication-refresh`, `publication-reconciliation`, or `canonical-epoch-recovery` |
+| `authoring_runs` | `SourceRunId` | TEXT? | Earlier run selected as maintenance lineage; required for publication refresh, reconciliation, and canonical-epoch recovery |
 | `authoring_review_snapshots` | `PublicationProofJson` | TEXT? | Canonical serialized publication proof retained with snapshot lifecycle state and recovery |
 
 Startup adds the missing columns without replacing the live table or any
@@ -857,14 +857,14 @@ The immutable JSON snapshot descriptor exposes the optional
 | Field | Meaning |
 |-------|---------|
 | `contractVersion` | Canonical Preparer publication-proof contract version |
-| `purpose` | Exact value `publication-refresh` or `publication-reconciliation` |
-| `sourceRunId` | Operator-selected completed source run |
+| `purpose` | Exact value `publication-refresh`, `publication-reconciliation`, or `canonical-epoch-recovery` |
+| `sourceRunId` | Refresh/reconciliation: operator-selected completed source run; recovery: terminal abandoned reconciliation |
 | `sourceName` | Exact source value `jira` |
-| `sourceLastSuccessfulRefreshAt` | Refresh: frozen canonical UTC upstream-success watermark; reconciliation: proof capture coordinate |
-| `sourceContentRevision` | One stable Jira content generation shared by the refreshed/reconciled corpus |
-| `publicDisplayNamePolicyVersion` | Refresh: current public people-policy version; reconciliation: `0` because changed-ticket proof uses its dedicated contract fields |
-| `corpusFingerprint` | Refresh: accepted receipt/item/source-revision membership; reconciliation: carried-plus-staged overlay corpus |
-| `groupingFingerprint` | Refresh: retained grouping output; reconciliation: complete grouping-impact fingerprint |
+| `sourceLastSuccessfulRefreshAt` | Refresh: frozen canonical UTC upstream-success watermark; reconciliation: proof capture coordinate; recovery: source abandonment time |
+| `sourceContentRevision` | Refresh/reconciliation: stable Jira content generation; recovery: authoring epoch, not a Jira freshness claim |
+| `publicDisplayNamePolicyVersion` | Refresh: current public people-policy version; reconciliation/recovery: `0` for the dedicated purpose-specific proof |
+| `corpusFingerprint` | Refresh/recovery: complete accepted receipt/item/source-revision membership; reconciliation: carried-plus-staged overlay corpus |
+| `groupingFingerprint` | Refresh/recovery: complete canonical grouping output; reconciliation v2: complete grouping-impact fingerprint |
 | `capturedAt` | Canonical UTC time after all proof-bearing stages completed |
 
 `PublicationProofJson` lets snapshot promotion/reconciliation restore the same
@@ -1123,7 +1123,8 @@ row, journal, reason, and time as the canonical-unpublished audit.
 
 Snapshot production is defined by the durable row, not a purpose allowlist:
 every `authoring_runs.DatabaseOnly = 0` row is snapshot-producing. While any
-reconciliation remains `canonical-unpublished`, the sole bypass is
+reconciliation remains `canonical-unpublished` without a resolution matching
+its source run ID and authoring epoch, the sole bypass is
 `Purpose = 'canonical-epoch-recovery'`; database-only rows remain allowed.
 `prevent_snapshot_after_unpublished_canonical` guards run insertion.
 Companion triggers guard mutation-fence insertion, snapshot-row insertion,
@@ -1136,6 +1137,60 @@ and finalization/promotion. A pre-existing `error` or `finalizing` row already
 audited as canonical-unpublished is migrated to `abandoned` at schema
 initialization. The restriction remains durable until a separately explicit
 operation verifies a snapshot for that canonical epoch.
+
+### Preparer canonical-epoch recovery live state
+
+These three additive private tables are created without changing any existing
+publication or the schema-v3 public snapshot catalog:
+
+| Table | Unique coordinates | Durable content |
+|---|---|---|
+| `prepared_ticket_canonical_epoch_recoveries` | `RunId`, `SourceRunId` | Append-only source abandonment/current epoch recipe; corpus, complete grouping, and recipe fingerprints; capture time |
+| `prepared_ticket_canonical_epoch_recovery_journal` | `RunId` | Mutable state, typed reservation or trusted candidate `SnapshotDescriptorJson`, last attempt, failure code/detail, update time |
+| `prepared_ticket_canonical_epoch_recovery_resolutions` | `RunId`, `SourceRunId`, `SnapshotId` | Append-only successful link, authoring epoch, snapshot SHA-256, corpus/grouping fingerprints, dedicated proof JSON, resolution time |
+
+Admission is one fenced immediate transaction on one connection. The new
+`authoring_runs` row has `DatabaseOnly = 0`, purpose
+`canonical-epoch-recovery`, and `SourceRunId` pointing at the abandoned
+reconciliation. Every selected item is `complete` with its existing
+`AcceptedReceiptId`; a run-specific `recovery:<runId>:<itemKind>` kind keeps
+maintenance selections distinct from authored revision coordinates. There
+are no new authoring operations, receipts, or grouping stages.
+
+`RecipeJson` (also retained as run `RequestJson`) freezes the full current
+receipt coordinate set, complete grouping partitions/fingerprints, source
+abandonment time/reason, epoch, and capture time. Its
+`CanonicalRowsFingerprint` additionally protects exact public canonical row
+values, including hydration and grouping IDs/order, against drift between
+admission and final CAS. The public corpus fingerprint remains the canonical
+six-field receipt-coordinate serialization. Grouping uses the shared full
+partition-output serialization, not reconciliation's impact-only digest.
+
+The journal starts at `materialization-pending`. Its reservation freezes the
+snapshot ID, sequence, processor/run, epoch, schema, item/receipt counts,
+temporary/final paths, and creation time before provenance is written.
+After sanitization, provenance, checkpointing, integrity/count validation,
+and hashing, one transaction stores the trusted candidate descriptor and a
+`creating` snapshot row and changes the journal to `snapshot-publish-pending`.
+The descriptor's digest is of the exact post-provenance bytes.
+
+The final file can exist while the snapshot row is still `creating`.
+Only exact final-file verification plus one shared-SQLite compare-and-swap
+may insert a resolution, mark the snapshot/journal ready, complete the
+recovery run, and delete its processor fence. Transaction-aware
+`AuthoringRunStore.MarkSnapshotReadyAsync` and `CompleteRunAsync` use the
+caller's connection/transaction; no independently opened write connection
+or file move participates. A rollback leaves all these transitions pending.
+Startup/retry authenticate the same reserved/journaled coordinates, not a
+new snapshot or run.
+
+Eligibility queries and integrity triggers anti-join the resolution table
+on abandoned `RunId` and `AuthoringEpoch`. Thus resolution releases only
+that restriction without ever modifying the source's `abandoned` status,
+`canonical-unpublished` promotion/journal state, abandonment timestamp, or
+reason. The recovery recipe and resolution are never updated or deleted by
+recovery APIs. On conflict the journal retains failure detail and the
+unresolved run/fence; successful resolution is the sole release boundary.
 
 ### Preparer publication-refresh live state
 

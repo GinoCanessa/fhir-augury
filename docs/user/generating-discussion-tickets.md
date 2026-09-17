@@ -462,7 +462,7 @@ The restricted/allowed workflow matrix is:
 | Snapshot run queued before abandonment | Terminally refused before mutation-fence acquisition |
 | Candidate creation or finalization/promotion for any non-database-only run | Refused with the same restriction |
 | Ordinary `databaseOnly:true` work | Allowed, including at active capacity one after abandonment |
-| `canonical-epoch-recovery` | Sole reserved snapshot-producing bypass |
+| `canonical-epoch-recovery` | Sole dedicated snapshot-producing bypass |
 
 The Preparer enforces this at admission, queued fence acquisition, candidate
 creation, and immediately before finalization/promotion; SQLite triggers are
@@ -471,6 +471,60 @@ linked recovery run as operator navigation coordinates. The restriction
 remains until the separate explicit recovery creates and verifies a snapshot
 for that canonical epoch; neither abandonment nor an ordinary retry counts as
 publication.
+
+### Recover the current canonical epoch
+
+Open the historical abandoned reconciliation in the Dev UI and choose
+**Start canonical-epoch recovery**. If it already has an active, retryable,
+or successful recovery, use **Open canonical-epoch recovery** instead.
+The source must still be terminal `abandoned`/`canonical-unpublished`,
+belong to the current authoring epoch, and have no successful resolution.
+This action does not restart reconciliation or reinterpret the old
+publication as current.
+
+The Preparer creates a distinct snapshot-producing maintenance run linked
+through `sourceRunId`. Under its mutation fence it freezes all current
+accepted receipt-backed tickets and complete grouping, including any
+database-only output accepted since abandonment. Every selected item starts
+complete; no authoring or grouping worker is dispatched and canonical rows
+are not rewritten.
+
+The new run shows its source abandonment, reason/time, epoch, ticket and
+partition counts, corpus/grouping fingerprints, and journal/fence state:
+
+| Recovery state | Operator meaning |
+|---|---|
+| `materialization-pending` | The frozen current state is being verified and copied to a new schema-v3 snapshot. An interrupted untrusted backup may be rebuilt at its reserved coordinates. |
+| `snapshot-publish-pending` | The post-provenance digest, size, counts, snapshot ID/sequence, and paths are journaled. The file may already be at the final path, but restriction and fence remain until the final resolution transaction. |
+| `ready` | Exact final bytes and current canonical evidence matched; one shared SQLite transaction appended the resolution, marked the snapshot ready, completed the recovery, and released the fence/restriction. |
+
+If an attempt fails, read its stable failure code and repair the underlying
+problem before choosing **Retry canonical-epoch recovery**. Startup recovery
+and explicit retry resume the **same run and journal**. A changed epoch,
+canonical corpus/grouping, missing or conflicting snapshot record, modified
+candidate, or conflicting final file cannot be treated as success. Recovery
+does not overwrite conflicting evidence, fall back to the prior publication,
+clear the restriction on error, or rewrite the abandoned audit.
+
+The common crash boundary is a final file published before the SQLite CAS:
+after restart the file must still match its exact journaled post-provenance
+hash and coordinates before the restriction can be lifted. File publication
+and SQLite completion are separately durable, not physically atomic.
+
+After `ready`, follow the **Verified snapshot** link on the recovery run,
+then generate its run-scoped review site. The publisher checks the dedicated
+`canonical-epoch-recovery` proof against the immutable snapshot's entire
+receipt-backed corpus and grouping. Recovery certifies current canonical
+state; it does not fetch a new Jira generation or author newer Jira changes.
+The historical page continues to show `abandoned`/`canonical-unpublished`
+and its original reason/time, but links to the successful recovery and
+snapshot instead of claiming the restriction remains unresolved. The prior
+verified descriptor/database pair and generated site remain unchanged.
+
+Headless equivalents are `recover-canonical-epoch` with the abandoned
+`sourceRunId`, then `canonical-epoch-recovery-status` and
+`retry-canonical-epoch-recovery` with the new `runId`; see the
+[CLI reference](cli-reference.md).
 
 ## Repair publication metadata only
 

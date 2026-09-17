@@ -232,6 +232,60 @@ public class ProcessingController(
                 ct));
     }
 
+    [HttpPost("{name}/authoring/runs/{sourceRunId}/canonical-epoch-recovery")]
+    public async Task<IActionResult> StartCanonicalEpochRecovery(
+        string name,
+        string sourceRunId,
+        CancellationToken ct)
+    {
+        if (!processingHttpClient.IsProcessingServiceEnabled(name))
+        {
+            return NotFound(new { error = $"Processing service '{name}' is not configured or disabled." });
+        }
+
+        return ToActionResult(
+            await processingHttpClient.StartCanonicalEpochRecoveryAsync(
+                name,
+                sourceRunId,
+                ct));
+    }
+
+    [HttpGet("{name}/authoring/runs/{runId}/canonical-epoch-recovery")]
+    public async Task<IActionResult> GetCanonicalEpochRecovery(
+        string name,
+        string runId,
+        CancellationToken ct)
+    {
+        if (!processingHttpClient.IsProcessingServiceEnabled(name))
+        {
+            return NotFound(new { error = $"Processing service '{name}' is not configured or disabled." });
+        }
+
+        return ToActionResult(
+            await processingHttpClient.GetCanonicalEpochRecoveryAsync(
+                name,
+                runId,
+                ct));
+    }
+
+    [HttpPost("{name}/authoring/runs/{runId}/canonical-epoch-recovery/retry")]
+    public async Task<IActionResult> RetryCanonicalEpochRecovery(
+        string name,
+        string runId,
+        CancellationToken ct)
+    {
+        if (!processingHttpClient.IsProcessingServiceEnabled(name))
+        {
+            return NotFound(new { error = $"Processing service '{name}' is not configured or disabled." });
+        }
+
+        return ToActionResult(
+            await processingHttpClient.RetryCanonicalEpochRecoveryAsync(
+                name,
+                runId,
+                ct));
+    }
+
     [HttpGet("{name}/authoring/runs/{runId}")]
     public async Task<IActionResult> GetAuthoringRun(
         string name,

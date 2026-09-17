@@ -1153,7 +1153,12 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
                 ResolvedFilters.None);
         try
         {
-            Assert.True(built.Presentation.Readiness.IsReady);
+            Assert.True(
+                built.Presentation.Readiness.IsReady,
+                string.Join(
+                    ", ",
+                    built.Presentation.Readiness.Reasons.Select(
+                        reason => reason.Code)));
             Assert.Equal(
                 DiscussionPublicationReadinessEvidence.PublicationRefresh,
                 built.Presentation.Readiness.Evidence);
@@ -1259,6 +1264,173 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
         finally
         {
             TestFileCleanup.SafeDeleteFile(ready.TempDbPath);
+        }
+    }
+
+    [Fact]
+    public async Task RealCanonicalEpochRecoverySnapshot_IsPublicationReady()
+    {
+        DateTimeOffset capturedAt =
+            new(2026, 9, 17, 18, 30, 0, TimeSpan.Zero);
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreateCanonicalEpochRecoveryAsync(
+                _root,
+                capturedAt,
+                stableJiraGeneration: 5252);
+        AuthoringSnapshotPublicationProof proof =
+            Assert.IsType<AuthoringSnapshotPublicationProof>(
+                fixture.Descriptor.PublicationProof);
+        Assert.Equal(
+            PreparedTicketPublicationContract
+                .CanonicalEpochRecoveryPurpose,
+            proof.Purpose);
+        Assert.NotEqual(proof.SourceRunId, fixture.Descriptor.RunId);
+        PreparedTicketPublicationFingerprints fingerprints =
+            await PreparedTicketPublicationFingerprintReader
+                .ReadCanonicalEpochRecoveryAsync(fixture.DatabasePath);
+        Assert.Equal(proof.CorpusFingerprint, fingerprints.Corpus);
+        Assert.Equal(proof.GroupingFingerprint, fingerprints.Grouping);
+
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath,
+                fixture.Descriptor,
+                "Tickets",
+                ResolvedFilters.None);
+        try
+        {
+            Assert.True(
+                built.Presentation.Readiness.IsReady,
+                string.Join(
+                    ", ",
+                    built.Presentation.Readiness.Reasons.Select(
+                        reason => reason.Code)));
+            Assert.Equal(
+                DiscussionPublicationReadinessEvidence
+                    .CanonicalEpochRecovery,
+                built.Presentation.Readiness.Evidence);
+            Assert.Equal(
+                fixture.Descriptor.AuthoringEpoch,
+                built.Presentation.Readiness.JiraSourceContentRevision);
+            Assert.Empty(built.Presentation.Readiness.Reasons);
+            await DiscussionSiteDatabaseValidator.ValidateAsync(
+                built.TempDbPath,
+                fixture.DatabasePath,
+                fixture.Descriptor,
+                "Tickets",
+                ResolvedFilters.None);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Theory]
+    [InlineData("corpus")]
+    [InlineData("grouping")]
+    [InlineData("capture-time")]
+    [InlineData("abandonment-time")]
+    public async Task CanonicalEpochRecoveryProof_RequiresCompleteFingerprintsAndCoordinates(
+        string coordinate)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreateCanonicalEpochRecoveryAsync(
+                _root,
+                new DateTimeOffset(
+                    2026,
+                    9,
+                    17,
+                    18,
+                    30,
+                    0,
+                    TimeSpan.Zero),
+                stableJiraGeneration: 5252);
+        AuthoringSnapshotPublicationProof proof =
+            Assert.IsType<AuthoringSnapshotPublicationProof>(
+                fixture.Descriptor.PublicationProof);
+        await fixture.SetPublicationProofAsync(
+            coordinate switch
+            {
+                "corpus" => proof with { CorpusFingerprint = new string('0', 64) },
+                "grouping" => proof with { GroupingFingerprint = new string('0', 64) },
+                "capture-time" => proof with { CapturedAt = proof.CapturedAt.AddSeconds(1) },
+                "abandonment-time" => proof with
+                {
+                    SourceLastSuccessfulRefreshAt = proof.SourceLastSuccessfulRefreshAt.AddSeconds(1),
+                },
+                _ => throw new ArgumentOutOfRangeException(nameof(coordinate)),
+            });
+
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath,
+                fixture.Descriptor,
+                "Tickets",
+                ResolvedFilters.None);
+        try
+        {
+            Assert.False(built.Presentation.Readiness.IsReady);
+            Assert.Equal(
+                DiscussionPublicationReadinessEvidence
+                    .CanonicalEpochRecovery,
+                built.Presentation.Readiness.Evidence);
+            Assert.Contains(
+                built.Presentation.Readiness.Reasons,
+                reason => reason.Code ==
+                    DiscussionPublicationReadinessReasonCodes
+                        .InvalidCanonicalEpochRecoveryProof);
+            Assert.DoesNotContain(
+                built.Presentation.Readiness.Reasons,
+                reason => reason.Code ==
+                    DiscussionPublicationReadinessReasonCodes
+                        .InvalidReconciliationProof);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Theory]
+    [InlineData("topic")]
+    [InlineData("linked-group")]
+    [InlineData("membership-order")]
+    [InlineData("receipt-coordinate")]
+    public async Task CanonicalEpochRecoveryProof_RejectsChangedImmutableCorpusOrGrouping(
+        string mutation)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreateCanonicalEpochRecoveryAsync(
+                _root, new(2026, 9, 17, 18, 30, 0, TimeSpan.Zero), 5252);
+        await ExecuteAsync(fixture.DatabasePath, mutation switch
+        {
+            "topic" => "UPDATE prepared_ticket_topics SET ShortDescription = 'Different topic'",
+            "linked-group" => "UPDATE prepared_ticket_topic_groups SET Rationale = 'Different rationale'",
+            "membership-order" => "UPDATE prepared_ticket_topic_members SET OrderInContainer = 1 - OrderInContainer",
+            "receipt-coordinate" =>
+                """
+                UPDATE authoring_run_items SET ExpectedSourceRevision = 'different'
+                WHERE ItemKind = 'fhir';
+                UPDATE authoring_result_receipts
+                SET ExpectedSourceRevision = 'different', ObservedSourceRevision = 'different';
+                """,
+            _ => throw new ArgumentOutOfRangeException(nameof(mutation)),
+        });
+        await fixture.RefreshDescriptorHashAsync();
+
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath, fixture.Descriptor, "Tickets", ResolvedFilters.None);
+        try
+        {
+            Assert.False(built.Presentation.Readiness.IsReady);
+            Assert.Contains(built.Presentation.Readiness.Reasons,
+                reason => reason.Code == DiscussionPublicationReadinessReasonCodes.InvalidCanonicalEpochRecoveryProof);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
         }
     }
 

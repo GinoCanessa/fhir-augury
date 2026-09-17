@@ -10,6 +10,8 @@ public static class DiscussionPublicationReadinessReasonCodes
     public const string InvalidRefreshProof = "invalid-refresh-proof";
     public const string InvalidReconciliationProof =
         "invalid-reconciliation-proof";
+    public const string InvalidCanonicalEpochRecoveryProof =
+        "invalid-canonical-epoch-recovery-proof";
     public const string MissingPeoplePolicyProof =
         "missing-people-policy-proof";
 }
@@ -20,6 +22,8 @@ public static class DiscussionPublicationReadinessEvidence
     public const string PublicationRefresh = "publication-refresh";
     public const string PublicationReconciliation =
         "publication-reconciliation";
+    public const string CanonicalEpochRecovery =
+        "canonical-epoch-recovery";
 }
 
 public sealed record DiscussionPublicationReadinessReason(
@@ -89,6 +93,11 @@ public sealed record DiscussionPublicationReadiness(
                     code,
                     "The publication-reconciliation proof does not match this ready snapshot's corpus and grouping output."),
             DiscussionPublicationReadinessReasonCodes
+                    .InvalidCanonicalEpochRecoveryProof =>
+                new(
+                    code,
+                    "The canonical-epoch-recovery proof does not match this ready snapshot's complete corpus and grouping output."),
+            DiscussionPublicationReadinessReasonCodes
                     .MissingPeoplePolicyProof =>
                 new(
                     code,
@@ -109,7 +118,9 @@ public sealed record DiscussionPublicationReadiness(
             DiscussionPublicationReadinessReasonCodes
                 .InvalidReconciliationProof => 3,
             DiscussionPublicationReadinessReasonCodes
-                .MissingPeoplePolicyProof => 4,
+                .InvalidCanonicalEpochRecoveryProof => 4,
+            DiscussionPublicationReadinessReasonCodes
+                .MissingPeoplePolicyProof => 5,
             _ => int.MaxValue,
         };
 }

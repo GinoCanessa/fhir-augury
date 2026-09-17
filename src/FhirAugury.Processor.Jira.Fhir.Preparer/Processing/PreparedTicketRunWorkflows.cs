@@ -25,7 +25,9 @@ public sealed class PreparedTicketRunWorkflowRegistry(
     IOptions<PreparerServiceOptions> optionsAccessor,
     ILogger<PreparedTicketRunWorkflowRegistry> logger,
     PreparedTicketReconciliationGroupingStageAdapter?
-        reconciliationGroupingStageAdapter = null)
+        reconciliationGroupingStageAdapter = null,
+    PreparedTicketCanonicalEpochRecoveryService?
+        canonicalEpochRecoveryService = null)
 {
     private readonly PreparerServiceOptions _options = optionsAccessor.Value;
     private readonly PreparedTicketReconciliationGroupingStageAdapter?
@@ -33,10 +35,25 @@ public sealed class PreparedTicketRunWorkflowRegistry(
             reconciliationGroupingStageAdapter;
 
     public bool HandlesFinalization(AuthoringRunRecord run)
-        => string.Equals(
-            run.Purpose,
-            PreparedTicketPublicationReconciliationContract.Purpose,
-            StringComparison.Ordinal);
+        => run.Purpose is
+            PreparedTicketPublicationReconciliationContract.Purpose or
+            PreparedTicketCanonicalEpochRecoveryContract.Purpose;
+
+    public Task<AuthoringSnapshotDescriptor> FinalizeAsync(
+        AuthoringRunRecord run,
+        CancellationToken ct = default)
+        => run.Purpose switch
+        {
+            PreparedTicketPublicationReconciliationContract.Purpose =>
+                FinalizeReconciliationAsync(run, ct),
+            PreparedTicketCanonicalEpochRecoveryContract.Purpose =>
+                (canonicalEpochRecoveryService ??
+                 throw new InvalidOperationException(
+                     "Canonical-epoch recovery is not configured."))
+                .RecoverAsync(run.Id, ct),
+            _ => throw new InvalidOperationException(
+                $"Run '{run.Id}' has unsupported specialized purpose '{run.Purpose}'."),
+        };
 
     public async Task<AuthoringSnapshotDescriptor>
         FinalizeReconciliationAsync(

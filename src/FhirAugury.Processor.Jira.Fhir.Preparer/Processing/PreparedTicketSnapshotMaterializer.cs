@@ -295,6 +295,174 @@ public sealed class PreparedTicketSnapshotMaterializer(
         DeleteCandidateArtifacts(candidate.TemporaryPath);
     }
 
+    public async Task<PreparedTicketPublicationCandidateSnapshot>
+        MaterializeCanonicalEpochRecoveryCandidateAsync(
+            AuthoringRunRecord run,
+            PreparedTicketCanonicalEpochRecoveryRecipe recipe,
+            PreparedTicketCanonicalEpochRecoveryProof proof,
+            AuthoringSnapshotSchemaCatalog? snapshotSchema = null,
+            CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(run);
+        ArgumentNullException.ThrowIfNull(recipe);
+        ArgumentNullException.ThrowIfNull(proof);
+        if (!string.Equals(
+                run.Purpose,
+                PreparedTicketCanonicalEpochRecoveryContract.Purpose,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                run.SourceRunId,
+                recipe.SourceRunId,
+                StringComparison.Ordinal) ||
+            !string.Equals(run.Id, recipe.RunId, StringComparison.Ordinal) ||
+            run.AuthoringEpoch != recipe.AuthoringEpoch ||
+            proof != PreparerDatabase.CreateCanonicalEpochRecoveryProof(
+                recipe))
+        {
+            throw new PreparedTicketCanonicalEpochRecoveryException(
+                PreparedTicketCanonicalEpochRecoveryFailureCodes
+                    .RecoveryEvidenceConflict,
+                $"Run '{run.Id}' does not match its canonical-epoch recovery recipe.",
+                [recipe.SourceRunId, run.Id]);
+        }
+        await database.EnsureSnapshotWorkflowAllowedAsync(
+            ToSnapshotWorkflowIntent(run),
+            ct);
+        snapshotSchema ??= PreparedTicketSnapshotSchemaResolver.Resolve(
+            _options.SnapshotSchemaVersion);
+        if (snapshotSchema.Version != PreparedTicketSnapshotSchemaV3.Version)
+        {
+            throw new NotSupportedException(
+                "Canonical-epoch recovery requires snapshot schema v3.");
+        }
+
+        string directory = Path.GetFullPath(_options.SnapshotDirectory);
+        Directory.CreateDirectory(directory);
+        string safeProcessor = string.Concat(
+            run.ProcessorKind.Select(character =>
+                char.IsLetterOrDigit(character) || character is '-' or '_'
+                    ? character
+                    : '-'));
+        string temporaryPath = Path.Combine(
+            directory,
+            $"{safeProcessor}-{run.Id}.canonical-epoch-recovery.tmp");
+        string finalPath = Path.Combine(
+            directory,
+            $"{safeProcessor}-{run.Id}.db");
+
+        PreparerDatabase.CanonicalEpochRecoverySnapshotReservation
+            reservation =
+                await database.ReserveCanonicalEpochRecoverySnapshotAsync(
+                    run.Id,
+                    temporaryPath,
+                    finalPath,
+                    snapshotSchema.Version,
+                    ct);
+        if (reservation.Candidate is not null)
+        {
+            PreparedTicketPublicationCandidateSnapshot existing =
+                reservation.Candidate;
+            EnsureCanonicalEpochRecoveryCandidateMatchesReservation(
+                existing,
+                reservation,
+                recipe);
+            string existingPath = File.Exists(existing.FinalPath)
+                ? existing.FinalPath
+                : existing.TemporaryPath;
+            await ValidateCanonicalEpochRecoverySnapshotAsync(
+                existing,
+                existingPath,
+                ct);
+            return existing;
+        }
+
+        await database.ValidateCanonicalEpochRecoveryCurrentAsync(
+            run.Id,
+            ct);
+        DeleteCandidateArtifacts(temporaryPath);
+        IReadOnlyDictionary<string, long> counts;
+        await using (SqliteConnection source = database.OpenConnection())
+        await using (SqliteConnection destination = new(
+            new SqliteConnectionStringBuilder
+            {
+                DataSource = temporaryPath,
+                Mode = SqliteOpenMode.ReadWriteCreate,
+                Pooling = false,
+            }.ToString()))
+        {
+            await destination.OpenAsync(ct);
+            source.BackupDatabase(destination);
+            await CreateSnapshotProvenanceTableAsync(destination, ct);
+            PreparedTicketSnapshotSanitizer sanitizer = new(
+                run.Id,
+                snapshotSchema,
+                recipe.SourceRunId,
+                clearSnapshotProvenance: true);
+            await sanitizer.SanitizeAsync(destination, ct);
+            counts = await ReadTableCountsAsync(
+                destination,
+                snapshotSchema.CountedTables,
+                ct);
+            await WriteSnapshotProvenanceAsync(
+                destination,
+                reservation,
+                counts,
+                ct);
+            await CheckpointAsync(destination, ct);
+            await VerifyIntegrityAsync(destination, ct);
+            await VerifyTableCountsAsync(destination, counts, ct);
+            await VerifySnapshotProvenanceAsync(
+                destination,
+                reservation,
+                counts,
+                ct);
+        }
+
+        string sha256 = await SqliteReviewSnapshotWriter.ComputeSha256Async(
+            temporaryPath,
+            ct);
+        PreparedTicketPublicationCandidateSnapshot candidate = new(
+            run.Id,
+            reservation.SnapshotId,
+            reservation.ProcessorKind,
+            reservation.TemporaryPath,
+            reservation.FinalPath,
+            reservation.SchemaVersion,
+            reservation.Sequence,
+            reservation.AuthoringEpoch,
+            reservation.ItemCount,
+            reservation.ReceiptCount,
+            sha256,
+            new FileInfo(temporaryPath).Length,
+            counts,
+            recipe.CorpusFingerprint,
+            recipe.GroupingFingerprint,
+            recipe.RecipeFingerprint,
+            reservation.CreatedAt);
+        EnsureCanonicalEpochRecoveryCandidateMatchesReservation(
+            candidate,
+            reservation,
+            recipe);
+        await ValidateCanonicalEpochRecoverySnapshotAsync(
+            candidate,
+            candidate.TemporaryPath,
+            ct);
+        await database.SaveCanonicalEpochRecoveryCandidateAsync(
+            candidate,
+            proof,
+            ct);
+        return candidate;
+    }
+
+    public static Task ValidateCanonicalEpochRecoverySnapshotAsync(
+        PreparedTicketPublicationCandidateSnapshot candidate,
+        string path,
+        CancellationToken ct = default)
+        => PreparerDatabase.ValidateCanonicalEpochRecoverySnapshotFileAsync(
+            candidate,
+            path,
+            ct);
+
     public async Task<AuthoringSnapshotDescriptor> MaterializeAsync(
         AuthoringRunRecord run,
         AuthoringSnapshotSchemaCatalog snapshotSchema,
@@ -674,6 +842,53 @@ public sealed class PreparedTicketSnapshotMaterializer(
             reservation,
         IReadOnlyDictionary<string, long> tableCounts,
         CancellationToken ct)
+        => await WriteSnapshotProvenanceAsync(
+            connection,
+            reservation.SnapshotId,
+            reservation.ProcessorKind,
+            reservation.RunId,
+            reservation.AuthoringEpoch,
+            reservation.Sequence,
+            reservation.SchemaVersion,
+            reservation.ItemCount,
+            reservation.ReceiptCount,
+            reservation.CreatedAt,
+            tableCounts,
+            ct);
+
+    private static async Task WriteSnapshotProvenanceAsync(
+        SqliteConnection connection,
+        PreparerDatabase.CanonicalEpochRecoverySnapshotReservation
+            reservation,
+        IReadOnlyDictionary<string, long> tableCounts,
+        CancellationToken ct)
+        => await WriteSnapshotProvenanceAsync(
+            connection,
+            reservation.SnapshotId,
+            reservation.ProcessorKind,
+            reservation.RunId,
+            reservation.AuthoringEpoch,
+            reservation.Sequence,
+            reservation.SchemaVersion,
+            reservation.ItemCount,
+            reservation.ReceiptCount,
+            reservation.CreatedAt,
+            tableCounts,
+            ct);
+
+    private static async Task WriteSnapshotProvenanceAsync(
+        SqliteConnection connection,
+        string snapshotId,
+        string processorKind,
+        string runId,
+        long authoringEpoch,
+        long sequence,
+        int schemaVersion,
+        int itemCount,
+        int receiptCount,
+        DateTimeOffset createdAt,
+        IReadOnlyDictionary<string, long> tableCounts,
+        CancellationToken ct)
     {
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText =
@@ -689,28 +904,28 @@ public sealed class PreparedTicketSnapshotMaterializer(
             """;
         command.Parameters.AddWithValue(
             "@snapshotId",
-            reservation.SnapshotId);
+            snapshotId);
         command.Parameters.AddWithValue(
             "@processorKind",
-            reservation.ProcessorKind);
-        command.Parameters.AddWithValue("@runId", reservation.RunId);
+            processorKind);
+        command.Parameters.AddWithValue("@runId", runId);
         command.Parameters.AddWithValue(
             "@authoringEpoch",
-            reservation.AuthoringEpoch);
-        command.Parameters.AddWithValue("@sequence", reservation.Sequence);
+            authoringEpoch);
+        command.Parameters.AddWithValue("@sequence", sequence);
         command.Parameters.AddWithValue(
             "@schemaVersion",
-            reservation.SchemaVersion);
-        command.Parameters.AddWithValue("@itemCount", reservation.ItemCount);
+            schemaVersion);
+        command.Parameters.AddWithValue("@itemCount", itemCount);
         command.Parameters.AddWithValue(
             "@receiptCount",
-            reservation.ReceiptCount);
+            receiptCount);
         command.Parameters.AddWithValue(
             "@tableCountsJson",
             JsonSerializer.Serialize(tableCounts));
         command.Parameters.AddWithValue(
             "@createdAt",
-            reservation.CreatedAt.ToString(
+            createdAt.ToString(
                 "O",
                 CultureInfo.InvariantCulture));
         if (await command.ExecuteNonQueryAsync(ct) != 1)
@@ -758,6 +973,53 @@ public sealed class PreparedTicketSnapshotMaterializer(
             reservation,
         IReadOnlyDictionary<string, long> tableCounts,
         CancellationToken ct)
+        => await VerifySnapshotProvenanceAsync(
+            connection,
+            reservation.SnapshotId,
+            reservation.ProcessorKind,
+            reservation.RunId,
+            reservation.AuthoringEpoch,
+            reservation.Sequence,
+            reservation.SchemaVersion,
+            reservation.ItemCount,
+            reservation.ReceiptCount,
+            reservation.CreatedAt,
+            tableCounts,
+            ct);
+
+    private static async Task VerifySnapshotProvenanceAsync(
+        SqliteConnection connection,
+        PreparerDatabase.CanonicalEpochRecoverySnapshotReservation
+            reservation,
+        IReadOnlyDictionary<string, long> tableCounts,
+        CancellationToken ct)
+        => await VerifySnapshotProvenanceAsync(
+            connection,
+            reservation.SnapshotId,
+            reservation.ProcessorKind,
+            reservation.RunId,
+            reservation.AuthoringEpoch,
+            reservation.Sequence,
+            reservation.SchemaVersion,
+            reservation.ItemCount,
+            reservation.ReceiptCount,
+            reservation.CreatedAt,
+            tableCounts,
+            ct);
+
+    private static async Task VerifySnapshotProvenanceAsync(
+        SqliteConnection connection,
+        string snapshotId,
+        string processorKind,
+        string runId,
+        long authoringEpoch,
+        long sequence,
+        int schemaVersion,
+        int itemCount,
+        int receiptCount,
+        DateTimeOffset createdAt,
+        IReadOnlyDictionary<string, long> tableCounts,
+        CancellationToken ct)
     {
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText =
@@ -773,28 +1035,28 @@ public sealed class PreparedTicketSnapshotMaterializer(
             !Enumerable.Range(0, reader.FieldCount).Any(reader.IsDBNull) &&
             string.Equals(
                 reader.GetString(0),
-                reservation.SnapshotId,
+                snapshotId,
                 StringComparison.Ordinal) &&
             string.Equals(
                 reader.GetString(1),
-                reservation.ProcessorKind,
+                processorKind,
                 StringComparison.Ordinal) &&
             string.Equals(
                 reader.GetString(2),
-                reservation.RunId,
+                runId,
                 StringComparison.Ordinal) &&
-            reader.GetInt64(3) == reservation.AuthoringEpoch &&
-            reader.GetInt64(4) == reservation.Sequence &&
-            reader.GetInt32(5) == reservation.SchemaVersion &&
-            reader.GetInt32(6) == reservation.ItemCount &&
-            reader.GetInt32(7) == reservation.ReceiptCount &&
+            reader.GetInt64(3) == authoringEpoch &&
+            reader.GetInt64(4) == sequence &&
+            reader.GetInt32(5) == schemaVersion &&
+            reader.GetInt32(6) == itemCount &&
+            reader.GetInt32(7) == receiptCount &&
             string.Equals(
                 reader.GetString(8),
                 JsonSerializer.Serialize(tableCounts),
                 StringComparison.Ordinal) &&
             string.Equals(
                 reader.GetString(9),
-                reservation.CreatedAt.ToString(
+                createdAt.ToString(
                     "O",
                     CultureInfo.InvariantCulture),
                 StringComparison.Ordinal);
@@ -858,6 +1120,65 @@ public sealed class PreparedTicketSnapshotMaterializer(
         {
             throw new InvalidOperationException(
                 "The trusted reconciliation candidate does not match its reserved snapshot coordinates.");
+        }
+    }
+
+    private static void
+        EnsureCanonicalEpochRecoveryCandidateMatchesReservation(
+            PreparedTicketPublicationCandidateSnapshot candidate,
+            PreparerDatabase.CanonicalEpochRecoverySnapshotReservation
+                reservation,
+            PreparedTicketCanonicalEpochRecoveryRecipe recipe)
+    {
+        if (!string.Equals(
+                reservation.ReservationKind,
+                "canonical-epoch-recovery-snapshot-reservation-v1",
+                StringComparison.Ordinal) ||
+            !string.Equals(candidate.RunId, recipe.RunId, StringComparison.Ordinal) ||
+            !string.Equals(
+                candidate.SnapshotId,
+                reservation.SnapshotId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                candidate.ProcessorKind,
+                reservation.ProcessorKind,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                Path.GetFullPath(candidate.TemporaryPath),
+                Path.GetFullPath(reservation.TemporaryPath),
+                OperatingSystem.IsWindows()
+                    ? StringComparison.OrdinalIgnoreCase
+                    : StringComparison.Ordinal) ||
+            !string.Equals(
+                Path.GetFullPath(candidate.FinalPath),
+                Path.GetFullPath(reservation.FinalPath),
+                OperatingSystem.IsWindows()
+                    ? StringComparison.OrdinalIgnoreCase
+                    : StringComparison.Ordinal) ||
+            candidate.SchemaVersion != reservation.SchemaVersion ||
+            candidate.Sequence != reservation.Sequence ||
+            candidate.AuthoringEpoch != recipe.AuthoringEpoch ||
+            candidate.ItemCount != recipe.Corpus.Count ||
+            candidate.ReceiptCount != recipe.Corpus.Count ||
+            candidate.CreatedAt != reservation.CreatedAt ||
+            !string.Equals(
+                candidate.OverlayCorpusFingerprint,
+                recipe.CorpusFingerprint,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                candidate.GroupingFingerprint,
+                recipe.GroupingFingerprint,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                candidate.GroupingImpactFingerprint,
+                recipe.RecipeFingerprint,
+                StringComparison.Ordinal))
+        {
+            throw new PreparedTicketCanonicalEpochRecoveryException(
+                PreparedTicketCanonicalEpochRecoveryFailureCodes
+                    .RecoveryEvidenceConflict,
+                $"Recovery run '{recipe.RunId}' candidate conflicts with its reserved coordinates.",
+                [recipe.SourceRunId, recipe.RunId]);
         }
     }
 

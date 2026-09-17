@@ -81,7 +81,93 @@ public static class PreparedTicketPublicationContract
     public const string PublicationRefreshPurpose = "publication-refresh";
     public const string PublicationReconciliationPurpose =
         "publication-reconciliation";
+    public const string CanonicalEpochRecoveryPurpose =
+        "canonical-epoch-recovery";
     public const string JiraSourceName = "jira";
+
+    public static byte[] SerializeCanonicalEpochRecovery(
+        string sourceRunId,
+        long authoringEpoch,
+        DateTimeOffset abandonedAt,
+        IEnumerable<PreparedTicketPublicationCorpusItem> corpus,
+        IEnumerable<PreparedTicketPublicationGroupingPartition> grouping,
+        int contractVersion = CurrentVersion)
+    {
+        EnsureSupportedVersion(contractVersion);
+        RequireValue(sourceRunId, nameof(sourceRunId));
+        ArgumentOutOfRangeException.ThrowIfNegative(authoringEpoch);
+        if (abandonedAt == default || abandonedAt.Offset != TimeSpan.Zero)
+        {
+            throw new ArgumentException(
+                "The canonical abandonment timestamp must be non-default UTC.",
+                nameof(abandonedAt));
+        }
+        ArgumentNullException.ThrowIfNull(corpus);
+        ArgumentNullException.ThrowIfNull(grouping);
+
+        PreparedTicketPublicationCorpusItem[] orderedCorpus = corpus
+            .Select(ValidateCorpusItem)
+            .OrderBy(item => item.TicketKey, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.TicketKey, StringComparer.Ordinal)
+            .ThenBy(item => item.ReceiptId, StringComparer.Ordinal)
+            .ThenBy(item => item.RunItemId, StringComparer.Ordinal)
+            .ThenBy(item => item.ContributingRunId, StringComparer.Ordinal)
+            .ThenBy(item => item.ItemKind, StringComparer.Ordinal)
+            .ThenBy(item => item.ExpectedSourceRevision, StringComparer.Ordinal)
+            .ToArray();
+        PreparedTicketPublicationGroupingPartition[] orderedGrouping =
+            grouping
+                .OrderBy(
+                    partition => partition.PartitionKey,
+                    StringComparer.Ordinal)
+                .ToArray();
+        _ = ComputeCorpusFingerprint(orderedCorpus, contractVersion);
+        _ = ComputeGroupingFingerprint(orderedGrouping, contractVersion);
+
+        using MemoryStream output = new();
+        using (Utf8JsonWriter writer = CreateWriter(output))
+        {
+            writer.WriteStartObject();
+            writer.WriteNumber("contractVersion", contractVersion);
+            writer.WriteString("purpose", CanonicalEpochRecoveryPurpose);
+            writer.WriteString("sourceRunId", sourceRunId);
+            writer.WriteNumber("authoringEpoch", authoringEpoch);
+            writer.WriteString("abandonedAt", abandonedAt);
+            writer.WritePropertyName("corpus");
+            using (JsonDocument document = JsonDocument.Parse(
+                       SerializeCorpus(orderedCorpus, contractVersion)))
+            {
+                document.RootElement.GetProperty("corpus").WriteTo(writer);
+            }
+            writer.WritePropertyName("groupingFingerprints");
+            using (JsonDocument document = JsonDocument.Parse(
+                       SerializeGroupingFingerprints(
+                           orderedGrouping,
+                           contractVersion)))
+            {
+                document.RootElement.GetProperty("groupingFingerprints")
+                    .WriteTo(writer);
+            }
+            writer.WriteEndObject();
+        }
+        return output.ToArray();
+    }
+
+    public static string ComputeCanonicalEpochRecoveryFingerprint(
+        string sourceRunId,
+        long authoringEpoch,
+        DateTimeOffset abandonedAt,
+        IEnumerable<PreparedTicketPublicationCorpusItem> corpus,
+        IEnumerable<PreparedTicketPublicationGroupingPartition> grouping,
+        int contractVersion = CurrentVersion)
+        => ComputeSha256(
+            SerializeCanonicalEpochRecovery(
+                sourceRunId,
+                authoringEpoch,
+                abandonedAt,
+                corpus,
+                grouping,
+                contractVersion));
 
     public static string ComputeCorpusFingerprint(
         IEnumerable<PreparedTicketPublicationCorpusItem> items,

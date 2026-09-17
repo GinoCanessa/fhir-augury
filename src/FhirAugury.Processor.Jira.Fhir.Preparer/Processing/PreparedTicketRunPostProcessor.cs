@@ -58,7 +58,7 @@ public sealed class PreparedTicketRunPostProcessor(
         }
         if (workflowRegistry?.HandlesFinalization(run) == true)
         {
-            return await workflowRegistry.FinalizeReconciliationAsync(
+            return await workflowRegistry.FinalizeAsync(
                 run,
                 ct);
         }
@@ -453,8 +453,18 @@ public sealed class PreparedTicketRunPostProcessor(
             run.Purpose,
             run.Id);
 
-    public Task ReconcileSnapshotsOnStartupAsync(CancellationToken ct)
-        => snapshotReconciler.ReconcileAsync(ct);
+    public async Task ReconcileSnapshotsOnStartupAsync(CancellationToken ct)
+    {
+        // Program resumes dedicated journals first. If one still conflicts,
+        // generic snapshot cleanup must not delete its candidate or mark its
+        // snapshot ready outside the fenced resolution transaction.
+        if ((await database.ListPendingCanonicalEpochRecoveriesAsync(ct))
+            .Count != 0)
+        {
+            return;
+        }
+        await snapshotReconciler.ReconcileAsync(ct);
+    }
 
     async Task IAuthoringRunFinalizationStrategy.FinalizeRunAsync(
         string runId,

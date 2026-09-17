@@ -208,6 +208,128 @@ public sealed class PreparedTicketAuthoringHandlerTests
         }
     }
 
+    [Theory]
+    [InlineData("recover-canonical-epoch", "POST", "abandoned-run")]
+    [InlineData(
+        "canonical-epoch-recovery-status",
+        "GET",
+        "recovery-run")]
+    [InlineData(
+        "retry-canonical-epoch-recovery",
+        "POST",
+        "recovery-run")]
+    public async Task CanonicalEpochRecoveryActionsReturnTypedState(
+        string action,
+        string method,
+        string routeRunId)
+    {
+        AuthoringHttpClient.EnsureOuterMode();
+        DelegateHttpHandler handler = new((request, _, _) =>
+        {
+            Assert.Equal(method, request.Method.Method);
+            string retrySuffix =
+                action == "retry-canonical-epoch-recovery"
+                    ? "/retry"
+                    : string.Empty;
+            Assert.Equal(
+                $"/api/v1/processing-services/Preparer/authoring/runs/{routeRunId}/canonical-epoch-recovery{retrySuffix}",
+                request.RequestUri!.AbsolutePath);
+            Assert.Null(request.Content);
+            CanonicalEpochRecoveryStatusResult status =
+                CanonicalEpochRecoveryStatusResult();
+            object response = action switch
+            {
+                "recover-canonical-epoch" =>
+                    new CanonicalEpochRecoveryStartResult(
+                        status,
+                        ExistingRun: false),
+                "retry-canonical-epoch-recovery" =>
+                    new CanonicalEpochRecoveryRetryResult(
+                        status,
+                        RecoveryStarted: true),
+                _ => status,
+            };
+            return Task.FromResult(DelegateHttpHandler.Json(
+                response,
+                action == "recover-canonical-epoch"
+                    ? HttpStatusCode.Accepted
+                    : HttpStatusCode.OK));
+        });
+
+        object result = await PreparedTicketAuthoringHandler.HandleAsync(
+            new PreparedTicketAuthoringRequest
+            {
+                Action = action,
+                SourceRunId = action == "recover-canonical-epoch"
+                    ? "abandoned-run"
+                    : null,
+                RunId = action == "recover-canonical-epoch"
+                    ? null
+                    : "recovery-run",
+            },
+            "http://orchestrator",
+            CancellationToken.None,
+            handler);
+
+        switch (action)
+        {
+            case "recover-canonical-epoch":
+                Assert.False(
+                    Assert.IsType<CanonicalEpochRecoveryStartResult>(
+                        result).ExistingRun);
+                break;
+            case "retry-canonical-epoch-recovery":
+                Assert.True(
+                    Assert.IsType<CanonicalEpochRecoveryRetryResult>(
+                        result).RecoveryStarted);
+                break;
+            default:
+                Assert.Equal(
+                    "snapshot-publish-pending",
+                    Assert.IsType<CanonicalEpochRecoveryStatusResult>(
+                        result).Recovery.State);
+                break;
+        }
+        Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
+    public async Task CanonicalEpochRecoveryConflictPreservesTypedCoordinates()
+    {
+        AuthoringHttpClient.EnsureOuterMode();
+        DelegateHttpHandler handler = new((request, _, _) =>
+        {
+            Assert.EndsWith(
+                "/canonical-epoch-recovery/retry",
+                request.RequestUri!.AbsolutePath,
+                StringComparison.Ordinal);
+            return Task.FromResult(DelegateHttpHandler.Json(
+                new PreparedTicketCanonicalEpochRecoveryFailure(
+                    "canonical-state-changed",
+                    "The frozen canonical grouping changed.",
+                    ["abandoned-run", "recovery-run"],
+                    "recovery-run"),
+                HttpStatusCode.Conflict));
+        });
+
+        AuthoringControlException error =
+            await Assert.ThrowsAsync<AuthoringControlException>(() =>
+                PreparedTicketAuthoringHandler.HandleAsync(
+                    new PreparedTicketAuthoringRequest
+                    {
+                        Action = "retry-canonical-epoch-recovery",
+                        RunId = "recovery-run",
+                    },
+                    "http://orchestrator",
+                    CancellationToken.None,
+                    handler));
+
+        Assert.Equal("canonical-state-changed", error.ErrorCode);
+        Assert.Equal(
+            ["abandoned-run", "recovery-run"],
+            error.RelatedRunIds);
+    }
+
     [Fact]
     public async Task AbandonReconciliationSendsAuditedReason()
     {
@@ -922,6 +1044,62 @@ public sealed class PreparedTicketAuthoringHandlerTests
                     new string('c', 64),
                     new string('d', 64)),
             ]);
+
+    private static CanonicalEpochRecoveryStatusResult
+        CanonicalEpochRecoveryStatusResult()
+    {
+        DateTimeOffset timestamp =
+            DateTimeOffset.Parse("2026-09-17T12:00:00Z");
+        AuthoringRunStatus run = new(
+            "recovery-run",
+            "jira-fhir",
+            1,
+            "finalizing",
+            false,
+            1,
+            1,
+            0,
+            timestamp,
+            timestamp,
+            null,
+            null,
+            Purpose: "canonical-epoch-recovery",
+            SourceRunId: "abandoned-run");
+        AuthoringRunItemStatus item = new(
+            "recovery-item",
+            run.RunId,
+            "FHIR-1",
+            "fhir",
+            "revision-1",
+            "complete",
+            null,
+            "receipt-1",
+            0,
+            timestamp,
+            timestamp,
+            timestamp,
+            null);
+        return new(
+            run,
+            [item],
+            new(
+                "abandoned-run",
+                run.AuthoringEpoch,
+                "canonical-unpublished",
+                timestamp,
+                "snapshot publication could not be completed"),
+            new(
+                1,
+                1,
+                new string('a', 64),
+                new string('b', 64),
+                new string('c', 64),
+                timestamp),
+            new(
+                "snapshot-publish-pending",
+                MutationFenceHeld: true,
+                LastRecoveryAttemptAt: timestamp));
+    }
 
     private static object RunEnvelope(
         string runId = "run-1",

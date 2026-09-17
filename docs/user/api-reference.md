@@ -348,6 +348,9 @@ The Orchestrator exposes configured processors under
 | `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation/retry` | Retry a pending immutable snapshot publication (Preparer only) |
 | `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation/cancel` | Cancel staged reconciliation before trusted or canonical promotion, with an audited reason (Preparer only) |
 | `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation/abandon` | Audit post-promotion abandonment without publication (Preparer only) |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs/{sourceRunId}/canonical-epoch-recovery` | Start or find the dedicated recovery of an abandoned canonical epoch (Preparer only) |
+| `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/canonical-epoch-recovery` | Read the recovery recipe, journal, source abandonment, and verified snapshot (Preparer only) |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/canonical-epoch-recovery/retry` | Resume the same canonical-epoch recovery run and snapshot journal (Preparer only) |
 | `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}` | Get run and item status |
 | `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible current error item |
 | `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/items/{itemId}/supersede` | Explicitly supersede one current non-receipt-backed error |
@@ -381,7 +384,7 @@ For Preparer and Planner, the run collection defaults to 20 entries and accepts
 runs before item aggregation, prioritizes `queued`, `running`,
 `finalizing`, and recoverable `error` runs, then orders terminal history newest
 first. Ordinary runs require their durable request marker. Purpose-marked maintenance runs, including `grouping-maintenance`,
-`publication-refresh`, `publication-reconciliation`, and the reserved
+`publication-refresh`, `publication-reconciliation`, and
 `canonical-epoch-recovery`, are also visible
 without that marker so clients can reconcile by `purpose` and `sourceRunId`.
 Initial revalidation and legacy unmarked authoring rows are omitted. The
@@ -409,13 +412,14 @@ Run status appends processor-owned state:
 - `purpose` is an additive value such as `authoring`,
   `initial-revalidation`, `grouping-maintenance`,
   `publication-refresh`, or `publication-reconciliation`.
-  `canonical-epoch-recovery` is reserved for the dedicated snapshot recovery
+  `canonical-epoch-recovery` identifies the dedicated snapshot recovery
   workflow and is the only snapshot-producing purpose allowed through an
   unresolved canonical restriction.
 - `sourceRunId` is additive maintenance lineage. For a
   `publication-refresh` or `publication-reconciliation`, it identifies the
   completed run selected by the operator; the maintenance run itself has a
-  different `runId`.
+  different `runId`. For `canonical-epoch-recovery`, it identifies the
+  terminal abandoned reconciliation, never a run to reopen.
 
 Items retain the legacy `error` field and append `currentError`,
 `supersessionReason`, and processor-computed `allowedActions`.
@@ -664,7 +668,10 @@ The direct route is
 `GET /processing/authoring/runs/{runId}/publication-reconciliation`. It
 returns `200 OK` with `run`, `items`, `comparison`, `counts`,
 `groupingImpacts`, `promotion`, `invalidatedTicketKeys`, nullable
-`publicationProof`, and nullable `failureCode`/`failureDetail`.
+`publicationProof`, nullable `failureCode`/`failureDetail`, and nullable
+`canonicalEpochRecovery`. The recovery link includes its distinct `runId`,
+`sourceRunId`, `authoringEpoch`, and `state`; after successful resolution it
+also includes `snapshotId`, `snapshotSha256`, and `resolvedAt`.
 `promotion` contains `state`, nullable `journalState`, `mutationFenceHeld`,
 `lastRecoveryAttemptAt`, recovery failure fields, cancellation
 `cancelledAt`/`cancellationReason`, and abandonment audit fields. The proof is
@@ -683,7 +690,7 @@ the filesystem.
 | Promotion/evidence state | Recovery behavior |
 |--------------------------|-------------------|
 | `staged` | Canonical output is unchanged. Every `re-author` item must be `complete` with matching graph, hydration, accepted receipt, run-item, operation, revision, and fingerprint coordinates. A `superseded` item never satisfies this check. Missing graph/group staging is `staging-mismatch`/`grouping-impact-mismatch`. Dedicated cancellation is available until trusted candidate persistence. |
-| Pending, final absent, temporary valid | Add/verify snapshot provenance, validate the candidate, and move it once to the immutable final path. |
+| Pending, final absent, temporary valid | Verify the journaled post-provenance bytes and move them once to the immutable final path; never add or rewrite provenance during recovery. |
 | Pending, final matching | Reuse and validate it; never reapply canonical replacement. This covers interruption immediately after the move. |
 | Pending, final conflicting/corrupt | Stop with `promotion-recovery-failure`, never overwrite the file, and keep the fence. |
 | Pending, temporary missing/corrupt with no valid final | Stop with `promotion-recovery-failure`; retain journal/fence for repair. A checksum or provenance mismatch is handled the same way. |
@@ -754,7 +761,7 @@ and immediately before finalization/promotion. A snapshot run queued before
 abandonment is terminally refused before fence acquisition. SQLite guards on
 run/fence/snapshot/finalization writes remain the last line of defense.
 Ordinary `databaseOnly:true` work remains eligible, including when active-run
-capacity is one. Only the reserved `canonical-epoch-recovery` purpose may
+capacity is one. Only the dedicated `canonical-epoch-recovery` purpose may
 bypass the restriction so a separately explicit recovery can create and
 verify the snapshot that resolves the epoch.
 
@@ -780,6 +787,78 @@ not met. The Orchestrator preserves processor status, body, `Location`, and
 `Retry-After`; clients must branch on the stable code, not prose. Never replay
 a lost start/retry/cancel/abandon response. Use the bounded run list filtered by
 `purpose` and `sourceRunId`, or status when `runId` is known.
+
+#### Recover an abandoned canonical epoch
+
+This is not pending reconciliation retry, metadata refresh, or changed-ticket
+authoring. The source must be a Preparer reconciliation with generic status
+`abandoned`, promotion state `canonical-unpublished`, and no successful
+recovery link for its current authoring epoch.
+
+```http
+POST /api/v1/processing-services/Preparer/authoring/runs/{sourceRunId}/canonical-epoch-recovery
+```
+
+The request has no body. `202 Accepted` returns
+`{ "status": { /* recovery status */ }, "existingRun": false }` and a
+`Location` for the dedicated status route. Admission freezes the **current**
+accepted receipt-backed corpus and complete grouping, including eligible
+database-only work performed since abandonment. All selected items are
+already complete; no authoring or grouping worker runs. A duplicate start
+returns that same active/retryable run with `existingRun:true`. A successfully
+resolved epoch returns `409 canonical-epoch-already-recovered`, with the
+source and successful recovery run coordinates.
+
+```http
+GET /api/v1/processing-services/Preparer/authoring/runs/{runId}/canonical-epoch-recovery
+POST /api/v1/processing-services/Preparer/authoring/runs/{runId}/canonical-epoch-recovery/retry
+```
+
+Status returns `200` with:
+
+- `run` and all-complete `items`, with purpose `canonical-epoch-recovery`;
+- `sourceAbandonment`: source `runId`, epoch, unchanged
+  `canonical-unpublished` state, abandonment time, and reason;
+- `frozen`: accepted ticket/partition counts, corpus and complete grouping
+  fingerprints, recipe fingerprint, and capture time;
+- `recovery`: `materialization-pending`, `snapshot-publish-pending`, or
+  `ready`, plus `mutationFenceHeld`, last attempt, and stable failure detail;
+- nullable dedicated `publicationProof` and `snapshot`, exposed only after
+  successful verification and resolution.
+
+The bodyless retry returns `200` with `{ "status": { /* same run */ },
+"recoveryStarted": true }`. Startup and retry resume the same recipe,
+snapshot ID, sequence, and journal. Before trust is persisted, an incomplete
+backup can be rebuilt at its reserved coordinates. Once journaled, only the
+exact post-provenance digest, size, counts, and coordinates may be reused.
+An existing conflicting final file is never overwritten.
+
+File publication occurs before one shared-SQLite resolution transaction.
+Even if the file exists after a crash, the restriction and fence remain
+until exact final-byte/current-state verification permits that transaction
+to append the resolution link, mark the snapshot ready, complete the new
+run, and release its fence. There is no cross-resource atomicity claim.
+Failures keep the unresolved restriction and retryable run/fence; they do
+not fall back to the prior publication or rewrite abandonment history.
+
+| Status | `error` | Meaning |
+|---|---|---|
+| `404` | `invalid-source-reconciliation` | Unknown source, or unknown recovery on status/retry |
+| `409` | `source-not-abandoned` | The source is not an eligible terminal canonical-unpublished reconciliation |
+| `409` | `canonical-epoch-already-recovered` | A successful linked recovery already resolves the source epoch |
+| `409` | `stale-canonical-epoch` | Authoring mode/epoch or the frozen abandonment coordinate changed |
+| `409` | `canonical-state-changed` | Receipt-backed corpus, canonical values, or grouping changed |
+| `409` | `recovery-in-progress` | Another mutation owns the fence |
+| `409` | `snapshot-recovery-failure` | File, checksum, provenance, integrity, or publication/CAS execution failed |
+| `409` | `recovery-evidence-conflict` | Recipe, selection, fence, journal, or snapshot record contradicts the frozen recovery |
+| `409` | `run-not-retryable` | The recovery is not at a resumable lifecycle boundary |
+
+Errors retain `detail`, `conflictingRunIds`, and `runId` through the
+Orchestrator. The direct Preparer routes have identical suffixes under
+`/processing/authoring/runs`. Use the recovery run's ordinary `/snapshot`
+and `/snapshot/bytes` routes after `ready`. Its schema-v3 descriptor has
+dedicated purpose `canonical-epoch-recovery` and complete corpus/grouping
+proof; this verifies canonical state, not a fresh Jira observation.
 
 Snapshot bytes are streamed through the Orchestrator rather than buffered as a
 complete SQLite file. Range and conditional request headers are forwarded, and
@@ -1123,6 +1202,9 @@ unversioned publication-maintenance routes shown below:
 | `POST` | `/processing/authoring/runs/{runId}/publication-reconciliation/retry` | Retry pending snapshot publication |
 | `POST` | `/processing/authoring/runs/{runId}/publication-reconciliation/cancel` | Cancel staged reconciliation with an audited reason |
 | `POST` | `/processing/authoring/runs/{runId}/publication-reconciliation/abandon` | Audit abandonment after canonical promotion |
+| `POST` | `/processing/authoring/runs/{sourceRunId}/canonical-epoch-recovery` | Start or find a dedicated recovery for the source abandonment |
+| `GET` | `/processing/authoring/runs/{runId}/canonical-epoch-recovery` | Read dedicated canonical-epoch recovery status |
+| `POST` | `/processing/authoring/runs/{runId}/canonical-epoch-recovery/retry` | Resume the same recovery run and journal |
 | `POST` | `/api/v1/processing/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible current error item |
 | `POST` | `/api/v1/processing/authoring/runs/{runId}/items/{itemId}/supersede` | Supersede one current error with an explicit reason |
 | `GET` | `/api/v1/processing/authoring/runs/{runId}/operations/{operationId}/receipt` | Retrieve the durable operation receipt |

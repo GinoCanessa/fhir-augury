@@ -176,6 +176,8 @@ builder.Services.AddSingleton<
 builder.Services.AddSingleton<PreparedTicketRunWorkflowRegistry>();
 builder.Services.AddSingleton<PreparedTicketSnapshotMaterializer>();
 builder.Services.AddSingleton<PreparedTicketPublicationRecoveryService>();
+builder.Services.AddSingleton<
+    PreparedTicketCanonicalEpochRecoveryService>();
 builder.Services.AddSingleton<PreparedTicketRunPostProcessor>();
 builder.Services.AddSingleton<PreparedTicketGroupingMaintenanceService>();
 builder.Services.AddSingleton<IAuthoringRunFinalizationStrategy>(sp =>
@@ -212,6 +214,9 @@ preparerDatabase.AcquireStartupOwnership();
 await preparerDatabase.RecoverInterruptedMaintenanceLeasesAsync();
 await app.Services
     .GetRequiredService<PreparedTicketPublicationRecoveryService>()
+    .RecoverPendingAsync();
+await app.Services
+    .GetRequiredService<PreparedTicketCanonicalEpochRecoveryService>()
     .RecoverPendingAsync();
 if (preparerOptions.ActivateRunBackedAuthoring)
 {

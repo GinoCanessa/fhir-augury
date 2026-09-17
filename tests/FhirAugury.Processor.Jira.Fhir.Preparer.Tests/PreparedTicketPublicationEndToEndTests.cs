@@ -1303,6 +1303,724 @@ public sealed class PreparedTicketPublicationEndToEndTests
             original.Pair.DirectoryPath);
     }
 
+    [Fact]
+    public async Task CanonicalUnpublishedRecovery_CreatesVerifiedSnapshotAndReenablesSnapshotRuns()
+    {
+        using Fixture fixture = new(richGraph: true);
+        PendingReconciliation pending =
+            await CreatePendingReconciliationAsync(fixture);
+        DateTimeOffset abandonedAt =
+            new(2026, 9, 17, 14, 0, 0, TimeSpan.Zero);
+        const string abandonmentReason =
+            "replacement file publication could not be completed";
+        await fixture.Database.AbandonPublicationReconciliationAsync(
+            pending.RunId,
+            abandonmentReason,
+            abandonedAt);
+        string sourceAudit = ReadAbandonmentAudit(
+            fixture,
+            pending.RunId);
+        byte[] priorDatabase = await File.ReadAllBytesAsync(
+            pending.PriorPublication.DatabasePath);
+        byte[] priorDescriptor = await File.ReadAllBytesAsync(
+            pending.PriorPublication.DescriptorPath);
+        string canonicalBefore = fixture.ReadAuthoredAndGroupingState();
+        string metadataBefore = fixture.ReadPublicationMetadataState();
+        string[] priorSnapshotIds =
+            (await fixture.Store.GetSnapshotRecordsAsync())
+            .Select(snapshot => snapshot.Id)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        PreparedTicketCanonicalEpochRecoveryService recovery =
+            CreateCanonicalEpochRecoveryService(fixture);
+        PreparedTicketCanonicalEpochRecoveryStartResult started =
+            await recovery.StartAsync(pending.RunId);
+        PreparedTicketCanonicalEpochRecoveryStartResult duplicate =
+            await recovery.StartAsync(pending.RunId);
+
+        Assert.False(started.ExistingRun);
+        Assert.True(duplicate.ExistingRun);
+        Assert.Equal(
+            started.Status.Run.RunId,
+            duplicate.Status.Run.RunId);
+        Assert.Equal(
+            PreparedTicketCanonicalEpochRecoveryContract.Purpose,
+            started.Status.Run.Purpose);
+        Assert.Equal(pending.RunId, started.Status.Run.SourceRunId);
+        Assert.Equal(
+            started.Status.Items.Count,
+            started.Status.Frozen.AcceptedTicketCount);
+        Assert.All(
+            started.Status.Items,
+            item => Assert.Equal(
+                AuthoringStatusValues.Items.Complete,
+                item.Status));
+        Assert.Empty(
+            await fixture.Store.GetRunStagesAsync(
+                started.Status.Run.RunId));
+        Assert.True(started.Status.Recovery.MutationFenceHeld);
+
+        PublicationHttpHandler noWorkerRequests = new(fixture, new Dictionary<string, DateTimeOffset>());
+        using HttpClient recoveryHttp = noWorkerRequests.CreateClient();
+        AuthoringSnapshotDescriptor descriptor =
+            Assert.IsType<AuthoringSnapshotDescriptor>(
+                await CreateCanonicalEpochRecoverySurfaces(
+                    fixture, recovery, recoveryHttp).PostProcessor
+                    .FinalizeRunAsync(started.Status.Run.RunId));
+        Assert.Empty(noWorkerRequests.Requests);
+        Assert.All(
+            await fixture.Store.GetRunItemsAsync(started.Status.Run.RunId),
+            item => Assert.Equal(0, item.AttemptCount));
+        PreparedTicketCanonicalEpochRecoveryStatusResult completed =
+            await recovery.GetStatusAsync(started.Status.Run.RunId);
+
+        Assert.Equal(
+            PreparedTicketCanonicalEpochRecoveryStateValues.Ready,
+            completed.Recovery.State);
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Completed,
+            completed.Run.Status);
+        Assert.False(completed.Recovery.MutationFenceHeld);
+        Assert.Equal(
+            descriptor.SnapshotId,
+            completed.Snapshot?.SnapshotId);
+        Assert.Equal(descriptor.Sha256, completed.Snapshot?.Sha256);
+        Assert.Equal(
+            PreparedTicketSnapshotSchemaV3.Version,
+            descriptor.SchemaVersion);
+        Assert.Equal(
+            PreparedTicketPublicationContract
+                .CanonicalEpochRecoveryPurpose,
+            descriptor.PublicationProof?.Purpose);
+        Assert.Equal(
+            completed.Frozen.CorpusFingerprint,
+            descriptor.PublicationProof?.CorpusFingerprint);
+        Assert.Equal(
+            completed.Frozen.GroupingFingerprint,
+            descriptor.PublicationProof?.GroupingFingerprint);
+        Assert.True(File.Exists(pending.Promotion.TemporaryPath));
+        Assert.True(File.Exists(Path.Combine(
+            fixture.SnapshotDirectory,
+            descriptor.FileName)));
+        Assert.Equal(
+            descriptor.Sha256,
+            await SqliteReviewSnapshotWriter.ComputeSha256Async(
+                Path.Combine(
+                    fixture.SnapshotDirectory,
+                    descriptor.FileName)));
+        PreparedTicketPublicationFingerprints snapshotFingerprints =
+            await PreparedTicketPublicationFingerprintReader
+                .ReadCanonicalEpochRecoveryAsync(
+                Path.Combine(
+                    fixture.SnapshotDirectory,
+                    descriptor.FileName));
+        Assert.Equal(
+            completed.Frozen.CorpusFingerprint,
+            snapshotFingerprints.Corpus);
+        Assert.Equal(
+            completed.Frozen.GroupingFingerprint,
+            snapshotFingerprints.Grouping);
+
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .CanonicalUnpublished,
+            fixture.Scalar<string>(
+                $"""
+                SELECT PromotionState
+                FROM prepared_ticket_publication_reconciliations
+                WHERE RunId = '{pending.RunId}'
+                """));
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Abandoned,
+            (await fixture.Store.GetRunAsync(pending.RunId))!.Status);
+        Assert.Equal(
+            sourceAudit,
+            ReadAbandonmentAudit(fixture, pending.RunId));
+        Assert.Equal(canonicalBefore, fixture.ReadAuthoredAndGroupingState());
+        Assert.Equal(metadataBefore, fixture.ReadPublicationMetadataState());
+        Assert.Equal(priorDatabase, await File.ReadAllBytesAsync(
+            pending.PriorPublication.DatabasePath));
+        Assert.Equal(priorDescriptor, await File.ReadAllBytesAsync(
+            pending.PriorPublication.DescriptorPath));
+        Assert.NotEqual(pending.Promotion.SnapshotId, descriptor.SnapshotId);
+        Assert.True(descriptor.Sequence > pending.Promotion.Sequence);
+        Assert.Equal(
+            1L,
+            fixture.Scalar<long>(
+                $"""
+                SELECT COUNT(*)
+                FROM prepared_ticket_canonical_epoch_recovery_resolutions
+                WHERE RunId = '{completed.Run.RunId}'
+                  AND SourceRunId = '{pending.RunId}'
+                  AND SnapshotId = '{descriptor.SnapshotId}'
+                """));
+        Assert.Equal(
+            priorSnapshotIds,
+            (await fixture.Store.GetSnapshotRecordsAsync())
+            .Where(snapshot => snapshot.Id != descriptor.SnapshotId)
+            .Select(snapshot => snapshot.Id)
+            .Order(StringComparer.Ordinal)
+            .ToArray());
+
+        await fixture.Database.EnsureSnapshotWorkflowAllowedAsync(
+            new AuthoringSnapshotWorkflowIntent(
+                "jira-fhir",
+                DatabaseOnly: false,
+                AuthoringRunPurposeValues.Authoring));
+        AuthoringRunRecord nextSnapshotRun =
+            await fixture.Store.CreateRunAsync(
+                "jira-fhir",
+                [new("FHIR-99003", "fhir", "revision-1")],
+                databaseOnly: false);
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Queued,
+            nextSnapshotRun.Status);
+    }
+
+    [Fact]
+    public async Task CanonicalEpochRecovery_FreezesDatabaseOnlyOutputAcceptedAfterAbandonment()
+    {
+        using Fixture fixture = new(richGraph: true);
+        PendingReconciliation source = await CreateAbandonedReconciliationAsync(fixture);
+        AuthoringRunRecord additional = await fixture.CreateAdditionalCurrentOutputAsync(
+            "AdditionalCanonical", ["FHIR-99005"], groupOutput: false);
+        string preserved = ReadLiveTicketFingerprint(fixture, "FHIR-99005");
+        PreparedTicketCanonicalEpochRecoveryService recovery =
+            CreateCanonicalEpochRecoveryService(fixture);
+
+        PreparedTicketCanonicalEpochRecoveryStartResult started =
+            await recovery.StartAsync(source.RunId);
+        PreparerDatabase.CanonicalEpochRecoveryEvidence evidence =
+            Assert.IsType<PreparerDatabase.CanonicalEpochRecoveryEvidence>(
+                await fixture.Database.GetCanonicalEpochRecoveryEvidenceAsync(started.Status.Run.RunId));
+        PreparedTicketPublicationCorpusItem included = Assert.Single(
+            evidence.Recipe.Corpus, item => item.TicketKey == "FHIR-99005");
+        Assert.Equal(additional.Id, included.ContributingRunId);
+        Assert.Equal(source.Promotion.ReceiptCount + 1, started.Status.Frozen.AcceptedTicketCount);
+        AuthoringSnapshotDescriptor snapshot =
+            await recovery.RecoverAsync(started.Status.Run.RunId);
+        Assert.Equal(started.Status.Frozen.AcceptedTicketCount, snapshot.ReceiptCount);
+        Assert.Equal(preserved, ReadLiveTicketFingerprint(fixture, "FHIR-99005"));
+        Assert.Equal(AuthoringStatusValues.Runs.CompletedDatabaseOnly,
+            (await fixture.Store.GetRunAsync(additional.Id))?.Status);
+    }
+
+    [Fact]
+    public async Task CanonicalEpochRecovery_RejectsStaleAuthoringEpoch()
+    {
+        using Fixture fixture = new(richGraph: true);
+        PendingReconciliation pending =
+            await CreateAbandonedReconciliationAsync(fixture);
+        fixture.Execute(
+            """
+            UPDATE authoring_processor_modes
+            SET Epoch = Epoch + 1
+            WHERE ProcessorKind = 'jira-fhir'
+            """);
+        PreparedTicketCanonicalEpochRecoveryService recovery =
+            CreateCanonicalEpochRecoveryService(fixture);
+
+        PreparedTicketCanonicalEpochRecoveryException error =
+            await Assert.ThrowsAsync<
+                PreparedTicketCanonicalEpochRecoveryException>(
+                () => recovery.StartAsync(pending.RunId));
+
+        Assert.Equal(
+            PreparedTicketCanonicalEpochRecoveryFailureCodes
+                .StaleCanonicalEpoch,
+            error.FailureCode);
+        Assert.Equal(
+            0L,
+            fixture.Scalar<long>(
+                "SELECT COUNT(*) FROM prepared_ticket_canonical_epoch_recoveries"));
+        await AssertCanonicalUnpublishedRestrictionAsync(
+            () => fixture.Database.EnsureSnapshotWorkflowAllowedAsync(
+                new AuthoringSnapshotWorkflowIntent(
+                    "jira-fhir",
+                    DatabaseOnly: false,
+                    AuthoringRunPurposeValues.Authoring)));
+    }
+
+    [Fact]
+    public async Task CanonicalEpochRecovery_ChangedCanonicalStateRetainsRunFenceAndRestriction()
+    {
+        using Fixture fixture = new(richGraph: true);
+        PendingReconciliation pending =
+            await CreateAbandonedReconciliationAsync(fixture);
+        PreparedTicketCanonicalEpochRecoveryService recovery =
+            CreateCanonicalEpochRecoveryService(fixture);
+        PreparedTicketCanonicalEpochRecoveryStartResult started =
+            await recovery.StartAsync(pending.RunId);
+        fixture.Execute(
+            """
+            UPDATE prepared_tickets
+            SET RequestSummary = RequestSummary || ' changed'
+            WHERE Key = @ticketKey
+            """,
+            ("@ticketKey", FhirKeys[0]));
+
+        PreparedTicketCanonicalEpochRecoveryException error =
+            await Assert.ThrowsAsync<
+                PreparedTicketCanonicalEpochRecoveryException>(
+                () => recovery.RecoverAsync(
+                    started.Status.Run.RunId));
+
+        Assert.Equal(
+            PreparedTicketCanonicalEpochRecoveryFailureCodes
+                .CanonicalStateChanged,
+            error.FailureCode);
+        PreparedTicketCanonicalEpochRecoveryStatusResult status =
+            await recovery.GetStatusAsync(started.Status.Run.RunId);
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Error,
+            status.Run.Status);
+        Assert.True(status.Recovery.MutationFenceHeld);
+        Assert.Equal(
+            PreparedTicketCanonicalEpochRecoveryFailureCodes
+                .CanonicalStateChanged,
+            status.Recovery.FailureCode);
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .CanonicalUnpublished,
+            fixture.Scalar<string>(
+                $"""
+                SELECT PromotionState
+                FROM prepared_ticket_publication_reconciliations
+                WHERE RunId = '{pending.RunId}'
+                """));
+        Assert.Equal(
+            0L,
+            fixture.Scalar<long>(
+                "SELECT COUNT(*) FROM prepared_ticket_canonical_epoch_recovery_resolutions"));
+    }
+
+    [Fact]
+    public async Task CanonicalEpochRecovery_ConflictingFinalFileRetriesSameRun()
+    {
+        using Fixture fixture = new(richGraph: true);
+        PendingReconciliation pending =
+            await CreateAbandonedReconciliationAsync(fixture);
+        PreparedTicketCanonicalEpochRecoveryService recovery =
+            CreateCanonicalEpochRecoveryService(fixture);
+        PreparedTicketCanonicalEpochRecoveryStartResult started =
+            await recovery.StartAsync(pending.RunId);
+        string runId = started.Status.Run.RunId;
+        await fixture.Store.MarkRunFinalizingAsync(runId);
+        PreparerDatabase.CanonicalEpochRecoveryEvidence evidence =
+            Assert.IsType<PreparerDatabase.CanonicalEpochRecoveryEvidence>(
+                await fixture.Database
+                    .GetCanonicalEpochRecoveryEvidenceAsync(runId));
+        PreparedTicketPublicationCandidateSnapshot candidate =
+            await CreateCanonicalEpochRecoveryMaterializer(fixture)
+                .MaterializeCanonicalEpochRecoveryCandidateAsync(
+                    Assert.IsType<AuthoringRunRecord>(
+                        await fixture.Store.GetRunAsync(runId)),
+                    evidence.Recipe,
+                    PreparerDatabase.CreateCanonicalEpochRecoveryProof(
+                        evidence.Recipe));
+        await File.WriteAllTextAsync(
+            candidate.FinalPath,
+            "conflicting final bytes");
+
+        PreparedTicketCanonicalEpochRecoveryException failure =
+            await Assert.ThrowsAsync<
+                PreparedTicketCanonicalEpochRecoveryException>(
+                () => recovery.RecoverAsync(runId));
+        Assert.Equal(
+            PreparedTicketCanonicalEpochRecoveryFailureCodes
+                .SnapshotRecoveryFailure,
+            failure.FailureCode);
+        PreparedTicketCanonicalEpochRecoveryStatusResult failed =
+            await recovery.GetStatusAsync(runId);
+        Assert.True(failed.Recovery.MutationFenceHeld);
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Error,
+            failed.Run.Status);
+        Assert.Equal(
+            0L,
+            fixture.Scalar<long>(
+                "SELECT COUNT(*) FROM prepared_ticket_canonical_epoch_recovery_resolutions"));
+
+        File.Delete(candidate.FinalPath);
+        AuthoringSnapshotDescriptor descriptor =
+            await recovery.RecoverAsync(runId);
+        PreparedTicketCanonicalEpochRecoveryStatusResult retried =
+            await recovery.GetStatusAsync(runId);
+        Assert.Equal(runId, descriptor.RunId);
+        Assert.Equal(
+            PreparedTicketCanonicalEpochRecoveryStateValues.Ready,
+            retried.Recovery.State);
+        Assert.False(retried.Recovery.MutationFenceHeld);
+    }
+
+    [Fact]
+    public async Task CanonicalEpochRecovery_StartupResumesFilePublishedBeforeCas()
+    {
+        using Fixture fixture = new(richGraph: true);
+        PendingReconciliation pending =
+            await CreateAbandonedReconciliationAsync(fixture);
+        PreparedTicketCanonicalEpochRecoveryService firstGeneration =
+            CreateCanonicalEpochRecoveryService(fixture);
+        PreparedTicketCanonicalEpochRecoveryStartResult started =
+            await firstGeneration.StartAsync(pending.RunId);
+        string runId = started.Status.Run.RunId;
+        await fixture.Store.MarkRunFinalizingAsync(runId);
+        PreparerDatabase.CanonicalEpochRecoveryEvidence evidence =
+            Assert.IsType<PreparerDatabase.CanonicalEpochRecoveryEvidence>(
+                await fixture.Database
+                    .GetCanonicalEpochRecoveryEvidenceAsync(runId));
+        PreparedTicketPublicationCandidateSnapshot candidate =
+            await CreateCanonicalEpochRecoveryMaterializer(fixture)
+                .MaterializeCanonicalEpochRecoveryCandidateAsync(
+                    Assert.IsType<AuthoringRunRecord>(
+                        await fixture.Store.GetRunAsync(runId)),
+                    evidence.Recipe,
+                    PreparerDatabase.CreateCanonicalEpochRecoveryProof(
+                        evidence.Recipe));
+        await PreparedTicketSnapshotMaterializer
+            .ValidateCanonicalEpochRecoverySnapshotAsync(
+                candidate,
+                candidate.TemporaryPath);
+        File.Move(
+            candidate.TemporaryPath,
+            candidate.FinalPath,
+            overwrite: false);
+
+        Assert.Equal(
+            AuthoringStatusValues.Snapshots.Creating,
+            fixture.Scalar<string>(
+                $"""
+                SELECT Status
+                FROM authoring_review_snapshots
+                WHERE Id = '{candidate.SnapshotId}'
+                """));
+        Assert.Equal(
+            0L,
+            fixture.Scalar<long>(
+                "SELECT COUNT(*) FROM prepared_ticket_canonical_epoch_recovery_resolutions"));
+        PreparedTicketCanonicalEpochRecoveryService restarted =
+            CreateCanonicalEpochRecoveryService(fixture);
+        await restarted.RecoverPendingAsync();
+
+        PreparedTicketCanonicalEpochRecoveryStatusResult completed =
+            await restarted.GetStatusAsync(runId);
+        Assert.Equal(
+            PreparedTicketCanonicalEpochRecoveryStateValues.Ready,
+            completed.Recovery.State);
+        Assert.Equal(
+            candidate.SnapshotId,
+            completed.Snapshot?.SnapshotId);
+        Assert.True(File.Exists(candidate.FinalPath));
+        Assert.False(File.Exists(candidate.TemporaryPath));
+    }
+
+    [Theory]
+    [InlineData("epoch", "stale-canonical-epoch")]
+    [InlineData("hydration", "canonical-state-changed")]
+    [InlineData("grouping", "canonical-state-changed")]
+    [InlineData("selection", "recovery-evidence-conflict")]
+    public async Task CanonicalEpochRecovery_RevalidatesExactStateBeforeFinalCas(
+        string mutation,
+        string expectedFailure)
+    {
+        using Fixture fixture = new(richGraph: true);
+        PendingReconciliation source = await CreateAbandonedReconciliationAsync(fixture);
+        PreparedTicketCanonicalEpochRecoveryService recovery =
+            CreateCanonicalEpochRecoveryService(fixture);
+        string runId = (await recovery.StartAsync(source.RunId)).Status.Run.RunId;
+        PreparedTicketPublicationCandidateSnapshot candidate =
+            await CreateCanonicalEpochRecoveryCandidateAsync(fixture, runId);
+        File.Move(candidate.TemporaryPath, candidate.FinalPath);
+        fixture.Execute(mutation switch
+        {
+            "epoch" => "UPDATE authoring_processor_modes SET Epoch = Epoch + 1",
+            "hydration" =>
+                "UPDATE prepared_ticket_hydration SET DescriptionHtml = COALESCE(DescriptionHtml, '') || '<p>changed</p>'",
+            "grouping" =>
+                "UPDATE prepared_ticket_topics SET ShortDescription = ShortDescription || ' changed'",
+            "selection" =>
+                "UPDATE authoring_run_items SET AcceptedReceiptId = 'wrong-receipt' WHERE RunId = @runId",
+            _ => throw new ArgumentOutOfRangeException(nameof(mutation)),
+        }, ("@runId", runId));
+
+        PreparedTicketCanonicalEpochRecoveryException failure =
+            await Assert.ThrowsAsync<PreparedTicketCanonicalEpochRecoveryException>(
+                () => recovery.RecoverAsync(runId));
+
+        Assert.Equal(expectedFailure, failure.FailureCode);
+        await AssertCanonicalEpochRecoveryPendingAsync(fixture, recovery, runId);
+        Assert.Equal(candidate.Sha256,
+            await SqliteReviewSnapshotWriter.ComputeSha256Async(candidate.FinalPath));
+    }
+
+    [Theory]
+    [InlineData("modified-candidate", "snapshot-recovery-failure")]
+    [InlineData("missing-candidate", "snapshot-recovery-failure")]
+    [InlineData("changed-provenance", "snapshot-recovery-failure")]
+    [InlineData("missing-snapshot-record", "recovery-evidence-conflict")]
+    public async Task CanonicalEpochRecovery_FailedEvidenceRetainsFenceAndSurvivesGenericStartup(
+        string mutation,
+        string expectedFailure)
+    {
+        using Fixture fixture = new(richGraph: true);
+        PendingReconciliation source = await CreateAbandonedReconciliationAsync(fixture);
+        PreparedTicketCanonicalEpochRecoveryService recovery =
+            CreateCanonicalEpochRecoveryService(fixture);
+        string runId = (await recovery.StartAsync(source.RunId)).Status.Run.RunId;
+        PreparedTicketPublicationCandidateSnapshot candidate =
+            await CreateCanonicalEpochRecoveryCandidateAsync(fixture, runId);
+        string provenance = await ReadSnapshotProvenanceIdAsync(candidate.TemporaryPath);
+        Assert.Equal(candidate.SnapshotId, provenance);
+        Assert.Equal(candidate.Sha256,
+            await SqliteReviewSnapshotWriter.ComputeSha256Async(candidate.TemporaryPath));
+        switch (mutation)
+        {
+            case "modified-candidate":
+                await MutateSnapshotAsync(candidate.TemporaryPath,
+                    "UPDATE prepared_tickets SET RequestSummary = 'modified after provenance'");
+                Assert.Equal(provenance, await ReadSnapshotProvenanceIdAsync(candidate.TemporaryPath));
+                break;
+            case "missing-candidate":
+                File.Delete(candidate.TemporaryPath);
+                break;
+            case "changed-provenance":
+                await MutateSnapshotAsync(candidate.TemporaryPath,
+                    "UPDATE authoring_snapshot_provenance SET Sequence = Sequence + 1");
+                break;
+            case "missing-snapshot-record":
+                fixture.Execute("DELETE FROM authoring_review_snapshots WHERE Id = @id",
+                    ("@id", candidate.SnapshotId));
+                break;
+        }
+
+        PreparedTicketCanonicalEpochRecoveryException failure =
+            await Assert.ThrowsAsync<PreparedTicketCanonicalEpochRecoveryException>(
+                () => recovery.RecoverAsync(runId));
+        Assert.Equal(expectedFailure, failure.FailureCode);
+        await AssertCanonicalEpochRecoveryPendingAsync(fixture, recovery, runId);
+        string snapshotState = fixture.DumpTables("authoring_review_snapshots");
+        string journal = fixture.DumpTables("prepared_ticket_canonical_epoch_recovery_journal");
+        bool temporaryExists = File.Exists(candidate.TemporaryPath);
+
+        PublicationHttpHandler handler = new(fixture, new Dictionary<string, DateTimeOffset>());
+        using HttpClient http = handler.CreateClient();
+        await CreateCanonicalEpochRecoverySurfaces(fixture, recovery, http)
+            .PostProcessor.ReconcileSnapshotsOnStartupAsync(CancellationToken.None);
+
+        Assert.Equal(snapshotState, fixture.DumpTables("authoring_review_snapshots"));
+        Assert.Equal(journal, fixture.DumpTables("prepared_ticket_canonical_epoch_recovery_journal"));
+        Assert.Equal(temporaryExists, File.Exists(candidate.TemporaryPath));
+        PreparedTicketCanonicalEpochRecoveryStartResult duplicate =
+            await recovery.StartAsync(source.RunId);
+        Assert.True(duplicate.ExistingRun);
+        Assert.Equal(runId, duplicate.Status.Run.RunId);
+    }
+
+    [Fact]
+    public async Task CanonicalEpochRecovery_CasFailureRollsBackAndExplicitRetryReusesPublishedFile()
+    {
+        using Fixture fixture = new(richGraph: true);
+        PendingReconciliation source = await CreateAbandonedReconciliationAsync(fixture);
+        PreparedTicketCanonicalEpochRecoveryService recovery =
+            CreateCanonicalEpochRecoveryService(fixture);
+        string runId = (await recovery.StartAsync(source.RunId)).Status.Run.RunId;
+        PreparedTicketPublicationCandidateSnapshot candidate =
+            await CreateCanonicalEpochRecoveryCandidateAsync(fixture, runId);
+        string sourceAudit = ReadAbandonmentAudit(fixture, source.RunId);
+        fixture.Execute(
+            $"""
+            CREATE TRIGGER fail_recovery_completion
+            BEFORE UPDATE OF Status ON authoring_runs
+            WHEN NEW.Id = '{runId}' AND NEW.Status = 'completed'
+            BEGIN
+                SELECT RAISE(ABORT, 'synthetic final recovery CAS failure');
+            END;
+            """);
+        PublicationHttpHandler handler = new(fixture, new Dictionary<string, DateTimeOffset>());
+        using HttpClient http = handler.CreateClient();
+        PreparedTicketPublicationMaintenanceController controller =
+            CreateCanonicalEpochRecoverySurfaces(fixture, recovery, http).Controller;
+
+        ConflictObjectResult refused = Assert.IsType<ConflictObjectResult>(
+            await controller.RetryCanonicalEpochRecovery(runId, CancellationToken.None));
+        Assert.Equal("snapshot-recovery-failure",
+            Assert.IsType<PreparedTicketCanonicalEpochRecoveryFailure>(refused.Value).Error);
+        await AssertCanonicalEpochRecoveryPendingAsync(fixture, recovery, runId);
+        Assert.Equal("creating", fixture.Scalar<string>(
+            $"SELECT Status FROM authoring_review_snapshots WHERE Id = '{candidate.SnapshotId}'"));
+        Assert.Equal(0L, fixture.Scalar<long>(
+            $"SELECT COUNT(*) FROM authoring_runs WHERE Id = '{runId}' AND SnapshotId IS NOT NULL"));
+        Assert.True(File.Exists(candidate.FinalPath));
+        Assert.False(File.Exists(candidate.TemporaryPath));
+        Assert.Equal(candidate.Sha256,
+            await SqliteReviewSnapshotWriter.ComputeSha256Async(candidate.FinalPath));
+
+        fixture.Execute("DROP TRIGGER fail_recovery_completion");
+        PreparedTicketCanonicalEpochRecoveryRetryResult retried =
+            Assert.IsType<PreparedTicketCanonicalEpochRecoveryRetryResult>(
+                Assert.IsType<OkObjectResult>(
+                    await controller.RetryCanonicalEpochRecovery(runId, CancellationToken.None)).Value);
+        Assert.Equal("ready", retried.Status.Recovery.State);
+        Assert.Equal(candidate.SnapshotId, retried.Status.Snapshot?.SnapshotId);
+        Assert.Equal(candidate.Sha256, retried.Status.Snapshot?.Sha256);
+        Assert.Equal(sourceAudit, ReadAbandonmentAudit(fixture, source.RunId));
+        Assert.Null(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+        Assert.Equal(1L, fixture.Scalar<long>(
+            "SELECT COUNT(*) FROM prepared_ticket_canonical_epoch_recovery_resolutions"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CanonicalEpochRecovery_StartupResumesAdmittedOrUnhashedReservedRun(
+        bool reserveFirst)
+    {
+        using Fixture fixture = new(richGraph: true);
+        PendingReconciliation source = await CreateAbandonedReconciliationAsync(fixture);
+        PreparedTicketCanonicalEpochRecoveryService recovery =
+            CreateCanonicalEpochRecoveryService(fixture);
+        string runId = (await recovery.StartAsync(source.RunId)).Status.Run.RunId;
+        string? reservedSnapshotId = null;
+        if (reserveFirst)
+        {
+            await fixture.Store.MarkRunFinalizingAsync(runId);
+            PreparerDatabase.CanonicalEpochRecoverySnapshotReservation reservation =
+                await fixture.Database.ReserveCanonicalEpochRecoverySnapshotAsync(
+                    runId,
+                    Path.Combine(fixture.SnapshotDirectory, $"jira-fhir-{runId}.canonical-epoch-recovery.tmp"),
+                    Path.Combine(fixture.SnapshotDirectory, $"jira-fhir-{runId}.db"),
+                    PreparedTicketSnapshotSchemaV3.Version);
+            reservedSnapshotId = reservation.SnapshotId;
+            await File.WriteAllTextAsync(reservation.TemporaryPath, "unfinished untrusted backup");
+        }
+
+        PreparedTicketCanonicalEpochRecoveryService restarted =
+            CreateCanonicalEpochRecoveryService(fixture);
+        await restarted.RecoverPendingAsync();
+        PreparedTicketCanonicalEpochRecoveryStatusResult ready =
+            await restarted.GetStatusAsync(runId);
+        Assert.Equal("ready", ready.Recovery.State);
+        Assert.Equal(runId, ready.Snapshot?.RunId);
+        if (reserveFirst)
+        {
+            Assert.Equal(reservedSnapshotId, ready.Snapshot?.SnapshotId);
+        }
+        await restarted.RecoverPendingAsync();
+        Assert.Equal(
+            JsonSerializer.Serialize(ready.Snapshot),
+            JsonSerializer.Serialize(await restarted.RecoverAsync(runId)));
+        Assert.Empty(await fixture.Database.ListPendingCanonicalEpochRecoveriesAsync());
+        PreparedTicketCanonicalEpochRecoveryException duplicate =
+            await Assert.ThrowsAsync<PreparedTicketCanonicalEpochRecoveryException>(
+                () => restarted.StartAsync(source.RunId));
+        Assert.Equal("canonical-epoch-already-recovered", duplicate.FailureCode);
+        Assert.Equal(1L, fixture.Scalar<long>(
+            "SELECT COUNT(*) FROM prepared_ticket_canonical_epoch_recoveries"));
+    }
+
+    [Fact]
+    public async Task CanonicalEpochRecovery_CannotCompleteBeforeFinalFileVerification()
+    {
+        using Fixture fixture = new(richGraph: true);
+        PendingReconciliation source = await CreateAbandonedReconciliationAsync(fixture);
+        PreparedTicketCanonicalEpochRecoveryService recovery =
+            CreateCanonicalEpochRecoveryService(fixture);
+        string runId = (await recovery.StartAsync(source.RunId)).Status.Run.RunId;
+        PreparedTicketPublicationCandidateSnapshot candidate =
+            await CreateCanonicalEpochRecoveryCandidateAsync(fixture, runId);
+        PreparerDatabase.CanonicalEpochRecoveryEvidence evidence = Assert.IsType<
+            PreparerDatabase.CanonicalEpochRecoveryEvidence>(
+                await fixture.Database.GetCanonicalEpochRecoveryEvidenceAsync(runId));
+
+        await Assert.ThrowsAsync<FileNotFoundException>(() =>
+            fixture.Database.CompleteCanonicalEpochRecoveryAsync(
+                candidate, PreparerDatabase.CreateCanonicalEpochRecoveryProof(evidence.Recipe)));
+
+        Assert.Equal(0L, fixture.Scalar<long>(
+            "SELECT COUNT(*) FROM prepared_ticket_canonical_epoch_recovery_resolutions"));
+        Assert.Equal("creating", fixture.Scalar<string>(
+            $"SELECT Status FROM authoring_review_snapshots WHERE Id = '{candidate.SnapshotId}'"));
+        Assert.Equal(runId, (await fixture.Store.GetFencedRunAsync("jira-fhir"))?.Id);
+    }
+
+    [Fact]
+    public async Task CanonicalEpochRecovery_MatchingFinalCompletesDespiteDisposableCandidateCleanupFailure()
+    {
+        using Fixture fixture = new(richGraph: true);
+        PendingReconciliation source = await CreateAbandonedReconciliationAsync(fixture);
+        PreparedTicketCanonicalEpochRecoveryService recovery =
+            CreateCanonicalEpochRecoveryService(fixture);
+        string runId = (await recovery.StartAsync(source.RunId)).Status.Run.RunId;
+        PreparedTicketPublicationCandidateSnapshot candidate =
+            await CreateCanonicalEpochRecoveryCandidateAsync(fixture, runId);
+        File.Copy(candidate.TemporaryPath, candidate.FinalPath);
+        using FileStream temporaryRead = new(
+            candidate.TemporaryPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+
+        AuthoringSnapshotDescriptor descriptor = await recovery.RecoverAsync(runId);
+
+        Assert.Equal(candidate.SnapshotId, descriptor.SnapshotId);
+        Assert.Equal(candidate.Sha256, descriptor.Sha256);
+        Assert.Equal("ready", (await recovery.GetStatusAsync(runId)).Recovery.State);
+        Assert.Equal("completed", (await fixture.Store.GetRunAsync(runId))?.Status);
+        Assert.Null(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+    }
+
+    [Fact]
+    public async Task CanonicalEpochRecovery_ControllerPreservesHistoryAndExposesLinkedRecovery()
+    {
+        using Fixture fixture = new(richGraph: true);
+        PendingReconciliation source = await CreateAbandonedReconciliationAsync(fixture);
+        PreparedTicketCanonicalEpochRecoveryService recovery =
+            CreateCanonicalEpochRecoveryService(fixture);
+        PreparedTicketPublicationReconciliationComparison comparison = Assert.IsType<
+            PreparedTicketPublicationReconciliationComparison>(
+                await fixture.Database.GetPublicationReconciliationComparisonAsync(source.RunId));
+        PublicationHttpHandler handler = new(fixture, comparison.Items.ToDictionary(
+            item => item.TicketKey,
+            item => DateTimeOffset.Parse(item.CurrentSourceRevision, CultureInfo.InvariantCulture)));
+        using HttpClient http = handler.CreateClient();
+        PreparedTicketPublicationMaintenanceController controller =
+            CreateCanonicalEpochRecoverySurfaces(fixture, recovery, http).Controller;
+        Assert.IsType<NotFoundObjectResult>(
+            await controller.StartCanonicalEpochRecovery("missing-source", CancellationToken.None));
+        Assert.IsType<NotFoundObjectResult>(
+            await controller.RetryCanonicalEpochRecovery("missing-recovery", CancellationToken.None));
+
+        AcceptedResult accepted = Assert.IsType<AcceptedResult>(
+            await controller.StartCanonicalEpochRecovery(source.RunId, CancellationToken.None));
+        PreparedTicketCanonicalEpochRecoveryStartResult started = Assert.IsType<
+            PreparedTicketCanonicalEpochRecoveryStartResult>(accepted.Value);
+        string runId = started.Status.Run.RunId;
+        Assert.EndsWith($"/{runId}/canonical-epoch-recovery", accepted.Location);
+        PreparedTicketCanonicalEpochRecoveryStartResult duplicate = Assert.IsType<
+            PreparedTicketCanonicalEpochRecoveryStartResult>(
+                Assert.IsType<AcceptedResult>(
+                    await controller.StartCanonicalEpochRecovery(source.RunId, CancellationToken.None)).Value);
+        Assert.True(duplicate.ExistingRun);
+        Assert.Equal(runId, duplicate.Status.Run.RunId);
+
+        PreparedTicketPublicationReconciliationStatusResult historical = Assert.IsType<
+            PreparedTicketPublicationReconciliationStatusResult>(
+                Assert.IsType<OkObjectResult>(
+                    await controller.GetReconciliationStatus(source.RunId, CancellationToken.None)).Value);
+        Assert.Equal("abandoned", historical.Run.Status);
+        Assert.Equal("canonical-unpublished", historical.Promotion.State);
+        Assert.Equal(runId, historical.CanonicalEpochRecovery?.RunId);
+        Assert.Null(historical.CanonicalEpochRecovery?.SnapshotId);
+        Assert.IsType<OkObjectResult>(
+            await controller.RetryCanonicalEpochRecovery(runId, CancellationToken.None));
+        PreparedTicketPublicationReconciliationStatusResult resolved = Assert.IsType<
+            PreparedTicketPublicationReconciliationStatusResult>(
+                Assert.IsType<OkObjectResult>(
+                    await controller.GetReconciliationStatus(source.RunId, CancellationToken.None)).Value);
+        Assert.Equal(historical.Promotion, resolved.Promotion);
+        Assert.Equal("abandoned", resolved.Run.Status);
+        Assert.Equal("ready", resolved.CanonicalEpochRecovery?.State);
+        Assert.NotNull(resolved.CanonicalEpochRecovery?.SnapshotId);
+    }
+
     private sealed record Corpus(SourceResult Source, IReadOnlyDictionary<string, DateTimeOffset> Updates);
     private sealed record Publication(
         VerifiedAuthoringSnapshotPair DownloadedPair,
@@ -1319,7 +2037,8 @@ public sealed class PreparedTicketPublicationEndToEndTests
         string CorpusFingerprint);
     private sealed record PendingReconciliation(
         string RunId,
-        PreparerDatabase.PublicationReconciliationPromotion Promotion);
+        PreparerDatabase.PublicationReconciliationPromotion Promotion,
+        VerifiedAuthoringSnapshotPair PriorPublication);
 
     private sealed class CandidateGenerationAdvancingFetcher(
         IReadOnlyDictionary<string, string> revisions,
@@ -2236,7 +2955,7 @@ public sealed class PreparedTicketPublicationEndToEndTests
         PublicationHttpHandler handler = new(fixture, corpus.Updates);
         using HttpClient http = handler.CreateClient();
         AuthoringControlClient client = new(http);
-        _ = await PublishAsync(
+        Publication original = await PublishAsync(
             fixture,
             client,
             corpus.Source.Descriptor);
@@ -2289,7 +3008,7 @@ public sealed class PreparedTicketPublicationEndToEndTests
             promotion.CandidateSha256,
             await SqliteReviewSnapshotWriter.ComputeSha256Async(
                 promotion.TemporaryPath));
-        return new(staged.RunId, promotion);
+        return new(staged.RunId, promotion, original.Pair);
     }
 
     private static PreparedTicketPublicationRecoveryService
@@ -2298,6 +3017,148 @@ public sealed class PreparedTicketPublicationEndToEndTests
             fixture.Database,
             fixture.Store,
             NullLogger<PreparedTicketPublicationRecoveryService>.Instance);
+
+    private static async Task<PreparedTicketPublicationCandidateSnapshot>
+        CreateCanonicalEpochRecoveryCandidateAsync(Fixture fixture, string runId)
+    {
+        await fixture.Store.MarkRunFinalizingAsync(runId);
+        PreparerDatabase.CanonicalEpochRecoveryEvidence evidence =
+            Assert.IsType<PreparerDatabase.CanonicalEpochRecoveryEvidence>(
+                await fixture.Database.GetCanonicalEpochRecoveryEvidenceAsync(runId));
+        return await CreateCanonicalEpochRecoveryMaterializer(fixture)
+            .MaterializeCanonicalEpochRecoveryCandidateAsync(
+                Assert.IsType<AuthoringRunRecord>(await fixture.Store.GetRunAsync(runId)),
+                evidence.Recipe,
+                PreparerDatabase.CreateCanonicalEpochRecoveryProof(evidence.Recipe));
+    }
+
+    private static async Task AssertCanonicalEpochRecoveryPendingAsync(
+        Fixture fixture,
+        PreparedTicketCanonicalEpochRecoveryService recovery,
+        string runId)
+    {
+        PreparedTicketCanonicalEpochRecoveryStatusResult status =
+            await recovery.GetStatusAsync(runId);
+        Assert.Equal("error", status.Run.Status);
+        Assert.Equal("snapshot-publish-pending", status.Recovery.State);
+        Assert.True(status.Recovery.MutationFenceHeld);
+        Assert.Null(status.Snapshot);
+        Assert.Null(status.PublicationProof);
+        Assert.Equal(0L, fixture.Scalar<long>(
+            "SELECT COUNT(*) FROM prepared_ticket_canonical_epoch_recovery_resolutions"));
+        await AssertCanonicalUnpublishedRestrictionAsync(() =>
+            fixture.Database.EnsureSnapshotWorkflowAllowedAsync(
+                new("jira-fhir", false, AuthoringRunPurposeValues.Authoring)));
+    }
+
+    private static (
+        PreparedTicketRunPostProcessor PostProcessor,
+        PreparedTicketPublicationMaintenanceController Controller)
+        CreateCanonicalEpochRecoverySurfaces(
+            Fixture fixture,
+            PreparedTicketCanonicalEpochRecoveryService recovery,
+            HttpClient http)
+    {
+        IOptions<PreparerServiceOptions> options = Options.Create(new PreparerServiceOptions
+        {
+            SnapshotDirectory = fixture.SnapshotDirectory,
+            SnapshotSchemaVersion = PreparedTicketSnapshotSchemaV3.Version,
+        });
+        JiraAuthoringRunCoordinator coordinator = CreateCoordinator(fixture);
+        OrchestratorHydrationFetcher fetcher = new(http, NullLogger.Instance);
+        PreparedTicketPublicationReconciliationPlanner planner = new(
+            fixture.CreateBaselineReader(),
+            fetcher,
+            fixture.Database,
+            new AuthoringRunControlService(fixture.Store,
+                new AuthoringRetryPolicy(Options.Create(new ProcessingServiceOptions()))),
+            coordinator,
+            new AuthoringRunSchedulerWakeSignal());
+        PreparedTicketSnapshotMaterializer materializer =
+            CreateCanonicalEpochRecoveryMaterializer(fixture);
+        PreparedTicketPublicationRecoveryService reconciliationRecovery =
+            CreateRecoveryService(fixture);
+        PreparedTicketRunWorkflowRegistry workflows = new(
+            fixture.Store,
+            fixture.Database,
+            fetcher,
+            planner,
+            new PreparedTicketGroupingDeltaDispatcher(fixture.Database),
+            materializer,
+            reconciliationRecovery,
+            options,
+            NullLogger<PreparedTicketRunWorkflowRegistry>.Instance,
+            canonicalEpochRecoveryService: recovery);
+        return (
+            new(
+                fixture.Database,
+                fixture.Store,
+                new AuthoringRunFinalizer(fixture.Store),
+                new SqliteReviewSnapshotReconciler(fixture.Store),
+                coordinator,
+                new OrchestratorWorkGroupCatalogFetcher(http),
+                new UnconfiguredPreparedTicketGroupingDispatcher(),
+                options,
+                snapshotMaterializer: materializer,
+                workflowRegistry: workflows),
+            new(
+                fixture.CreateRefreshService(fetcher),
+                planner,
+                reconciliationRecovery,
+                recovery,
+                fixture.Database));
+    }
+
+    private static PreparedTicketCanonicalEpochRecoveryService
+        CreateCanonicalEpochRecoveryService(Fixture fixture)
+    {
+        PreparedTicketSnapshotMaterializer materializer =
+            CreateCanonicalEpochRecoveryMaterializer(fixture);
+        AuthoringRunControlService runControl = new(
+            fixture.Store,
+            new AuthoringRetryPolicy(
+                Options.Create(new ProcessingServiceOptions())));
+        return new(
+            fixture.Database,
+            fixture.Store,
+            runControl,
+            materializer,
+            new AuthoringRunSchedulerWakeSignal(),
+            NullLogger<
+                PreparedTicketCanonicalEpochRecoveryService>.Instance);
+    }
+
+    private static PreparedTicketSnapshotMaterializer
+        CreateCanonicalEpochRecoveryMaterializer(Fixture fixture)
+        => new(
+            fixture.Database,
+            fixture.Store,
+            new SqliteReviewSnapshotReconciler(fixture.Store),
+            Options.Create(new PreparerServiceOptions
+            {
+                SnapshotDirectory = fixture.SnapshotDirectory,
+                SnapshotSchemaVersion =
+                    PreparedTicketSnapshotSchemaV3.Version,
+            }));
+
+    private static async Task<PendingReconciliation>
+        CreateAbandonedReconciliationAsync(Fixture fixture)
+    {
+        PendingReconciliation pending =
+            await CreatePendingReconciliationAsync(fixture);
+        await fixture.Database.AbandonPublicationReconciliationAsync(
+            pending.RunId,
+            "snapshot publication was abandoned",
+            new DateTimeOffset(
+                2026,
+                9,
+                17,
+                14,
+                0,
+                0,
+                TimeSpan.Zero));
+        return pending;
+    }
 
     private static async Task MutateSnapshotAsync(
         string path,

@@ -380,6 +380,55 @@ public static class OrchestratorCatalog
             Description: "Leaves promoted canonical data unpublished and restricts later snapshot-producing workflows."),
 
         new ApiEndpointDescriptor(
+            Id: "processing.authoring.canonical-epoch-recovery.start",
+            DisplayName: "Start Canonical-Epoch Recovery",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{sourceRunId}/canonical-epoch-recovery",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter(
+                    "sourceRunId",
+                    ApiParameterKind.Path,
+                    Required: true),
+            ],
+            Destructive: true,
+            Description: "Starts or returns the existing dedicated recovery run for an unresolved canonical-unpublished abandonment."),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.canonical-epoch-recovery.status",
+            DisplayName: "Canonical-Epoch Recovery Status",
+            Group: "Processing",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}/canonical-epoch-recovery",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter(
+                    "runId",
+                    ApiParameterKind.Path,
+                    Required: true),
+            ]),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.canonical-epoch-recovery.retry",
+            DisplayName: "Retry Canonical-Epoch Recovery",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}/canonical-epoch-recovery/retry",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter(
+                    "runId",
+                    ApiParameterKind.Path,
+                    Required: true),
+            ],
+            Destructive: true,
+            Description: "Resumes the same recovery run and immutable snapshot journal."),
+
+        new ApiEndpointDescriptor(
             Id: "processing.authoring.status",
             DisplayName: "Authoring Run Status",
             Group: "Processing",

@@ -93,7 +93,8 @@ public sealed record PublicationReconciliationStatusResult(
     IReadOnlyList<string> InvalidatedTicketKeys,
     PublicationReconciliationProof? PublicationProof = null,
     string? FailureCode = null,
-    string? FailureDetail = null);
+    string? FailureDetail = null,
+    CanonicalEpochRecoveryLink? CanonicalEpochRecovery = null);
 
 public sealed record PublicationReconciliationRetryResult(
     PublicationReconciliationStatusResult Status,
@@ -108,6 +109,66 @@ public sealed record PublicationReconciliationAbandonResult(
     PublicationReconciliationStatusResult Status,
     DateTimeOffset AbandonedAt,
     string Reason);
+
+public sealed record CanonicalEpochRecoverySourceAbandonment(
+    string RunId,
+    long AuthoringEpoch,
+    string PromotionState,
+    DateTimeOffset AbandonedAt,
+    string Reason);
+
+public sealed record CanonicalEpochRecoveryFrozenState(
+    int AcceptedTicketCount,
+    int GroupingPartitionCount,
+    string CorpusFingerprint,
+    string GroupingFingerprint,
+    string RecipeFingerprint,
+    DateTimeOffset CapturedAt);
+
+public sealed record CanonicalEpochRecoveryProof(
+    int ContractVersion,
+    string Purpose,
+    string RunId,
+    string SourceRunId,
+    long AuthoringEpoch,
+    DateTimeOffset AbandonedAt,
+    string CorpusFingerprint,
+    string GroupingFingerprint,
+    string RecipeFingerprint,
+    DateTimeOffset CapturedAt);
+
+public sealed record CanonicalEpochRecoveryLink(
+    string RunId,
+    string SourceRunId,
+    long AuthoringEpoch,
+    string State,
+    string? SnapshotId = null,
+    string? SnapshotSha256 = null,
+    DateTimeOffset? ResolvedAt = null);
+
+public sealed record CanonicalEpochRecoveryLifecycleStatus(
+    string State,
+    bool MutationFenceHeld,
+    DateTimeOffset? LastRecoveryAttemptAt = null,
+    string? FailureCode = null,
+    string? FailureDetail = null);
+
+public sealed record CanonicalEpochRecoveryStatusResult(
+    AuthoringRunStatus Run,
+    IReadOnlyList<AuthoringRunItemStatus> Items,
+    CanonicalEpochRecoverySourceAbandonment SourceAbandonment,
+    CanonicalEpochRecoveryFrozenState Frozen,
+    CanonicalEpochRecoveryLifecycleStatus Recovery,
+    CanonicalEpochRecoveryProof? PublicationProof = null,
+    AuthoringSnapshotDescriptor? Snapshot = null);
+
+public sealed record CanonicalEpochRecoveryStartResult(
+    CanonicalEpochRecoveryStatusResult Status,
+    bool ExistingRun);
+
+public sealed record CanonicalEpochRecoveryRetryResult(
+    CanonicalEpochRecoveryStatusResult Status,
+    bool RecoveryStarted);
 
 public interface IAuthoringControlClient
 {
@@ -168,6 +229,33 @@ public interface IAuthoringControlClient
             new NotSupportedException(
                 "Publication reconciliation abandonment is not supported by this authoring client."));
 
+    Task<CanonicalEpochRecoveryStartResult>
+        StartCanonicalEpochRecoveryAsync(
+            string serviceName,
+            string sourceRunId,
+            CancellationToken ct) =>
+        Task.FromException<CanonicalEpochRecoveryStartResult>(
+            new NotSupportedException(
+                "Canonical-epoch recovery start is not supported by this authoring client."));
+
+    Task<CanonicalEpochRecoveryStatusResult>
+        GetCanonicalEpochRecoveryAsync(
+            string serviceName,
+            string runId,
+            CancellationToken ct) =>
+        Task.FromException<CanonicalEpochRecoveryStatusResult>(
+            new NotSupportedException(
+                "Canonical-epoch recovery status is not supported by this authoring client."));
+
+    Task<CanonicalEpochRecoveryRetryResult>
+        RetryCanonicalEpochRecoveryAsync(
+            string serviceName,
+            string runId,
+            CancellationToken ct) =>
+        Task.FromException<CanonicalEpochRecoveryRetryResult>(
+            new NotSupportedException(
+                "Canonical-epoch recovery retry is not supported by this authoring client."));
+
     Task<AuthoringRunListResponse> ListAsync(
         string serviceName,
         int? limit,
@@ -205,6 +293,8 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
         "publication-refresh";
     private const string PublicationReconciliationPurpose =
         "publication-reconciliation";
+    private const string CanonicalEpochRecoveryPurpose =
+        "canonical-epoch-recovery";
 
     private static readonly JsonSerializerOptions JsonOptions =
         new(JsonSerializerDefaults.Web)
@@ -508,6 +598,88 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
             throw new InvalidOperationException(
                 "Publication reconciliation abandonment response contains inconsistent audit data.");
         }
+        return response;
+    }
+
+    public async Task<CanonicalEpochRecoveryStartResult>
+        StartCanonicalEpochRecoveryAsync(
+            string serviceName,
+            string sourceRunId,
+            CancellationToken ct)
+    {
+        string service = AuthoringServiceBinding.Normalize(serviceName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceRunId);
+        string path =
+            $"{ControlPath(service)}/{Uri.EscapeDataString(sourceRunId)}/canonical-epoch-recovery";
+        MutationResponse raw = await SendMutationAsync(
+            CanonicalEpochRecoveryPurpose,
+            service,
+            sourceRunId,
+            itemId: null,
+            path,
+            body: null,
+            ct);
+        CanonicalEpochRecoveryStartResult response =
+            Deserialize<CanonicalEpochRecoveryStartResult>(
+                raw.Content,
+                path);
+        ValidateCanonicalEpochRecoveryStatus(
+            response.Status,
+            service,
+            expectedRunId: null,
+            expectedSourceRunId: sourceRunId);
+        return response;
+    }
+
+    public async Task<CanonicalEpochRecoveryStatusResult>
+        GetCanonicalEpochRecoveryAsync(
+            string serviceName,
+            string runId,
+            CancellationToken ct)
+    {
+        string service = AuthoringServiceBinding.Normalize(serviceName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        string path =
+            $"{ControlPath(service)}/{Uri.EscapeDataString(runId)}/canonical-epoch-recovery";
+        CanonicalEpochRecoveryStatusResult response =
+            await SendReadJsonAsync<CanonicalEpochRecoveryStatusResult>(
+                path,
+                ct);
+        ValidateCanonicalEpochRecoveryStatus(
+            response,
+            service,
+            runId,
+            expectedSourceRunId: null);
+        return response;
+    }
+
+    public async Task<CanonicalEpochRecoveryRetryResult>
+        RetryCanonicalEpochRecoveryAsync(
+            string serviceName,
+            string runId,
+            CancellationToken ct)
+    {
+        string service = AuthoringServiceBinding.Normalize(serviceName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        string path =
+            $"{ControlPath(service)}/{Uri.EscapeDataString(runId)}/canonical-epoch-recovery/retry";
+        MutationResponse raw = await SendMutationAsync(
+            "canonical-epoch-recovery-retry",
+            service,
+            runId,
+            itemId: null,
+            path,
+            body: null,
+            ct);
+        CanonicalEpochRecoveryRetryResult response =
+            Deserialize<CanonicalEpochRecoveryRetryResult>(
+                raw.Content,
+                path);
+        ValidateCanonicalEpochRecoveryStatus(
+            response.Status,
+            service,
+            runId,
+            expectedSourceRunId: null);
         return response;
     }
 
@@ -1248,7 +1420,178 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
             throw new InvalidOperationException(
                 "Abandoned publication reconciliation response has inconsistent audit or fence state.");
         }
+        if (response.CanonicalEpochRecovery is { } recovery &&
+            (!string.Equals(
+                 recovery.SourceRunId,
+                 response.Run.RunId,
+                 StringComparison.Ordinal) ||
+             recovery.AuthoringEpoch != response.Run.AuthoringEpoch ||
+             recovery.State is not (
+                 "materialization-pending" or
+                 "snapshot-publish-pending" or
+                 "ready") ||
+             recovery.State == "ready" &&
+             (string.IsNullOrWhiteSpace(recovery.SnapshotId) ||
+              string.IsNullOrWhiteSpace(recovery.SnapshotSha256) ||
+              recovery.ResolvedAt is null)))
+        {
+            throw new InvalidOperationException(
+                "Publication reconciliation response has an inconsistent canonical-epoch recovery link.");
+        }
     }
+
+    private static void ValidateCanonicalEpochRecoveryStatus(
+        CanonicalEpochRecoveryStatusResult response,
+        string serviceName,
+        string? expectedRunId,
+        string? expectedSourceRunId)
+    {
+        if (response is null ||
+            response.SourceAbandonment is null ||
+            response.Frozen is null ||
+            response.Recovery is null)
+        {
+            throw new InvalidOperationException(
+                "Canonical-epoch recovery response is incomplete.");
+        }
+        ValidateRunResponse(
+            new AuthoringRunResponse(response.Run, response.Items),
+            expectedRunId);
+        string expectedProcessorKind =
+            AuthoringServiceBinding.GetProcessorKind(serviceName);
+        bool valid =
+            !response.Run.DatabaseOnly &&
+            string.Equals(
+                response.Run.ProcessorKind,
+                expectedProcessorKind,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                response.Run.Purpose,
+                CanonicalEpochRecoveryPurpose,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                response.Run.SourceRunId,
+                response.SourceAbandonment.RunId,
+                StringComparison.Ordinal) &&
+            !string.Equals(
+                response.Run.RunId,
+                response.SourceAbandonment.RunId,
+                StringComparison.Ordinal) &&
+            (expectedSourceRunId is null ||
+             string.Equals(
+                 response.SourceAbandonment.RunId,
+                 expectedSourceRunId,
+                 StringComparison.Ordinal)) &&
+            response.Run.AuthoringEpoch ==
+                response.SourceAbandonment.AuthoringEpoch &&
+            string.Equals(
+                response.SourceAbandonment.PromotionState,
+                "canonical-unpublished",
+                StringComparison.Ordinal) &&
+            response.SourceAbandonment.AbandonedAt != default &&
+            response.SourceAbandonment.AbandonedAt.Offset == TimeSpan.Zero &&
+            !string.IsNullOrWhiteSpace(
+                response.SourceAbandonment.Reason) &&
+            response.Frozen.AcceptedTicketCount > 0 &&
+            response.Frozen.AcceptedTicketCount ==
+                response.Items.Count &&
+            response.Items.All(item =>
+                string.Equals(
+                    item.Status,
+                    "complete",
+                    StringComparison.Ordinal) &&
+                !string.IsNullOrWhiteSpace(item.AcceptedReceiptId)) &&
+            response.Frozen.GroupingPartitionCount >= 0 &&
+            IsCanonicalSha256(response.Frozen.CorpusFingerprint) &&
+            IsCanonicalSha256(response.Frozen.GroupingFingerprint) &&
+            IsCanonicalSha256(response.Frozen.RecipeFingerprint) &&
+            response.Frozen.CapturedAt != default &&
+            response.Frozen.CapturedAt.Offset == TimeSpan.Zero &&
+            response.Recovery.State is
+                "materialization-pending" or
+                "snapshot-publish-pending" or
+                "ready";
+        if (!valid)
+        {
+            throw new InvalidOperationException(
+                "Canonical-epoch recovery response has inconsistent coordinates.");
+        }
+
+        if (response.PublicationProof is { } proof &&
+            (proof.ContractVersion != 1 ||
+             !string.Equals(
+                 proof.Purpose,
+                 CanonicalEpochRecoveryPurpose,
+                 StringComparison.Ordinal) ||
+             !string.Equals(
+                 proof.RunId,
+                 response.Run.RunId,
+                 StringComparison.Ordinal) ||
+             !string.Equals(
+                 proof.SourceRunId,
+                 response.SourceAbandonment.RunId,
+                 StringComparison.Ordinal) ||
+             proof.AuthoringEpoch != response.Run.AuthoringEpoch ||
+             proof.AbandonedAt !=
+                 response.SourceAbandonment.AbandonedAt ||
+             proof.CapturedAt != response.Frozen.CapturedAt ||
+             !string.Equals(
+                 proof.CorpusFingerprint,
+                 response.Frozen.CorpusFingerprint,
+                 StringComparison.Ordinal) ||
+             !string.Equals(
+                 proof.GroupingFingerprint,
+                 response.Frozen.GroupingFingerprint,
+                 StringComparison.Ordinal) ||
+             !string.Equals(
+                 proof.RecipeFingerprint,
+                 response.Frozen.RecipeFingerprint,
+                 StringComparison.Ordinal)))
+        {
+            throw new InvalidOperationException(
+                "Canonical-epoch recovery proof conflicts with its frozen state.");
+        }
+        if (response.Recovery.State == "ready" &&
+            (response.Recovery.MutationFenceHeld ||
+             response.PublicationProof is null ||
+             response.Snapshot is null ||
+             !string.Equals(
+                 response.Snapshot.RunId,
+                 response.Run.RunId,
+                 StringComparison.Ordinal) ||
+             response.Snapshot.AuthoringEpoch !=
+                 response.Run.AuthoringEpoch ||
+             response.Snapshot.SchemaVersion != 3 ||
+             !IsCanonicalSha256(response.Snapshot.Sha256) ||
+             response.Snapshot.PublicationProof is not { } snapshotProof ||
+             snapshotProof.Purpose != CanonicalEpochRecoveryPurpose ||
+             snapshotProof.SourceRunId != response.SourceAbandonment.RunId ||
+             snapshotProof.SourceContentRevision != response.Run.AuthoringEpoch ||
+             snapshotProof.CorpusFingerprint != response.Frozen.CorpusFingerprint ||
+             snapshotProof.GroupingFingerprint != response.Frozen.GroupingFingerprint ||
+             !string.Equals(
+                 response.Run.Status,
+                 "completed",
+                 StringComparison.Ordinal)))
+        {
+            throw new InvalidOperationException(
+                "Ready canonical-epoch recovery response is incomplete.");
+        }
+        if (response.Recovery.State != "ready" &&
+            (!response.Recovery.MutationFenceHeld ||
+             response.Snapshot is not null ||
+             response.PublicationProof is not null ||
+             response.Run.Status is not ("running" or "finalizing" or "error")))
+        {
+            throw new InvalidOperationException(
+                "Pending canonical-epoch recovery response lost its restriction or retryable run.");
+        }
+    }
+
+    private static bool IsCanonicalSha256(string? value)
+        => value is { Length: 64 } &&
+           value.All(character =>
+               character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
     private static void ValidateReconciliationRun(
         AuthoringRunStatus run,

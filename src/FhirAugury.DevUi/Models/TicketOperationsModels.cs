@@ -111,7 +111,8 @@ public sealed record TicketRunDetails(
     TicketRunOutcome Outcome,
     ReviewSitePublication? Publication,
     string? PublicationError = null,
-    PublicationReconciliationStatusResult? Reconciliation = null);
+    PublicationReconciliationStatusResult? Reconciliation = null,
+    CanonicalEpochRecoveryStatusResult? CanonicalEpochRecovery = null);
 
 public enum TicketOperationDisposition
 {
@@ -198,6 +199,19 @@ public sealed record TicketPublicationReconciliationResult(
     TicketWorkflowDefinition Workflow,
     string RunId,
     PublicationReconciliationStatusResult? Status = null,
+    IReadOnlyList<string>? RelatedRunIds = null,
+    string? Message = null,
+    string? FailureCode = null)
+{
+    public IReadOnlyList<string> ConflictingRunIds =>
+        RelatedRunIds ?? [];
+}
+
+public sealed record TicketCanonicalEpochRecoveryResult(
+    TicketOperationDisposition Disposition,
+    TicketWorkflowDefinition Workflow,
+    string RunId,
+    CanonicalEpochRecoveryStatusResult? Status = null,
     IReadOnlyList<string>? RelatedRunIds = null,
     string? Message = null,
     string? FailureCode = null)

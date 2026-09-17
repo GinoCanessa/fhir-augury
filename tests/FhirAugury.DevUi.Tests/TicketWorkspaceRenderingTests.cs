@@ -1362,7 +1362,7 @@ public sealed class TicketWorkspaceRenderingTests
             Regex.Replace(completed.Html, "<[^>]*>", " "));
 
         Assert.Contains(
-            "No replacement snapshot was produced; snapshot-producing workflows remain restricted for this canonical epoch.",
+            "No replacement snapshot was produced; snapshot-producing workflows remain restricted for this canonical epoch until a dedicated recovery snapshot is verified.",
             completedText);
         Assert.DoesNotContain("Retry snapshot publication", completed.Html);
         Assert.DoesNotContain("Abandon without publication", completed.Html);
@@ -1514,6 +1514,188 @@ public sealed class TicketWorkspaceRenderingTests
         Assert.Contains("Trusted candidate already exists.", text);
     }
 
+    [Fact]
+    public async Task AbandonedRunStartsDedicatedRecoveryAndNavigatesToItsRun()
+    {
+        await using Fixture fixture = new();
+        PublicationReconciliationStatusResult abandoned =
+            ReconciliationStatus("canonical-unpublished", "canonical-unpublished");
+        fixture.Authoring.GetHandler = (_, _, _) =>
+            Task.FromResult(new AuthoringRunResponse(abandoned.Run, abandoned.Items));
+        fixture.Authoring.ReconciliationStatusHandler = (_, _, _) => Task.FromResult(abandoned);
+        fixture.Authoring.CanonicalRecoveryStartHandler = (_, _, _) =>
+            Task.FromResult(new CanonicalEpochRecoveryStartResult(
+                CanonicalEpochRecoveryStatus(), ExistingRun: false));
+        Mounted<TicketRunDetail> page = await fixture.Renderer.MountAsync<TicketRunDetail>(
+            Parameters((nameof(TicketRunDetail.Workflow), "prepare"),
+                (nameof(TicketRunDetail.RunId), "reconciliation-run")));
+        await page.Rendering.WaitAsync(HangGuard);
+        Markup markup = await fixture.Renderer.WaitForAsync(page.Id,
+            value => value.Html.Contains("Start canonical-epoch recovery", StringComparison.Ordinal));
+        Assert.Contains("Abandoned", markup.Html);
+        Assert.Contains("storage incident", markup.Html);
+        Assert.False(markup.Button("Start canonical-epoch recovery").Disabled);
+
+        await fixture.Renderer.ClickAsync(page.Id, "Start canonical-epoch recovery");
+
+        Assert.EndsWith("/operations/prepare/recovery-run", fixture.Navigation.Uri);
+        Assert.Equal(("Preparer", "reconciliation-run"),
+            Assert.Single(fixture.Authoring.CanonicalRecoveryStartRequests));
+        Assert.Empty(fixture.Authoring.ReconciliationRetryRequests);
+    }
+
+    [Fact]
+    public async Task AbandonedRunDisplaysRecoveryStartConflictAndRelatedLinks()
+    {
+        await using Fixture fixture = new();
+        PublicationReconciliationStatusResult abandoned =
+            ReconciliationStatus("canonical-unpublished", "canonical-unpublished");
+        fixture.Authoring.GetHandler = (_, _, _) =>
+            Task.FromResult(new AuthoringRunResponse(abandoned.Run, abandoned.Items));
+        fixture.Authoring.ReconciliationStatusHandler = (_, _, _) => Task.FromResult(abandoned);
+        fixture.Authoring.CanonicalRecoveryStartHandler = (_, _, _) =>
+            Task.FromException<CanonicalEpochRecoveryStartResult>(
+                new AuthoringControlException(HttpStatusCode.Conflict,
+                    "recovery-in-progress", "Another run owns the mutation fence.",
+                    relatedRunIds: ["other-run"]));
+        Mounted<TicketRunDetail> page = await fixture.Renderer.MountAsync<TicketRunDetail>(
+            Parameters((nameof(TicketRunDetail.Workflow), "prepare"),
+                (nameof(TicketRunDetail.RunId), "reconciliation-run")));
+        await page.Rendering.WaitAsync(HangGuard);
+        await fixture.Renderer.ClickAsync(page.Id, "Start canonical-epoch recovery");
+
+        Markup markup = await fixture.Renderer.WaitForAsync(page.Id,
+            value => value.Html.Contains("Recovery action was not applied.", StringComparison.Ordinal));
+        Assert.Contains("recovery-in-progress", markup.Html);
+        Assert.Contains("href=\"/operations/prepare/other-run\"", markup.Html);
+        Assert.Contains("Canonical data is unpublished.", markup.Html);
+        Assert.False(markup.Button("Start canonical-epoch recovery").Disabled);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AbandonedRunShowsLinkedRecoveryWithoutReopeningHistory(bool ready)
+    {
+        await using Fixture fixture = new();
+        PublicationReconciliationStatusResult abandoned =
+            ReconciliationStatus("canonical-unpublished", "canonical-unpublished");
+        abandoned = abandoned with
+        {
+            CanonicalEpochRecovery = new(
+                "recovery-run", abandoned.Run.RunId, abandoned.Run.AuthoringEpoch,
+                ready ? "ready" : "snapshot-publish-pending",
+                ready ? "recovery-snapshot" : null,
+                ready ? new string('d', 64) : null,
+                ready ? ReadTime : null),
+        };
+        fixture.Authoring.GetHandler = (_, _, _) =>
+            Task.FromResult(new AuthoringRunResponse(abandoned.Run, abandoned.Items));
+        fixture.Authoring.ReconciliationStatusHandler = (_, _, _) => Task.FromResult(abandoned);
+        Mounted<TicketRunDetail> page = await fixture.Renderer.MountAsync<TicketRunDetail>(
+            Parameters((nameof(TicketRunDetail.Workflow), "prepare"),
+                (nameof(TicketRunDetail.RunId), "reconciliation-run")));
+        await page.Rendering.WaitAsync(HangGuard);
+        Markup markup = await fixture.Renderer.WaitForAsync(page.Id,
+            value => value.Html.Contains("Open canonical-epoch recovery", StringComparison.Ordinal));
+
+        Assert.Contains("href=\"/operations/prepare/recovery-run\"", markup.Html);
+        Assert.DoesNotContain("Start canonical-epoch recovery", markup.Html);
+        Assert.Contains("canonical-unpublished", markup.Html);
+        Assert.Contains("storage incident", markup.Html);
+        if (ready)
+        {
+            Assert.Contains("Canonical epoch recovered by a separate run.", markup.Html);
+            Assert.Contains("http://localhost:5150/api/v1/processing-services/Preparer/authoring/runs/recovery-run/snapshot",
+                markup.Html);
+            Assert.Contains("recovery-snapshot", markup.Html);
+            Assert.DoesNotContain("Canonical data is unpublished.", markup.Html);
+        }
+        else
+        {
+            Assert.Contains("Canonical data is unpublished.", markup.Html);
+        }
+        Assert.Empty(fixture.Authoring.CanonicalRecoveryStartRequests);
+    }
+
+    [Fact]
+    public async Task RecoveryRunDisplaysAuditAndRetryThenLinksTheVerifiedSnapshot()
+    {
+        await using Fixture fixture = new();
+        CanonicalEpochRecoveryStatusResult current = CanonicalEpochRecoveryStatus();
+        fixture.Authoring.GetHandler = (_, _, _) =>
+            Task.FromResult(new AuthoringRunResponse(current.Run, current.Items));
+        fixture.Authoring.CanonicalRecoveryStatusHandler = (_, _, _) => Task.FromResult(current);
+        fixture.Authoring.CanonicalRecoveryRetryHandler = (_, _, _) =>
+        {
+            current = CanonicalEpochRecoveryStatus(ready: true);
+            return Task.FromResult(new CanonicalEpochRecoveryRetryResult(current, true));
+        };
+        Mounted<TicketRunDetail> page = await fixture.Renderer.MountAsync<TicketRunDetail>(
+            Parameters((nameof(TicketRunDetail.Workflow), "prepare"),
+                (nameof(TicketRunDetail.RunId), "recovery-run")));
+        await page.Rendering.WaitAsync(HangGuard);
+        Markup pending = await fixture.Renderer.WaitForAsync(page.Id,
+            value => value.Html.Contains("Retry canonical-epoch recovery", StringComparison.Ordinal));
+        string text = Normalize(Regex.Replace(pending.Html, "<[^>]*>", " "));
+        Assert.Contains("mutation fence held", text);
+        Assert.Contains("snapshot-recovery-failure", text);
+        Assert.Contains("snapshot file is unavailable", text);
+        Assert.Contains("storage incident", text);
+        Assert.Contains("href=\"/operations/prepare/reconciliation-run\"", pending.Html);
+        Assert.Contains(new string('a', 64), pending.Html);
+        Assert.Contains(new string('b', 64), pending.Html);
+        Assert.DoesNotContain("Supersede ticket", pending.Html);
+
+        await fixture.Renderer.ClickAsync(page.Id, "Retry canonical-epoch recovery");
+        Markup completed = await fixture.Renderer.WaitForAsync(page.Id,
+            value => value.Html.Contains("Canonical epoch recovered.", StringComparison.Ordinal));
+        Assert.DoesNotContain("Retry canonical-epoch recovery", completed.Html);
+        Assert.Contains("recovery-snapshot", completed.Html);
+        Assert.Contains("http://localhost:5150/api/v1/processing-services/Preparer/authoring/runs/recovery-run/snapshot",
+            completed.Html);
+        Assert.Contains("Full processor success.", completed.Html);
+        Assert.Equal(("Preparer", "recovery-run"),
+            Assert.Single(fixture.Authoring.CanonicalRecoveryRetryRequests));
+    }
+
+    private static CanonicalEpochRecoveryStatusResult CanonicalEpochRecoveryStatus(bool ready = false)
+    {
+        AuthoringRunStatus run = Run("recovery-run",
+            ready ? "completed" : "error", terminal: ready) with
+        {
+            Purpose = "canonical-epoch-recovery",
+            SourceRunId = "reconciliation-run",
+            TotalItems = 1,
+            CompletedItems = 1,
+            FailedItems = 0,
+            State = new(ready, !ready),
+        };
+        CanonicalEpochRecoveryProof proof = new(
+            1, "canonical-epoch-recovery", run.RunId, "reconciliation-run",
+            run.AuthoringEpoch, ReadTime, new string('a', 64), new string('b', 64),
+            new string('c', 64), ReadTime);
+        return new(
+            run,
+            [new("recovery-item", run.RunId, "FHIR-1", "recovery:fhir", "rev-1",
+                "complete", null, "receipt-1", 0, ReadTime, null, ReadTime, null,
+                AllowedActions: new(true, true))],
+            new("reconciliation-run", run.AuthoringEpoch, "canonical-unpublished",
+                ReadTime, "storage incident"),
+            new(1, 1, proof.CorpusFingerprint, proof.GroupingFingerprint,
+                proof.RecipeFingerprint, ReadTime),
+            new(ready ? "ready" : "snapshot-publish-pending", !ready, ReadTime,
+                ready ? null : "snapshot-recovery-failure",
+                ready ? null : "snapshot file is unavailable"),
+            ready ? proof : null,
+            ready ? new("jira-fhir", run.RunId, "recovery-snapshot", run.AuthoringEpoch,
+                2, 3, new string('d', 64), 512, 1, 1, new Dictionary<string, long>(),
+                "recovery.db", ReadTime,
+                new(1, "canonical-epoch-recovery", "reconciliation-run", "jira",
+                    ReadTime, run.AuthoringEpoch, 0, proof.CorpusFingerprint,
+                    proof.GroupingFingerprint, ReadTime)) : null);
+    }
+
     private static PublicationReconciliationStatusResult
         ReconciliationStatus(
             string promotionState,
@@ -1537,7 +1719,9 @@ public sealed class TicketWorkspaceRenderingTests
                 "reconciliation-run",
                 promotionState == "cancelled"
                     ? "superseded"
-                    : "completed",
+                    : promotionState == "canonical-unpublished"
+                        ? "abandoned"
+                        : "completed",
                 terminal: true) with
             {
                 Purpose = "publication-reconciliation",
@@ -2114,6 +2298,24 @@ public sealed class TicketWorkspaceRenderingTests
         public ConcurrentQueue<(string Service, string SourceRunId)>
             RefreshRequests { get; } = new();
 
+        public Func<string, string, CancellationToken, Task<CanonicalEpochRecoveryStartResult>>
+            CanonicalRecoveryStartHandler { get; set; } = (_, _, _) =>
+                throw new InvalidOperationException("Recovery start was not configured.");
+
+        public Func<string, string, CancellationToken, Task<CanonicalEpochRecoveryStatusResult>>
+            CanonicalRecoveryStatusHandler { get; set; } = (_, _, _) =>
+                throw new InvalidOperationException("Recovery status was not configured.");
+
+        public Func<string, string, CancellationToken, Task<CanonicalEpochRecoveryRetryResult>>
+            CanonicalRecoveryRetryHandler { get; set; } = (_, _, _) =>
+                throw new InvalidOperationException("Recovery retry was not configured.");
+
+        public ConcurrentQueue<(string Service, string RunId)>
+            CanonicalRecoveryStartRequests { get; } = new();
+
+        public ConcurrentQueue<(string Service, string RunId)>
+            CanonicalRecoveryRetryRequests { get; } = new();
+
         public ConcurrentQueue<(string Service, string SourceRunId)>
             ReconciliationStartRequests { get; } = new();
 
@@ -2235,6 +2437,24 @@ public sealed class TicketWorkspaceRenderingTests
                 runId,
                 reason,
                 ct);
+        }
+
+        public Task<CanonicalEpochRecoveryStartResult> StartCanonicalEpochRecoveryAsync(
+            string serviceName, string sourceRunId, CancellationToken ct)
+        {
+            CanonicalRecoveryStartRequests.Enqueue((serviceName, sourceRunId));
+            return CanonicalRecoveryStartHandler(serviceName, sourceRunId, ct);
+        }
+
+        public Task<CanonicalEpochRecoveryStatusResult> GetCanonicalEpochRecoveryAsync(
+            string serviceName, string runId, CancellationToken ct)
+            => CanonicalRecoveryStatusHandler(serviceName, runId, ct);
+
+        public Task<CanonicalEpochRecoveryRetryResult> RetryCanonicalEpochRecoveryAsync(
+            string serviceName, string runId, CancellationToken ct)
+        {
+            CanonicalRecoveryRetryRequests.Enqueue((serviceName, runId));
+            return CanonicalRecoveryRetryHandler(serviceName, runId, ct);
         }
 
         public Task<AuthoringRunResponse> GetAsync(

@@ -66,6 +66,14 @@ public sealed class TicketOperationsService : IDisposable
             throw new ArgumentNullException(nameof(logger));
     }
 
+    public string GetSnapshotUrl(string workflow, string runId)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        TicketWorkflowDefinition definition = _catalog.Get(workflow);
+        return $"{_options.OrchestratorAddress.TrimEnd('/')}/api/v1/processing-services/{Uri.EscapeDataString(definition.ProcessingServiceName)}/authoring/runs/{Uri.EscapeDataString(runId)}/snapshot";
+    }
+
     public async Task<TicketRunDetails> OpenRunAsync(
         string workflow,
         string runId,
@@ -83,6 +91,8 @@ public sealed class TicketOperationsService : IDisposable
         string? publicationError = null;
         PublicationReconciliationStatusResult?
             reconciliation = null;
+        CanonicalEpochRecoveryStatusResult?
+            canonicalEpochRecovery = null;
         if (string.Equals(
                 response.Run.Purpose,
                 PreparedTicketPublicationReconciliationContract.Purpose,
@@ -90,6 +100,17 @@ public sealed class TicketOperationsService : IDisposable
         {
             reconciliation = await _authoringClient
                 .GetPublicationReconciliationAsync(
+                    definition.ProcessingServiceName,
+                    runId,
+                    ct);
+        }
+        else if (string.Equals(
+            response.Run.Purpose,
+            PreparedTicketCanonicalEpochRecoveryContract.Purpose,
+            StringComparison.Ordinal))
+        {
+            canonicalEpochRecovery = await _authoringClient
+                .GetCanonicalEpochRecoveryAsync(
                     definition.ProcessingServiceName,
                     runId,
                     ct);
@@ -129,7 +150,8 @@ public sealed class TicketOperationsService : IDisposable
                 publicationError: publicationError),
             publication,
             publicationError,
-            reconciliation);
+            reconciliation,
+            canonicalEpochRecovery);
     }
 
     public async Task<TicketStartResult> StartAsync(
@@ -659,6 +681,140 @@ public sealed class TicketOperationsService : IDisposable
             definition.ProcessingServiceName,
             "Preparer",
             StringComparison.Ordinal);
+
+    public async Task<TicketCanonicalEpochRecoveryResult>
+        StartCanonicalEpochRecoveryAsync(
+            string workflow,
+            string sourceRunId,
+            CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        TicketWorkflowDefinition definition = _catalog.Get(workflow);
+        if (!IsPrepareWorkflow(definition))
+        {
+            return new(
+                TicketOperationDisposition.NotAllowed,
+                definition,
+                sourceRunId,
+                Message:
+                    "Canonical-epoch recovery is available only for the Prepare workflow.");
+        }
+        if (!await _mutationGate.WaitAsync(0, ct))
+        {
+            return new(
+                TicketOperationDisposition.Busy,
+                definition,
+                sourceRunId,
+                Message:
+                    "Another mutation is already in progress in this UI circuit.");
+        }
+
+        try
+        {
+            CanonicalEpochRecoveryStartResult started =
+                await _authoringClient.StartCanonicalEpochRecoveryAsync(
+                    definition.ProcessingServiceName,
+                    sourceRunId,
+                    ct);
+            return new(
+                TicketOperationDisposition.Succeeded,
+                definition,
+                started.Status.Run.RunId,
+                started.Status,
+                Message: started.ExistingRun
+                    ? "The existing active or retryable canonical-epoch recovery was opened."
+                    : "Canonical-epoch recovery started from the frozen current corpus and grouping.");
+        }
+        catch (AuthoringControlException ex)
+            when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            return new(
+                TicketOperationDisposition.Conflict,
+                definition,
+                sourceRunId,
+                RelatedRunIds: ex.RelatedRunIds,
+                Message: ex.Detail ?? ex.Message,
+                FailureCode: ex.ErrorCode);
+        }
+        catch (Exception ex) when (IsOperationFailure(ex))
+        {
+            return new(
+                TicketOperationDisposition.Failed,
+                definition,
+                sourceRunId,
+                Message: ex.Message);
+        }
+        finally
+        {
+            _mutationGate.Release();
+        }
+    }
+
+    public async Task<TicketCanonicalEpochRecoveryResult>
+        RetryCanonicalEpochRecoveryAsync(
+            string workflow,
+            string runId,
+            CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        TicketWorkflowDefinition definition = _catalog.Get(workflow);
+        if (!IsPrepareWorkflow(definition))
+        {
+            return new(
+                TicketOperationDisposition.NotAllowed,
+                definition,
+                runId,
+                Message:
+                    "Canonical-epoch recovery is available only for the Prepare workflow.");
+        }
+        if (!await _mutationGate.WaitAsync(0, ct))
+        {
+            return new(
+                TicketOperationDisposition.Busy,
+                definition,
+                runId,
+                Message:
+                    "Another mutation is already in progress in this UI circuit.");
+        }
+
+        try
+        {
+            CanonicalEpochRecoveryRetryResult retried =
+                await _authoringClient.RetryCanonicalEpochRecoveryAsync(
+                    definition.ProcessingServiceName,
+                    runId,
+                    ct);
+            return new(
+                TicketOperationDisposition.Succeeded,
+                definition,
+                runId,
+                retried.Status,
+                Message: "Canonical-epoch recovery resumed from its durable journal.");
+        }
+        catch (AuthoringControlException ex)
+            when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            return new(
+                TicketOperationDisposition.Conflict,
+                definition,
+                runId,
+                RelatedRunIds: ex.RelatedRunIds,
+                Message: ex.Detail ?? ex.Message,
+                FailureCode: ex.ErrorCode);
+        }
+        catch (Exception ex) when (IsOperationFailure(ex))
+        {
+            return new(
+                TicketOperationDisposition.Failed,
+                definition,
+                runId,
+                Message: ex.Message);
+        }
+        finally
+        {
+            _mutationGate.Release();
+        }
+    }
 
     private enum ReconciliationMutation
     {

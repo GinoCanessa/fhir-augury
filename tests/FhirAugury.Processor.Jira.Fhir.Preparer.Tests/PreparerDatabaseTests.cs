@@ -71,10 +71,140 @@ public sealed class PreparerDatabaseTests
             "prepared_ticket_publication_reconciliation_journal",
             "prepared_ticket_publication_reconciliation_fences",
             "prepared_ticket_publication_snapshot_descriptors",
+            "prepared_ticket_canonical_epoch_recoveries",
+            "prepared_ticket_canonical_epoch_recovery_journal",
+            "prepared_ticket_canonical_epoch_recovery_resolutions",
         })
         {
             Assert.True(Exists(database, "table", table), table);
         }
+    }
+
+    [Fact]
+    public async Task CanonicalEpochRecoveryAdmission_FreezesOneCompleteMaintenanceSelection()
+    {
+        using TestDatabase database = CreateDatabase();
+        string sourceRunId = await SeedCanonicalEpochRecoverySourceAsync(database);
+        AuthoringRunStore store = new(database.Database);
+        using SqliteConnection canonical = database.Database.OpenConnection();
+        string canonicalBefore = DumpRows(canonical, "SELECT * FROM prepared_tickets ORDER BY RowId");
+
+        PreparerDatabase.CanonicalEpochRecoveryCreation[] attempts =
+            await Task.WhenAll(
+                database.Database.CreateCanonicalEpochRecoveryAsync(sourceRunId),
+                database.Database.CreateCanonicalEpochRecoveryAsync(sourceRunId));
+
+        PreparerDatabase.CanonicalEpochRecoveryCreation created =
+            Assert.Single(attempts, attempt => !attempt.ExistingRun);
+        Assert.Equal(created.RunId, Assert.Single(
+            attempts, attempt => attempt.ExistingRun).RunId);
+        Assert.NotEqual(sourceRunId, created.RunId);
+        Assert.Equal(2, created.Recipe.Corpus.Count);
+        Assert.Equal(64, created.Recipe.CanonicalRowsFingerprint.Length);
+        Assert.Equal(1, Count(database, "prepared_ticket_canonical_epoch_recoveries"));
+        Assert.Equal(1, Count(database, "prepared_ticket_canonical_epoch_recovery_journal"));
+        Assert.Equal(0, Count(database, "prepared_ticket_canonical_epoch_recovery_resolutions"));
+        AuthoringRunRecord run = Assert.IsType<AuthoringRunRecord>(
+            await store.GetRunAsync(created.RunId));
+        Assert.False(run.DatabaseOnly);
+        Assert.Equal(sourceRunId, run.SourceRunId);
+        Assert.Equal(AuthoringRunPurposeValues.CanonicalEpochRecovery, run.Purpose);
+        Assert.Equal(created.RunId, (await store.GetFencedRunAsync("jira-fhir"))?.Id);
+        Assert.True(await store.AllItemsCompleteAsync(created.RunId));
+        Assert.Empty(await store.GetRunStagesAsync(created.RunId));
+        Assert.All(await store.GetRunItemsAsync(created.RunId), item =>
+        {
+            Assert.Equal(AuthoringStatusValues.Items.Complete, item.Status);
+            Assert.Equal(0, item.AttemptCount);
+            PreparedTicketPublicationCorpusItem coordinate = Assert.Single(
+                created.Recipe.Corpus, value => value.TicketKey == item.BusinessKey);
+            Assert.Equal(coordinate.ReceiptId, item.AcceptedReceiptId);
+            Assert.Equal(coordinate.ExpectedSourceRevision, item.ExpectedSourceRevision);
+        });
+
+        await store.MarkRunFinalizingAsync(created.RunId);
+        _ = await database.Database.ValidateCanonicalEpochRecoveryCurrentAsync(created.RunId);
+        Assert.Equal(canonicalBefore, DumpRows(canonical, "SELECT * FROM prepared_tickets ORDER BY RowId"));
+        Assert.Equal(AuthoringStatusValues.Runs.Abandoned,
+            (await store.GetRunAsync(sourceRunId))?.Status);
+        PreparedTicketCanonicalEpochRecoveryLink link = Assert.IsType<
+            PreparedTicketCanonicalEpochRecoveryLink>(
+                await database.Database.GetCanonicalEpochRecoveryLinkAsync(sourceRunId));
+        Assert.Equal(created.RunId, link.RunId);
+        Assert.Null(link.ResolvedAt);
+        Assert.Null(link.SnapshotId);
+    }
+
+    [Fact]
+    public async Task CanonicalEpochRecoveryAdmission_RollsBackRunRecipeAndFenceTogether()
+    {
+        using TestDatabase database = CreateDatabase();
+        string sourceRunId = await SeedCanonicalEpochRecoverySourceAsync(database);
+        int runCount = Count(database, "authoring_runs");
+        using (SqliteConnection connection = database.Database.OpenConnection())
+        using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                CREATE TRIGGER fail_recovery_recipe_insert
+                BEFORE INSERT ON prepared_ticket_canonical_epoch_recoveries
+                BEGIN
+                    SELECT RAISE(ABORT, 'synthetic recovery admission failure');
+                END;
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        await Assert.ThrowsAsync<SqliteException>(() =>
+            database.Database.CreateCanonicalEpochRecoveryAsync(sourceRunId));
+
+        Assert.Equal(runCount, Count(database, "authoring_runs"));
+        Assert.Equal(0, Count(database, "prepared_ticket_canonical_epoch_recoveries"));
+        Assert.Equal(0, Count(database, "prepared_ticket_canonical_epoch_recovery_journal"));
+        Assert.Equal(0, Count(database, "authoring_mutation_fences"));
+        AuthoringConflictException restricted =
+            await Assert.ThrowsAsync<AuthoringConflictException>(() =>
+                database.Database.EnsureSnapshotWorkflowAllowedAsync(
+                    new("jira-fhir", false, AuthoringRunPurposeValues.Authoring)));
+        Assert.Equal(AuthoringConflictCode.CanonicalUnpublishedRestriction, restricted.Code);
+    }
+
+    [Theory]
+    [InlineData("missing", "invalid-source-reconciliation")]
+    [InlineData("not-abandoned", "source-not-abandoned")]
+    [InlineData("stale-epoch", "stale-canonical-epoch")]
+    [InlineData("unbacked-corpus", "canonical-state-changed")]
+    public async Task CanonicalEpochRecoveryAdmission_RejectsInvalidSourcesWithoutCreatingWork(
+        string mutation,
+        string expectedFailure)
+    {
+        using TestDatabase database = CreateDatabase();
+        string sourceRunId = await SeedCanonicalEpochRecoverySourceAsync(database);
+        using (SqliteConnection connection = database.Database.OpenConnection())
+        using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = mutation switch
+            {
+                "not-abandoned" =>
+                    "UPDATE authoring_runs SET Status = 'error' WHERE Id = @sourceRunId",
+                "stale-epoch" =>
+                    "UPDATE authoring_processor_modes SET Epoch = Epoch + 1",
+                "unbacked-corpus" =>
+                    "UPDATE prepared_tickets SET RequestSummary = RequestSummary || ' changed'",
+                _ => "SELECT 1",
+            };
+            command.Parameters.AddWithValue("@sourceRunId", sourceRunId);
+            command.ExecuteNonQuery();
+        }
+
+        PreparedTicketCanonicalEpochRecoveryException failure =
+            await Assert.ThrowsAsync<PreparedTicketCanonicalEpochRecoveryException>(() =>
+                database.Database.CreateCanonicalEpochRecoveryAsync(
+                    mutation == "missing" ? "missing-run" : sourceRunId));
+
+        Assert.Equal(expectedFailure, failure.FailureCode);
+        Assert.Equal(0, Count(database, "prepared_ticket_canonical_epoch_recoveries"));
+        Assert.Equal(0, Count(database, "authoring_mutation_fences"));
     }
 
     [Fact]
@@ -2316,6 +2446,41 @@ public sealed class PreparerDatabaseTests
         provenance = Assert.Single(preparation.InputProvenance!);
         Assert.Null(provenance.LatestSuccessfulRefreshAt);
         Assert.Null(provenance.ContentRevision);
+    }
+
+    private static async Task<string> SeedCanonicalEpochRecoverySourceAsync(
+        TestDatabase database)
+    {
+        PublicationRefreshContext context =
+            await CreatePublicationRefreshContextAsync(
+                database, "FHIR-1", "FHIR-2");
+        using SqliteConnection connection = database.Database.OpenConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            UPDATE authoring_runs
+            SET Purpose = 'publication-reconciliation', Status = 'abandoned',
+                CompletedAt = @abandonedAt
+            WHERE Id = @runId;
+            INSERT INTO prepared_ticket_publication_reconciliations(
+                RunId, SourceRunId, SourceSnapshotId, SourceSnapshotSha256,
+                StableJiraGeneration, CorpusFingerprint, ComparisonJson,
+                PromotionState, CapturedAt, AbandonedAt, AbandonmentReason)
+            VALUES(
+                @runId, @sourceRunId, 'fixture-snapshot', 'fixture-sha',
+                '42', @corpusFingerprint, '{}', 'canonical-unpublished',
+                @abandonedAt, @abandonedAt, 'fixture publication failure');
+            INSERT INTO prepared_ticket_publication_reconciliation_journal(
+                RunId, State, UpdatedAt)
+            VALUES(@runId, 'canonical-unpublished', @abandonedAt);
+            DELETE FROM authoring_mutation_fences WHERE RunId = @runId;
+            """;
+        command.Parameters.AddWithValue("@runId", context.RefreshRunId);
+        command.Parameters.AddWithValue("@sourceRunId", context.SourceRunId);
+        command.Parameters.AddWithValue("@corpusFingerprint", context.Inventory.CorpusFingerprint);
+        command.Parameters.AddWithValue("@abandonedAt", "2026-09-17T12:00:00.0000000+00:00");
+        command.ExecuteNonQuery();
+        return context.RefreshRunId;
     }
 
     private static Task<PublicationRefreshContext>

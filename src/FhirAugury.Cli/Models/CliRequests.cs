@@ -525,9 +525,10 @@ public abstract class AuthoringCommandRequest : CliRequest
     /// <summary>
     /// The selected run. For prepared-ticket-authoring
     /// refresh-publication, this is the source run to repair. Reconciliation
-    /// actions use <see cref="PreparedTicketAuthoringRequest.SourceRunId"/>
-    /// for the baseline and this property for status, retry, cancellation,
-    /// or abandonment of the reconciliation run.
+    /// and canonical-epoch recovery starts use
+    /// <see cref="PreparedTicketAuthoringRequest.SourceRunId"/> for the
+    /// source run. This property selects status/retry/cancel/abandon or the
+    /// dedicated recovery run.
     /// </summary>
     [JsonPropertyName("runId")]
     public string? RunId { get; set; }

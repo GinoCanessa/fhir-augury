@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using FhirAugury.Common.Api;
@@ -38,6 +39,8 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         "publication-reconciliation-grouping";
     private const string PublicationReconciliationSnapshotReservationKind =
         "snapshot-reservation-v1";
+    private const string CanonicalEpochRecoverySnapshotReservationKind =
+        "canonical-epoch-recovery-snapshot-reservation-v1";
     public const string CurrentSnapshotReceiptBackedTicketsTable =
         "current_prepared_receipt_backed_tickets";
     private static readonly string MaintenanceOwnerGeneration = Guid.NewGuid().ToString("N");
@@ -176,6 +179,11 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         PreparedTicketPartitionCertificationRecord.CreateTable(connection);
         PreparedTicketPublicationReconciliationRecord.CreateTable(connection);
         PreparedTicketPublicationReconciliationJournalRecord.CreateTable(connection);
+        PreparedTicketCanonicalEpochRecoveryRecord.CreateTable(connection);
+        PreparedTicketCanonicalEpochRecoveryJournalRecord.CreateTable(
+            connection);
+        PreparedTicketCanonicalEpochRecoveryResolutionRecord.CreateTable(
+            connection);
         JiraReviewWorkGroupRecord.CreateTable(connection);
         EnsureMigrationsTable(connection);
         EnsureAuthoringStateTables(connection);
@@ -371,7 +379,18 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
              AND EXISTS(
                 SELECT 1
                 FROM prepared_ticket_publication_reconciliations
-                WHERE PromotionState = 'canonical-unpublished')
+                    reconciliation
+                INNER JOIN authoring_runs abandoned
+                    ON abandoned.Id = reconciliation.RunId
+                LEFT JOIN
+                    prepared_ticket_canonical_epoch_recovery_resolutions
+                        resolution
+                    ON resolution.SourceRunId = reconciliation.RunId
+                   AND resolution.AuthoringEpoch =
+                       abandoned.AuthoringEpoch
+                WHERE reconciliation.PromotionState =
+                    'canonical-unpublished'
+                  AND resolution.RunId IS NULL)
             BEGIN
                 SELECT RAISE(
                     ABORT,
@@ -389,7 +408,18 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
              AND EXISTS(
                 SELECT 1
                 FROM prepared_ticket_publication_reconciliations
-                WHERE PromotionState = 'canonical-unpublished')
+                    reconciliation
+                INNER JOIN authoring_runs abandoned
+                    ON abandoned.Id = reconciliation.RunId
+                LEFT JOIN
+                    prepared_ticket_canonical_epoch_recovery_resolutions
+                        resolution
+                    ON resolution.SourceRunId = reconciliation.RunId
+                   AND resolution.AuthoringEpoch =
+                       abandoned.AuthoringEpoch
+                WHERE reconciliation.PromotionState =
+                    'canonical-unpublished'
+                  AND resolution.RunId IS NULL)
             BEGIN
                 SELECT RAISE(
                     ABORT,
@@ -407,7 +437,18 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
              AND EXISTS(
                 SELECT 1
                 FROM prepared_ticket_publication_reconciliations
-                WHERE PromotionState = 'canonical-unpublished')
+                    reconciliation
+                INNER JOIN authoring_runs abandoned
+                    ON abandoned.Id = reconciliation.RunId
+                LEFT JOIN
+                    prepared_ticket_canonical_epoch_recovery_resolutions
+                        resolution
+                    ON resolution.SourceRunId = reconciliation.RunId
+                   AND resolution.AuthoringEpoch =
+                       abandoned.AuthoringEpoch
+                WHERE reconciliation.PromotionState =
+                    'canonical-unpublished'
+                  AND resolution.RunId IS NULL)
             BEGIN
                 SELECT RAISE(
                     ABORT,
@@ -426,7 +467,18 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
              AND EXISTS(
                 SELECT 1
                 FROM prepared_ticket_publication_reconciliations
-                WHERE PromotionState = 'canonical-unpublished')
+                    reconciliation
+                INNER JOIN authoring_runs abandoned
+                    ON abandoned.Id = reconciliation.RunId
+                LEFT JOIN
+                    prepared_ticket_canonical_epoch_recovery_resolutions
+                        resolution
+                    ON resolution.SourceRunId = reconciliation.RunId
+                   AND resolution.AuthoringEpoch =
+                       abandoned.AuthoringEpoch
+                WHERE reconciliation.PromotionState =
+                    'canonical-unpublished'
+                  AND resolution.RunId IS NULL)
             BEGIN
                 SELECT RAISE(
                     ABORT,
@@ -441,7 +493,18 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
              AND EXISTS(
                 SELECT 1
                 FROM prepared_ticket_publication_reconciliations
-                WHERE PromotionState = 'canonical-unpublished')
+                    reconciliation
+                INNER JOIN authoring_runs abandoned
+                    ON abandoned.Id = reconciliation.RunId
+                LEFT JOIN
+                    prepared_ticket_canonical_epoch_recovery_resolutions
+                        resolution
+                    ON resolution.SourceRunId = reconciliation.RunId
+                   AND resolution.AuthoringEpoch =
+                       abandoned.AuthoringEpoch
+                WHERE reconciliation.PromotionState =
+                    'canonical-unpublished'
+                  AND resolution.RunId IS NULL)
             BEGIN
                 SELECT RAISE(
                     ABORT,
@@ -461,7 +524,18 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
              AND EXISTS(
                 SELECT 1
                 FROM prepared_ticket_publication_reconciliations
-                WHERE PromotionState = 'canonical-unpublished')
+                    reconciliation
+                INNER JOIN authoring_runs abandoned
+                    ON abandoned.Id = reconciliation.RunId
+                LEFT JOIN
+                    prepared_ticket_canonical_epoch_recovery_resolutions
+                        resolution
+                    ON resolution.SourceRunId = reconciliation.RunId
+                   AND resolution.AuthoringEpoch =
+                       abandoned.AuthoringEpoch
+                WHERE reconciliation.PromotionState =
+                    'canonical-unpublished'
+                  AND resolution.RunId IS NULL)
             BEGIN
                 SELECT RAISE(
                     ABORT,
@@ -585,11 +659,17 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             FROM prepared_ticket_publication_reconciliations reconciliation
             INNER JOIN authoring_runs abandoned
                 ON abandoned.Id = reconciliation.RunId
+            LEFT JOIN
+                prepared_ticket_canonical_epoch_recovery_resolutions
+                    resolution
+                ON resolution.SourceRunId = reconciliation.RunId
+               AND resolution.AuthoringEpoch = abandoned.AuthoringEpoch
             LEFT JOIN authoring_runs recovery
                 ON recovery.SourceRunId = reconciliation.RunId
                AND recovery.Purpose = @recoveryPurpose
             WHERE reconciliation.PromotionState = @unresolved
               AND abandoned.ProcessorKind = @processorKind
+              AND resolution.RunId IS NULL
             ORDER BY reconciliation.CapturedAt, reconciliation.RunId,
                      recovery.CreatedAt, recovery.RowId
             """;
@@ -637,6 +717,1917 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             .ForCanonicalUnpublishedRestriction(
                 $"Snapshot-producing authoring is blocked by unresolved canonical-unpublished state. Related abandoned/recovery run IDs: {runCoordinate}.",
                 relatedRunIds);
+    }
+
+    public sealed record CanonicalEpochRecoveryCreation(
+        string RunId,
+        PreparedTicketCanonicalEpochRecoveryRecipe Recipe,
+        bool ExistingRun);
+
+    public sealed record CanonicalEpochRecoverySnapshotReservation(
+        string ReservationKind,
+        string RunId,
+        string SnapshotId,
+        string ProcessorKind,
+        string TemporaryPath,
+        string FinalPath,
+        int SchemaVersion,
+        long Sequence,
+        long AuthoringEpoch,
+        int ItemCount,
+        int ReceiptCount,
+        DateTimeOffset CreatedAt,
+        PreparedTicketPublicationCandidateSnapshot? Candidate = null);
+
+    public sealed record CanonicalEpochRecoveryEvidence(
+        PreparedTicketCanonicalEpochRecoveryRecipe Recipe,
+        PreparedTicketCanonicalEpochRecoveryJournal Journal,
+        PreparedTicketCanonicalEpochRecoveryResolution? Resolution);
+
+    public async Task<CanonicalEpochRecoveryCreation>
+        CreateCanonicalEpochRecoveryAsync(
+            string sourceRunId,
+            DateTimeOffset? now = null,
+            CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceRunId);
+        DateTimeOffset capturedAt =
+            (now ?? DateTimeOffset.UtcNow).ToUniversalTime();
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteTransaction transaction =
+            connection.BeginTransaction(deferred: false);
+        try
+        {
+            (
+                long SourceEpoch,
+                DateTimeOffset AbandonedAt,
+                string AbandonmentReason) source =
+                    await ReadCanonicalEpochRecoverySourceAsync(
+                        connection,
+                        transaction,
+                        sourceRunId,
+                        ct);
+
+            PreparedTicketCanonicalEpochRecoveryResolution? resolution =
+                await ReadCanonicalEpochRecoveryResolutionAsync(
+                    connection,
+                    transaction,
+                    sourceRunId: sourceRunId,
+                    runId: null,
+                    ct);
+            if (resolution is not null)
+            {
+                throw new PreparedTicketCanonicalEpochRecoveryException(
+                    PreparedTicketCanonicalEpochRecoveryFailureCodes
+                        .CanonicalEpochAlreadyRecovered,
+                    $"Canonical epoch {source.SourceEpoch} was already recovered by run '{resolution.RunId}'.",
+                    [sourceRunId, resolution.RunId]);
+            }
+
+            await using (SqliteCommand existing = connection.CreateCommand())
+            {
+                existing.Transaction = transaction;
+                existing.CommandText =
+                    """
+                    SELECT recovery.RunId, recovery.RecipeJson, run.Status
+                    FROM prepared_ticket_canonical_epoch_recoveries recovery
+                    INNER JOIN authoring_runs run ON run.Id = recovery.RunId
+                    WHERE recovery.SourceRunId = @sourceRunId
+                    """;
+                existing.Parameters.AddWithValue(
+                    "@sourceRunId",
+                    sourceRunId);
+                await using SqliteDataReader reader =
+                    await existing.ExecuteReaderAsync(ct);
+                if (await reader.ReadAsync(ct))
+                {
+                    string existingRunId = reader.GetString(0);
+                    PreparedTicketCanonicalEpochRecoveryRecipe existingRecipe =
+                        DeserializeCanonicalEpochRecoveryRecipe(
+                            reader.GetString(1),
+                            existingRunId);
+                    string runStatus = reader.GetString(2);
+                    if (runStatus is not (
+                            AuthoringStatusValues.Runs.Running or
+                            AuthoringStatusValues.Runs.Finalizing or
+                            AuthoringStatusValues.Runs.Error))
+                    {
+                        throw new PreparedTicketCanonicalEpochRecoveryException(
+                            PreparedTicketCanonicalEpochRecoveryFailureCodes
+                                .RecoveryEvidenceConflict,
+                            $"Recovery run '{existingRunId}' has terminal status '{runStatus}' without a successful resolution.",
+                            [sourceRunId, existingRunId]);
+                    }
+                    await transaction.CommitAsync(ct);
+                    return new(
+                        existingRunId,
+                        existingRecipe,
+                        ExistingRun: true);
+                }
+            }
+
+            long currentEpoch = await ReadCurrentAuthoringEpochAsync(
+                connection,
+                transaction,
+                ct);
+            if (currentEpoch != source.SourceEpoch)
+            {
+                throw new PreparedTicketCanonicalEpochRecoveryException(
+                    PreparedTicketCanonicalEpochRecoveryFailureCodes
+                        .StaleCanonicalEpoch,
+                    $"Abandoned reconciliation '{sourceRunId}' belongs to authoring epoch {source.SourceEpoch}, not current epoch {currentEpoch}.",
+                    [sourceRunId]);
+            }
+
+            (
+                IReadOnlyList<PreparedTicketPublicationCorpusItem> Corpus,
+                IReadOnlyList<PreparedTicketPublicationGroupingPartition>
+                    Grouping,
+                string CorpusFingerprint,
+                string GroupingFingerprint) canonical =
+                    await ReadCanonicalEpochRecoveryStateAsync(
+                        connection,
+                        ct);
+            string runId = Guid.NewGuid().ToString("N");
+            string recipeFingerprint = PreparedTicketPublicationContract
+                .ComputeCanonicalEpochRecoveryFingerprint(
+                    sourceRunId,
+                    source.SourceEpoch,
+                    source.AbandonedAt,
+                    canonical.Corpus,
+                    canonical.Grouping);
+            PreparedTicketCanonicalEpochRecoveryRecipe recipe = new(
+                PreparedTicketCanonicalEpochRecoveryContract.CurrentVersion,
+                runId,
+                sourceRunId,
+                source.SourceEpoch,
+                source.AbandonedAt,
+                source.AbandonmentReason,
+                canonical.Corpus,
+                canonical.Grouping,
+                canonical.CorpusFingerprint,
+                canonical.GroupingFingerprint,
+                recipeFingerprint,
+                await ComputeCanonicalEpochRecoveryRowsFingerprintAsync(
+                    connection,
+                    ct),
+                capturedAt);
+            string recipeJson = JsonSerializer.Serialize(recipe);
+
+            AuthoringRunStore store = new(this);
+            _ = await store.CreateMixedRunAsync(
+                connection,
+                transaction,
+                AuthoringProcessorKind,
+                PreparedTicketCanonicalEpochRecoveryContract.Purpose,
+                sourceRunId,
+                canonical.Corpus.Select(item => new AuthoringMixedRunItem(
+                    item.TicketKey,
+                    $"recovery:{runId}:{item.ItemKind}",
+                    item.ExpectedSourceRevision,
+                    AuthoringStatusValues.Items.Complete,
+                    item.ReceiptId)).ToArray(),
+                runId,
+                capturedAt,
+                recipeJson,
+                ct);
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                INSERT INTO prepared_ticket_canonical_epoch_recoveries(
+                    RunId, SourceRunId, AuthoringEpoch, CorpusFingerprint,
+                    GroupingFingerprint, RecipeFingerprint, RecipeJson,
+                    CapturedAt)
+                VALUES(
+                    @runId, @sourceRunId, @authoringEpoch,
+                    @corpusFingerprint, @groupingFingerprint,
+                    @recipeFingerprint, @recipeJson, @capturedAt)
+                """,
+                ct,
+                ("@runId", runId),
+                ("@sourceRunId", sourceRunId),
+                ("@authoringEpoch", source.SourceEpoch),
+                ("@corpusFingerprint", canonical.CorpusFingerprint),
+                ("@groupingFingerprint", canonical.GroupingFingerprint),
+                ("@recipeFingerprint", recipeFingerprint),
+                ("@recipeJson", recipeJson),
+                ("@capturedAt", Format(capturedAt)));
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                INSERT INTO prepared_ticket_canonical_epoch_recovery_journal(
+                    RunId, State, UpdatedAt)
+                VALUES(@runId, @state, @updatedAt)
+                """,
+                ct,
+                ("@runId", runId),
+                ("@state",
+                    PreparedTicketCanonicalEpochRecoveryStateValues
+                        .MaterializationPending),
+                ("@updatedAt", Format(capturedAt)));
+            await transaction.CommitAsync(ct);
+            return new(runId, recipe, ExistingRun: false);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
+    public async Task<CanonicalEpochRecoveryEvidence?>
+        GetCanonicalEpochRecoveryEvidenceAsync(
+            string runId,
+            CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT recovery.RecipeJson,
+                   journal.State, journal.SnapshotDescriptorJson,
+                   journal.UpdatedAt, journal.LastRecoveryAttemptAt,
+                   journal.FailureCode, journal.FailureDetail,
+                   resolution.SourceRunId, resolution.AuthoringEpoch,
+                   resolution.SnapshotId, resolution.SnapshotSha256,
+                   resolution.CorpusFingerprint,
+                   resolution.GroupingFingerprint, resolution.ProofJson,
+                   resolution.ResolvedAt
+            FROM prepared_ticket_canonical_epoch_recoveries recovery
+            INNER JOIN prepared_ticket_canonical_epoch_recovery_journal journal
+                ON journal.RunId = recovery.RunId
+            LEFT JOIN
+                prepared_ticket_canonical_epoch_recovery_resolutions resolution
+                ON resolution.RunId = recovery.RunId
+            WHERE recovery.RunId = @runId
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+        {
+            return null;
+        }
+
+        PreparedTicketCanonicalEpochRecoveryRecipe recipe =
+            DeserializeCanonicalEpochRecoveryRecipe(
+                reader.GetString(0),
+                runId);
+        PreparedTicketCanonicalEpochRecoveryJournal journal = new(
+            runId,
+            reader.GetString(1),
+            reader.IsDBNull(2) ? null : reader.GetString(2),
+            reader.GetDateTimeOffset(3),
+            reader.IsDBNull(4) ? null : reader.GetDateTimeOffset(4),
+            reader.IsDBNull(5) ? null : reader.GetString(5),
+            reader.IsDBNull(6) ? null : reader.GetString(6));
+        if (!PreparedTicketCanonicalEpochRecoveryStateValues.IsValid(
+                journal.State))
+        {
+            throw new InvalidOperationException(
+                $"Recovery run '{runId}' has invalid journal state '{journal.State}'.");
+        }
+
+        PreparedTicketCanonicalEpochRecoveryResolution? resolution = null;
+        if (!reader.IsDBNull(7))
+        {
+            PreparedTicketCanonicalEpochRecoveryProof proof =
+                JsonSerializer.Deserialize<
+                    PreparedTicketCanonicalEpochRecoveryProof>(
+                        reader.GetString(13))
+                ?? throw new InvalidOperationException(
+                    $"Recovery run '{runId}' has an invalid proof.");
+            resolution = new(
+                runId,
+                reader.GetString(7),
+                reader.GetInt64(8),
+                reader.GetString(9),
+                reader.GetString(10),
+                reader.GetString(11),
+                reader.GetString(12),
+                proof,
+                reader.GetDateTimeOffset(14));
+        }
+        ValidateCanonicalEpochRecoveryEvidence(recipe, journal, resolution);
+        return new(recipe, journal, resolution);
+    }
+
+    public async Task<PreparedTicketCanonicalEpochRecoveryLink?>
+        GetCanonicalEpochRecoveryLinkAsync(
+            string sourceRunId,
+            CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceRunId);
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT recovery.RunId, recovery.AuthoringEpoch, journal.State,
+                   resolution.SnapshotId, resolution.SnapshotSha256,
+                   resolution.ResolvedAt
+            FROM prepared_ticket_canonical_epoch_recoveries recovery
+            INNER JOIN prepared_ticket_canonical_epoch_recovery_journal journal
+                ON journal.RunId = recovery.RunId
+            LEFT JOIN
+                prepared_ticket_canonical_epoch_recovery_resolutions resolution
+                ON resolution.RunId = recovery.RunId
+            WHERE recovery.SourceRunId = @sourceRunId
+            """;
+        command.Parameters.AddWithValue("@sourceRunId", sourceRunId);
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+        {
+            return null;
+        }
+        return new(
+            reader.GetString(0),
+            sourceRunId,
+            reader.GetInt64(1),
+            reader.GetString(2),
+            reader.IsDBNull(3) ? null : reader.GetString(3),
+            reader.IsDBNull(4) ? null : reader.GetString(4),
+            reader.IsDBNull(5) ? null : reader.GetDateTimeOffset(5));
+    }
+
+    public async Task<IReadOnlyList<string>>
+        ListPendingCanonicalEpochRecoveriesAsync(
+            CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT journal.RunId
+            FROM prepared_ticket_canonical_epoch_recovery_journal journal
+            LEFT JOIN
+                prepared_ticket_canonical_epoch_recovery_resolutions resolution
+                ON resolution.RunId = journal.RunId
+            WHERE resolution.RunId IS NULL
+            ORDER BY journal.UpdatedAt, journal.RunId
+            """;
+        List<string> runIds = [];
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            runIds.Add(reader.GetString(0));
+        }
+        return runIds;
+    }
+
+    public async Task<PreparedTicketCanonicalEpochRecoveryRecipe>
+        ValidateCanonicalEpochRecoveryCurrentAsync(
+            string runId,
+            CancellationToken ct = default)
+    {
+        CanonicalEpochRecoveryEvidence evidence =
+            await GetCanonicalEpochRecoveryEvidenceAsync(runId, ct)
+            ?? throw new KeyNotFoundException(
+                $"Canonical-epoch recovery '{runId}' was not found.");
+        if (evidence.Resolution is not null)
+        {
+            return evidence.Recipe;
+        }
+        await using SqliteConnection connection = OpenConnection();
+        await EnsureCanonicalEpochRecoveryCurrentAsync(
+            connection,
+            transaction: null,
+            evidence.Recipe,
+            requireFence: true,
+            ct);
+        return evidence.Recipe;
+    }
+
+    private static async Task<(
+        long SourceEpoch,
+        DateTimeOffset AbandonedAt,
+        string AbandonmentReason)> ReadCanonicalEpochRecoverySourceAsync(
+            SqliteConnection connection,
+            SqliteTransaction? transaction,
+            string sourceRunId,
+            CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT reconciliation.PromotionState,
+                   reconciliation.AbandonedAt,
+                   reconciliation.AbandonmentReason,
+                   journal.State,
+                   run.Status, run.Purpose, run.ProcessorKind,
+                   run.AuthoringEpoch
+            FROM prepared_ticket_publication_reconciliations reconciliation
+            INNER JOIN authoring_runs run
+                ON run.Id = reconciliation.RunId
+            LEFT JOIN prepared_ticket_publication_reconciliation_journal
+                journal ON journal.RunId = reconciliation.RunId
+            WHERE reconciliation.RunId = @sourceRunId
+            """;
+        command.Parameters.AddWithValue("@sourceRunId", sourceRunId);
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+        {
+            throw new PreparedTicketCanonicalEpochRecoveryException(
+                PreparedTicketCanonicalEpochRecoveryFailureCodes
+                    .InvalidSourceReconciliation,
+                $"Publication reconciliation '{sourceRunId}' was not found.",
+                [sourceRunId]);
+        }
+        if (!string.Equals(
+                reader.GetString(0),
+                PreparedTicketPublicationReconciliationPromotionStateValues
+                    .CanonicalUnpublished,
+                StringComparison.Ordinal) ||
+            reader.IsDBNull(1) ||
+            reader.IsDBNull(2) ||
+            reader.IsDBNull(3) ||
+            !string.Equals(
+                reader.GetString(3),
+                PreparedTicketPublicationReconciliationPromotionStateValues
+                    .CanonicalUnpublished,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                reader.GetString(4),
+                AuthoringStatusValues.Runs.Abandoned,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                reader.GetString(5),
+                PreparedTicketPublicationReconciliationContract.Purpose,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                reader.GetString(6),
+                AuthoringProcessorKind,
+                StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(reader.GetString(2)))
+        {
+            throw new PreparedTicketCanonicalEpochRecoveryException(
+                PreparedTicketCanonicalEpochRecoveryFailureCodes
+                    .SourceNotAbandoned,
+                $"Publication reconciliation '{sourceRunId}' is not an unresolved canonical-unpublished abandonment.",
+                [sourceRunId]);
+        }
+        return (
+            reader.GetInt64(7),
+            reader.GetDateTimeOffset(1).ToUniversalTime(),
+            reader.GetString(2));
+    }
+
+    private static async Task<long> ReadCurrentAuthoringEpochAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT Epoch
+            FROM authoring_processor_modes
+            WHERE ProcessorKind = @processorKind
+              AND Mode = @runBacked
+              AND RevalidationRequired = 0
+            """;
+        command.Parameters.AddWithValue(
+            "@processorKind",
+            AuthoringProcessorKind);
+        command.Parameters.AddWithValue(
+            "@runBacked",
+            AuthoringStatusValues.ProcessorModes.RunBacked);
+        object? value = await command.ExecuteScalarAsync(ct);
+        return value is null
+            ? throw new PreparedTicketCanonicalEpochRecoveryException(
+                PreparedTicketCanonicalEpochRecoveryFailureCodes
+                    .StaleCanonicalEpoch,
+                "Canonical-epoch recovery requires active run-backed authoring without pending revalidation.")
+            : Convert.ToInt64(value, CultureInfo.InvariantCulture);
+    }
+
+    private static async Task<(
+        IReadOnlyList<PreparedTicketPublicationCorpusItem> Corpus,
+        IReadOnlyList<PreparedTicketPublicationGroupingPartition> Grouping,
+        string CorpusFingerprint,
+        string GroupingFingerprint)> ReadCanonicalEpochRecoveryStateAsync(
+            SqliteConnection connection,
+            CancellationToken ct)
+    {
+        PreparedTicketPublicationProtectedInventory inventory;
+        try
+        {
+            inventory =
+                await PreparedTicketPublicationProtectionReader
+                    .ReadCurrentAsync(
+                        connection,
+                        ct);
+        }
+        catch (PreparedTicketPublicationProtectionException ex)
+        {
+            throw new PreparedTicketCanonicalEpochRecoveryException(
+                PreparedTicketCanonicalEpochRecoveryFailureCodes
+                    .CanonicalStateChanged,
+                $"The current canonical graph is no longer valid for recovery: {ex.Message}");
+        }
+        PreparedTicketPublicationCorpusItem[] corpus = inventory.Corpus
+            .OrderBy(item => item.TicketKey, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.TicketKey, StringComparer.Ordinal)
+            .ThenBy(item => item.ReceiptId, StringComparer.Ordinal)
+            .ThenBy(item => item.RunItemId, StringComparer.Ordinal)
+            .ThenBy(item => item.ContributingRunId, StringComparer.Ordinal)
+            .ToArray();
+        await using (SqliteCommand count = connection.CreateCommand())
+        {
+            count.CommandText = "SELECT COUNT(*) FROM prepared_tickets";
+            int preparedCount = Convert.ToInt32(
+                await count.ExecuteScalarAsync(ct),
+                CultureInfo.InvariantCulture);
+            if (preparedCount == 0 || preparedCount != corpus.Length)
+            {
+                throw new PreparedTicketCanonicalEpochRecoveryException(
+                    PreparedTicketCanonicalEpochRecoveryFailureCodes
+                        .CanonicalStateChanged,
+                    "The current canonical ticket corpus is not completely receipt-backed.");
+            }
+        }
+        PreparedTicketPublicationGroupingPartition[] grouping =
+            inventory.Grouping
+                .Select(partition =>
+                    new PreparedTicketPublicationGroupingPartition(
+                        partition.PartitionKey,
+                        partition.Fingerprint.OutputFingerprint))
+                .OrderBy(
+                    partition => partition.PartitionKey,
+                    StringComparer.Ordinal)
+                .ToArray();
+        string corpusFingerprint = PreparedTicketPublicationContract
+            .ComputeCorpusFingerprint(corpus);
+        string groupingFingerprint = PreparedTicketPublicationContract
+            .ComputeGroupingFingerprint(grouping);
+        return (
+            Array.AsReadOnly(corpus),
+            Array.AsReadOnly(grouping),
+            corpusFingerprint,
+            groupingFingerprint);
+    }
+
+    private static async Task EnsureCanonicalEpochRecoveryCurrentAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        PreparedTicketCanonicalEpochRecoveryRecipe recipe,
+        bool requireFence,
+        CancellationToken ct)
+    {
+        (
+            long SourceEpoch,
+            DateTimeOffset AbandonedAt,
+            string AbandonmentReason) source =
+                await ReadCanonicalEpochRecoverySourceAsync(
+                    connection,
+                    transaction,
+                    recipe.SourceRunId,
+                    ct);
+        if (source.SourceEpoch != recipe.AuthoringEpoch ||
+            source.AbandonedAt != recipe.AbandonedAt ||
+            !string.Equals(
+                source.AbandonmentReason,
+                recipe.AbandonmentReason,
+                StringComparison.Ordinal) ||
+            await ReadCurrentAuthoringEpochAsync(
+                connection,
+                transaction,
+                ct) != recipe.AuthoringEpoch)
+        {
+            throw new PreparedTicketCanonicalEpochRecoveryException(
+                PreparedTicketCanonicalEpochRecoveryFailureCodes
+                    .StaleCanonicalEpoch,
+                $"Recovery run '{recipe.RunId}' no longer matches its abandoned canonical epoch.",
+                [recipe.SourceRunId, recipe.RunId]);
+        }
+        if (await ReadCanonicalEpochRecoveryResolutionAsync(
+                connection,
+                transaction,
+                sourceRunId: recipe.SourceRunId,
+                runId: null,
+                ct) is not null)
+        {
+            throw new PreparedTicketCanonicalEpochRecoveryException(
+                PreparedTicketCanonicalEpochRecoveryFailureCodes
+                    .CanonicalEpochAlreadyRecovered,
+                $"The source abandonment for recovery run '{recipe.RunId}' is already resolved.",
+                [recipe.SourceRunId, recipe.RunId]);
+        }
+        if (requireFence)
+        {
+            await using SqliteCommand fence = connection.CreateCommand();
+            fence.Transaction = transaction;
+            fence.CommandText =
+                """
+                SELECT COUNT(*)
+                FROM authoring_mutation_fences
+                WHERE ProcessorKind = @processorKind AND RunId = @runId
+                """;
+            fence.Parameters.AddWithValue(
+                "@processorKind",
+                AuthoringProcessorKind);
+            fence.Parameters.AddWithValue("@runId", recipe.RunId);
+            if (Convert.ToInt32(
+                    await fence.ExecuteScalarAsync(ct),
+                    CultureInfo.InvariantCulture) != 1)
+            {
+                throw new PreparedTicketCanonicalEpochRecoveryException(
+                    PreparedTicketCanonicalEpochRecoveryFailureCodes
+                        .RecoveryEvidenceConflict,
+                    $"Recovery run '{recipe.RunId}' no longer owns the canonical mutation fence.",
+                    [recipe.SourceRunId, recipe.RunId]);
+            }
+        }
+
+        (
+            IReadOnlyList<PreparedTicketPublicationCorpusItem> Corpus,
+            IReadOnlyList<PreparedTicketPublicationGroupingPartition> Grouping,
+            string CorpusFingerprint,
+            string GroupingFingerprint) current =
+                await ReadCanonicalEpochRecoveryStateAsync(connection, ct);
+        bool matches =
+            recipe.ContractVersion ==
+                PreparedTicketCanonicalEpochRecoveryContract.CurrentVersion &&
+            recipe.Corpus.SequenceEqual(current.Corpus) &&
+            recipe.Grouping.SequenceEqual(current.Grouping) &&
+            string.Equals(
+                recipe.CorpusFingerprint,
+                current.CorpusFingerprint,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                recipe.GroupingFingerprint,
+                current.GroupingFingerprint,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                recipe.CanonicalRowsFingerprint,
+                await ComputeCanonicalEpochRecoveryRowsFingerprintAsync(
+                    connection,
+                    ct),
+                StringComparison.Ordinal) &&
+            string.Equals(
+                recipe.RecipeFingerprint,
+                PreparedTicketPublicationContract
+                    .ComputeCanonicalEpochRecoveryFingerprint(
+                        recipe.SourceRunId,
+                        recipe.AuthoringEpoch,
+                        recipe.AbandonedAt,
+                        current.Corpus,
+                        current.Grouping),
+                StringComparison.Ordinal);
+        if (!matches)
+        {
+            throw new PreparedTicketCanonicalEpochRecoveryException(
+                PreparedTicketCanonicalEpochRecoveryFailureCodes
+                    .CanonicalStateChanged,
+                $"The current canonical corpus or grouping no longer matches recovery run '{recipe.RunId}'.",
+                [recipe.SourceRunId, recipe.RunId]);
+        }
+    }
+
+    private static async Task<string>
+        ComputeCanonicalEpochRecoveryRowsFingerprintAsync(
+            SqliteConnection connection,
+            CancellationToken ct)
+    {
+        // Receipt coordinates and semantic grouping proof are public contracts.
+        // Freeze exact canonical values as well, including hydration and row IDs,
+        // so a later materialization cannot silently capture different live data.
+        using MemoryStream output = new();
+        using (Utf8JsonWriter writer = new(output))
+        {
+            writer.WriteStartObject();
+            foreach (AuthoringSnapshotTableSchema table in
+                     PreparedTicketSnapshotSchemaV3.Catalog.Tables
+                         .Where(table => table.Name.StartsWith(
+                             "prepared_",
+                             StringComparison.Ordinal))
+                         .OrderBy(table => table.Name, StringComparer.Ordinal))
+            {
+                string columns = string.Join(
+                    ", ",
+                    table.Columns.Select(column =>
+                        $"\"{column.Replace("\"", "\"\"", StringComparison.Ordinal)}\""));
+                await using SqliteCommand command = connection.CreateCommand();
+                command.CommandText =
+                    $"SELECT {columns} FROM \"{table.Name}\" ORDER BY {columns}";
+                writer.WriteStartArray(table.Name);
+                await using SqliteDataReader reader =
+                    await command.ExecuteReaderAsync(ct);
+                while (await reader.ReadAsync(ct))
+                {
+                    writer.WriteStartArray();
+                    for (int index = 0; index < reader.FieldCount; index++)
+                    {
+                        if (reader.IsDBNull(index))
+                        {
+                            writer.WriteNullValue();
+                        }
+                        else
+                        {
+                            JsonSerializer.Serialize(
+                                writer,
+                                reader.GetValue(index));
+                        }
+                    }
+                    writer.WriteEndArray();
+                }
+                writer.WriteEndArray();
+            }
+            writer.WriteEndObject();
+        }
+        return Convert.ToHexStringLower(SHA256.HashData(output.ToArray()));
+    }
+
+    private static PreparedTicketCanonicalEpochRecoveryRecipe
+        DeserializeCanonicalEpochRecoveryRecipe(
+            string json,
+            string runId)
+    {
+        PreparedTicketCanonicalEpochRecoveryRecipe recipe =
+            JsonSerializer.Deserialize<
+                PreparedTicketCanonicalEpochRecoveryRecipe>(json)
+            ?? throw new InvalidOperationException(
+                $"Recovery run '{runId}' has an invalid frozen recipe.");
+        if (!string.Equals(recipe.RunId, runId, StringComparison.Ordinal) ||
+            recipe.ContractVersion !=
+                PreparedTicketCanonicalEpochRecoveryContract.CurrentVersion ||
+            recipe.Corpus is null ||
+            recipe.Grouping is null ||
+            recipe.Corpus.Count == 0 ||
+            string.IsNullOrWhiteSpace(recipe.CanonicalRowsFingerprint) ||
+            recipe.CapturedAt == default ||
+            recipe.CapturedAt.Offset != TimeSpan.Zero ||
+            recipe.AbandonedAt == default ||
+            recipe.AbandonedAt.Offset != TimeSpan.Zero)
+        {
+            throw new InvalidOperationException(
+                $"Recovery run '{runId}' has inconsistent frozen coordinates.");
+        }
+        return recipe;
+    }
+
+    private static void ValidateCanonicalEpochRecoveryEvidence(
+        PreparedTicketCanonicalEpochRecoveryRecipe recipe,
+        PreparedTicketCanonicalEpochRecoveryJournal journal,
+        PreparedTicketCanonicalEpochRecoveryResolution? resolution)
+    {
+        if (!string.Equals(
+                recipe.RunId,
+                journal.RunId,
+                StringComparison.Ordinal) ||
+            (journal.State ==
+                PreparedTicketCanonicalEpochRecoveryStateValues.Ready) !=
+                (resolution is not null) ||
+            resolution is not null &&
+            (!string.Equals(
+                 resolution.RunId,
+                 recipe.RunId,
+                 StringComparison.Ordinal) ||
+             !string.Equals(
+                 resolution.SourceRunId,
+                 recipe.SourceRunId,
+                 StringComparison.Ordinal) ||
+             resolution.AuthoringEpoch != recipe.AuthoringEpoch ||
+             !string.Equals(
+                 resolution.CorpusFingerprint,
+                 recipe.CorpusFingerprint,
+                 StringComparison.Ordinal) ||
+             !string.Equals(
+                 resolution.GroupingFingerprint,
+                 recipe.GroupingFingerprint,
+                 StringComparison.Ordinal) ||
+             resolution.Proof != CreateCanonicalEpochRecoveryProof(recipe)))
+        {
+            throw new InvalidOperationException(
+                $"Recovery run '{recipe.RunId}' has conflicting durable evidence.");
+        }
+    }
+
+    private static async Task<
+        PreparedTicketCanonicalEpochRecoveryResolution?>
+        ReadCanonicalEpochRecoveryResolutionAsync(
+            SqliteConnection connection,
+            SqliteTransaction? transaction,
+            string? sourceRunId,
+            string? runId,
+            CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT RunId, SourceRunId, AuthoringEpoch, SnapshotId,
+                   SnapshotSha256, CorpusFingerprint, GroupingFingerprint,
+                   ProofJson, ResolvedAt
+            FROM prepared_ticket_canonical_epoch_recovery_resolutions
+            WHERE (@sourceRunId IS NOT NULL AND SourceRunId = @sourceRunId)
+               OR (@runId IS NOT NULL AND RunId = @runId)
+            """;
+        command.Parameters.AddWithValue(
+            "@sourceRunId",
+            (object?)sourceRunId ?? DBNull.Value);
+        command.Parameters.AddWithValue(
+            "@runId",
+            (object?)runId ?? DBNull.Value);
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+        {
+            return null;
+        }
+        PreparedTicketCanonicalEpochRecoveryProof proof =
+            JsonSerializer.Deserialize<
+                PreparedTicketCanonicalEpochRecoveryProof>(
+                    reader.GetString(7))
+            ?? throw new InvalidOperationException(
+                $"Recovery resolution '{reader.GetString(0)}' has an invalid proof.");
+        PreparedTicketCanonicalEpochRecoveryResolution resolution = new(
+            reader.GetString(0),
+            reader.GetString(1),
+            reader.GetInt64(2),
+            reader.GetString(3),
+            reader.GetString(4),
+            reader.GetString(5),
+            reader.GetString(6),
+            proof,
+            reader.GetDateTimeOffset(8));
+        if (await reader.ReadAsync(ct))
+        {
+            throw new InvalidOperationException(
+                "Canonical-epoch recovery has more than one matching resolution.");
+        }
+        return resolution;
+    }
+
+    public static PreparedTicketCanonicalEpochRecoveryProof
+        CreateCanonicalEpochRecoveryProof(
+            PreparedTicketCanonicalEpochRecoveryRecipe recipe)
+    {
+        ArgumentNullException.ThrowIfNull(recipe);
+        return new(
+            PreparedTicketCanonicalEpochRecoveryContract.CurrentVersion,
+            PreparedTicketCanonicalEpochRecoveryContract.Purpose,
+            recipe.RunId,
+            recipe.SourceRunId,
+            recipe.AuthoringEpoch,
+            recipe.AbandonedAt,
+            recipe.CorpusFingerprint,
+            recipe.GroupingFingerprint,
+            recipe.RecipeFingerprint,
+            recipe.CapturedAt);
+    }
+
+    public async Task<CanonicalEpochRecoverySnapshotReservation>
+        ReserveCanonicalEpochRecoverySnapshotAsync(
+            string runId,
+            string temporaryPath,
+            string finalPath,
+            int schemaVersion,
+            CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(temporaryPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(finalPath);
+        if (schemaVersion != PreparedTicketSnapshotSchemaV3.Version)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(schemaVersion),
+                "Canonical-epoch recovery requires snapshot schema v3.");
+        }
+        temporaryPath = Path.GetFullPath(temporaryPath);
+        finalPath = Path.GetFullPath(finalPath);
+
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteTransaction transaction =
+            connection.BeginTransaction(deferred: false);
+        try
+        {
+            CanonicalEpochRecoveryTransactionState state =
+                await ReadCanonicalEpochRecoveryTransactionStateAsync(
+                    connection,
+                    transaction,
+                    runId,
+                    ct);
+            if (!string.Equals(
+                    state.RunStatus,
+                    AuthoringStatusValues.Runs.Finalizing,
+                    StringComparison.Ordinal))
+            {
+                throw new PreparedTicketCanonicalEpochRecoveryException(
+                    PreparedTicketCanonicalEpochRecoveryFailureCodes
+                        .RunNotRetryable,
+                    $"Recovery run '{runId}' cannot reserve a snapshot from status '{state.RunStatus}'.",
+                    [state.Recipe.SourceRunId, runId]);
+            }
+            await EnsureCanonicalEpochRecoveryCurrentAsync(
+                connection,
+                transaction,
+                state.Recipe,
+                requireFence: true,
+                ct);
+
+            if (state.Journal.State ==
+                PreparedTicketCanonicalEpochRecoveryStateValues
+                    .SnapshotPublishPending)
+            {
+                PreparedTicketPublicationCandidateSnapshot candidate =
+                    DeserializeCanonicalEpochRecoveryCandidate(
+                        state.Journal.SnapshotDescriptorJson,
+                        runId);
+                EnsureCanonicalEpochRecoveryCandidateMatchesRecipe(
+                    candidate,
+                    state.Recipe);
+                await transaction.CommitAsync(ct);
+                return new(
+                    CanonicalEpochRecoverySnapshotReservationKind,
+                    runId,
+                    candidate.SnapshotId,
+                    candidate.ProcessorKind,
+                    candidate.TemporaryPath,
+                    candidate.FinalPath,
+                    candidate.SchemaVersion,
+                    candidate.Sequence,
+                    candidate.AuthoringEpoch,
+                    candidate.ItemCount,
+                    candidate.ReceiptCount,
+                    candidate.CreatedAt,
+                    candidate);
+            }
+            if (state.Journal.State !=
+                PreparedTicketCanonicalEpochRecoveryStateValues
+                    .MaterializationPending)
+            {
+                throw new PreparedTicketCanonicalEpochRecoveryException(
+                    PreparedTicketCanonicalEpochRecoveryFailureCodes
+                        .RunNotRetryable,
+                    $"Recovery run '{runId}' cannot reserve a snapshot from journal state '{state.Journal.State}'.",
+                    [state.Recipe.SourceRunId, runId]);
+            }
+
+            int snapshotCount;
+            long sequence;
+            await using (SqliteCommand snapshotState =
+                         connection.CreateCommand())
+            {
+                snapshotState.Transaction = transaction;
+                snapshotState.CommandText =
+                    """
+                    SELECT
+                        (SELECT COUNT(*)
+                         FROM authoring_review_snapshots
+                         WHERE RunId = @runId),
+                        (SELECT COALESCE(MAX(Sequence), 0) + 1
+                         FROM authoring_review_snapshots
+                         WHERE ProcessorKind = @processorKind)
+                    """;
+                snapshotState.Parameters.AddWithValue("@runId", runId);
+                snapshotState.Parameters.AddWithValue(
+                    "@processorKind",
+                    AuthoringProcessorKind);
+                await using SqliteDataReader reader =
+                    await snapshotState.ExecuteReaderAsync(ct);
+                _ = await reader.ReadAsync(ct);
+                snapshotCount = reader.GetInt32(0);
+                sequence = reader.GetInt64(1);
+            }
+            if (snapshotCount != 0)
+            {
+                throw new PreparedTicketCanonicalEpochRecoveryException(
+                    PreparedTicketCanonicalEpochRecoveryFailureCodes
+                        .RecoveryEvidenceConflict,
+                    $"Recovery run '{runId}' has an unjournaled snapshot record.",
+                    [state.Recipe.SourceRunId, runId]);
+            }
+
+            CanonicalEpochRecoverySnapshotReservation reservation;
+            if (state.Journal.SnapshotDescriptorJson is not null)
+            {
+                reservation = JsonSerializer.Deserialize<
+                    CanonicalEpochRecoverySnapshotReservation>(
+                        state.Journal.SnapshotDescriptorJson)
+                    ?? throw new PreparedTicketCanonicalEpochRecoveryException(
+                        PreparedTicketCanonicalEpochRecoveryFailureCodes
+                            .RecoveryEvidenceConflict,
+                        $"Recovery run '{runId}' has an invalid snapshot reservation.",
+                        [state.Recipe.SourceRunId, runId]);
+                EnsureCanonicalEpochRecoveryReservationMatches(
+                    reservation,
+                    state,
+                    temporaryPath,
+                    finalPath,
+                    schemaVersion,
+                    sequence);
+            }
+            else
+            {
+                reservation = new(
+                    CanonicalEpochRecoverySnapshotReservationKind,
+                    runId,
+                    Guid.NewGuid().ToString("N"),
+                    AuthoringProcessorKind,
+                    temporaryPath,
+                    finalPath,
+                    schemaVersion,
+                    sequence,
+                    state.Recipe.AuthoringEpoch,
+                    state.ItemCount,
+                    state.Recipe.Corpus.Count,
+                    DateTimeOffset.UtcNow,
+                    Candidate: null);
+                int updated = await ExecuteInTransactionAsync(
+                    connection,
+                    transaction,
+                    """
+                    UPDATE prepared_ticket_canonical_epoch_recovery_journal
+                    SET SnapshotDescriptorJson = @descriptor,
+                        UpdatedAt = @updatedAt
+                    WHERE RunId = @runId
+                      AND State = @state
+                      AND SnapshotDescriptorJson IS NULL
+                    """,
+                    ct,
+                    ("@descriptor", JsonSerializer.Serialize(reservation)),
+                    ("@updatedAt", Format(reservation.CreatedAt)),
+                    ("@runId", runId),
+                    ("@state",
+                        PreparedTicketCanonicalEpochRecoveryStateValues
+                            .MaterializationPending));
+                if (updated != 1)
+                {
+                    throw new PreparedTicketCanonicalEpochRecoveryException(
+                        PreparedTicketCanonicalEpochRecoveryFailureCodes
+                            .RecoveryEvidenceConflict,
+                        $"Recovery run '{runId}' changed before snapshot reservation.",
+                        [state.Recipe.SourceRunId, runId]);
+                }
+            }
+            await transaction.CommitAsync(ct);
+            return reservation;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
+    public async Task SaveCanonicalEpochRecoveryCandidateAsync(
+        PreparedTicketPublicationCandidateSnapshot candidate,
+        PreparedTicketCanonicalEpochRecoveryProof proof,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        ArgumentNullException.ThrowIfNull(proof);
+        ValidatePublicationCandidate(candidate);
+        await ValidateCanonicalEpochRecoverySnapshotFileAsync(
+            candidate,
+            candidate.TemporaryPath,
+            ct);
+
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteTransaction transaction =
+            connection.BeginTransaction(deferred: false);
+        try
+        {
+            CanonicalEpochRecoveryTransactionState state =
+                await ReadCanonicalEpochRecoveryTransactionStateAsync(
+                    connection,
+                    transaction,
+                    candidate.RunId,
+                    ct);
+            EnsureCanonicalEpochRecoveryProofMatchesRecipe(
+                proof,
+                state.Recipe);
+            EnsureCanonicalEpochRecoveryCandidateMatchesRecipe(
+                candidate,
+                state.Recipe);
+            await EnsureCanonicalEpochRecoveryCurrentAsync(
+                connection,
+                transaction,
+                state.Recipe,
+                requireFence: true,
+                ct);
+            if (!string.Equals(
+                    state.RunStatus,
+                    AuthoringStatusValues.Runs.Finalizing,
+                    StringComparison.Ordinal))
+            {
+                throw new PreparedTicketCanonicalEpochRecoveryException(
+                    PreparedTicketCanonicalEpochRecoveryFailureCodes
+                        .RunNotRetryable,
+                    $"Recovery run '{candidate.RunId}' cannot persist a candidate from status '{state.RunStatus}'.",
+                    [state.Recipe.SourceRunId, candidate.RunId]);
+            }
+
+            string candidateJson = JsonSerializer.Serialize(candidate);
+            if (state.Journal.State ==
+                PreparedTicketCanonicalEpochRecoveryStateValues
+                    .SnapshotPublishPending)
+            {
+                if (!string.Equals(
+                        state.Journal.SnapshotDescriptorJson,
+                        candidateJson,
+                        StringComparison.Ordinal))
+                {
+                    throw new PreparedTicketCanonicalEpochRecoveryException(
+                        PreparedTicketCanonicalEpochRecoveryFailureCodes
+                            .RecoveryEvidenceConflict,
+                        $"Recovery run '{candidate.RunId}' already journaled different candidate evidence.",
+                        [state.Recipe.SourceRunId, candidate.RunId]);
+                }
+                await EnsureCanonicalEpochRecoverySnapshotRecordAsync(
+                    connection,
+                    transaction,
+                    candidate,
+                    proof,
+                    ct);
+                await transaction.CommitAsync(ct);
+                return;
+            }
+            if (state.Journal.State !=
+                    PreparedTicketCanonicalEpochRecoveryStateValues
+                        .MaterializationPending ||
+                state.Journal.SnapshotDescriptorJson is null)
+            {
+                throw new PreparedTicketCanonicalEpochRecoveryException(
+                    PreparedTicketCanonicalEpochRecoveryFailureCodes
+                        .RecoveryEvidenceConflict,
+                    $"Recovery run '{candidate.RunId}' has no current snapshot reservation.",
+                    [state.Recipe.SourceRunId, candidate.RunId]);
+            }
+
+            CanonicalEpochRecoverySnapshotReservation reservation =
+                JsonSerializer.Deserialize<
+                    CanonicalEpochRecoverySnapshotReservation>(
+                        state.Journal.SnapshotDescriptorJson)
+                ?? throw new PreparedTicketCanonicalEpochRecoveryException(
+                    PreparedTicketCanonicalEpochRecoveryFailureCodes
+                        .RecoveryEvidenceConflict,
+                    $"Recovery run '{candidate.RunId}' has an invalid snapshot reservation.",
+                    [state.Recipe.SourceRunId, candidate.RunId]);
+            EnsureCanonicalEpochRecoveryCandidateMatchesReservation(
+                candidate,
+                reservation);
+
+            string snapshotProofJson = JsonSerializer.Serialize(
+                CreateCanonicalEpochRecoverySnapshotProof(proof),
+                JsonSerializerOptions.Web);
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                INSERT INTO authoring_review_snapshots(
+                    Id, ProcessorKind, RunId, AuthoringEpoch, Sequence,
+                    SchemaVersion, Status, TempPath, Path, ChecksumSha256,
+                    SizeBytes, ItemCount, ReceiptCount, TableCountsJson,
+                    PublicationProofJson, CreatedAt)
+                VALUES(
+                    @snapshotId, @processorKind, @runId, @authoringEpoch,
+                    @sequence, @schemaVersion, @status, @temporaryPath,
+                    @finalPath, @sha256, @sizeBytes, @itemCount,
+                    @receiptCount, @tableCounts, @proof, @createdAt)
+                """,
+                ct,
+                ("@snapshotId", candidate.SnapshotId),
+                ("@processorKind", candidate.ProcessorKind),
+                ("@runId", candidate.RunId),
+                ("@authoringEpoch", candidate.AuthoringEpoch),
+                ("@sequence", candidate.Sequence),
+                ("@schemaVersion", candidate.SchemaVersion),
+                ("@status", AuthoringStatusValues.Snapshots.Creating),
+                ("@temporaryPath", candidate.TemporaryPath),
+                ("@finalPath", candidate.FinalPath),
+                ("@sha256", candidate.Sha256),
+                ("@sizeBytes", candidate.SizeBytes),
+                ("@itemCount", candidate.ItemCount),
+                ("@receiptCount", candidate.ReceiptCount),
+                ("@tableCounts",
+                    JsonSerializer.Serialize(candidate.TableCounts)),
+                ("@proof", snapshotProofJson),
+                ("@createdAt", Format(candidate.CreatedAt)));
+            int journalUpdated = await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                UPDATE prepared_ticket_canonical_epoch_recovery_journal
+                SET State = @pending,
+                    SnapshotDescriptorJson = @candidate,
+                    LastRecoveryAttemptAt = @attemptedAt,
+                    FailureCode = NULL,
+                    FailureDetail = NULL,
+                    UpdatedAt = @attemptedAt
+                WHERE RunId = @runId
+                  AND State = @materializing
+                  AND SnapshotDescriptorJson = @reservation
+                """,
+                ct,
+                ("@pending",
+                    PreparedTicketCanonicalEpochRecoveryStateValues
+                        .SnapshotPublishPending),
+                ("@candidate", candidateJson),
+                ("@attemptedAt", Format(DateTimeOffset.UtcNow)),
+                ("@runId", candidate.RunId),
+                ("@materializing",
+                    PreparedTicketCanonicalEpochRecoveryStateValues
+                        .MaterializationPending),
+                ("@reservation", state.Journal.SnapshotDescriptorJson));
+            if (journalUpdated != 1)
+            {
+                throw new PreparedTicketCanonicalEpochRecoveryException(
+                    PreparedTicketCanonicalEpochRecoveryFailureCodes
+                        .RecoveryEvidenceConflict,
+                    $"Recovery run '{candidate.RunId}' changed before candidate evidence was journaled.",
+                    [state.Recipe.SourceRunId, candidate.RunId]);
+            }
+            await transaction.CommitAsync(ct);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
+    public async Task<PreparedTicketPublicationCandidateSnapshot?>
+        GetCanonicalEpochRecoveryCandidateAsync(
+            string runId,
+            CancellationToken ct = default)
+    {
+        CanonicalEpochRecoveryEvidence evidence =
+            await GetCanonicalEpochRecoveryEvidenceAsync(runId, ct)
+            ?? throw new KeyNotFoundException(
+                $"Canonical-epoch recovery '{runId}' was not found.");
+        if (evidence.Journal.State !=
+            PreparedTicketCanonicalEpochRecoveryStateValues
+                .SnapshotPublishPending)
+        {
+            return null;
+        }
+        PreparedTicketPublicationCandidateSnapshot candidate =
+            DeserializeCanonicalEpochRecoveryCandidate(
+                evidence.Journal.SnapshotDescriptorJson,
+                runId);
+        EnsureCanonicalEpochRecoveryCandidateMatchesRecipe(
+            candidate,
+            evidence.Recipe);
+        return candidate;
+    }
+
+    public async Task RecordCanonicalEpochRecoveryFailureAsync(
+        string runId,
+        string failureCode,
+        string detail,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(detail);
+        if (!PreparedTicketCanonicalEpochRecoveryFailureCodes.IsKnown(
+                failureCode))
+        {
+            throw new ArgumentException(
+                $"Unknown canonical-epoch recovery failure code '{failureCode}'.",
+                nameof(failureCode));
+        }
+        await using SqliteConnection connection = OpenConnection();
+        await ExecuteAsync(
+            connection,
+            """
+            UPDATE prepared_ticket_canonical_epoch_recovery_journal
+            SET LastRecoveryAttemptAt = @attemptedAt,
+                FailureCode = @failureCode,
+                FailureDetail = @detail,
+                UpdatedAt = @attemptedAt
+            WHERE RunId = @runId AND State <> @ready
+            """,
+            ct,
+            ("@attemptedAt", Format(DateTimeOffset.UtcNow)),
+            ("@failureCode", failureCode),
+            ("@detail", detail),
+            ("@runId", runId),
+            ("@ready",
+                PreparedTicketCanonicalEpochRecoveryStateValues.Ready));
+    }
+
+    public async Task<AuthoringSnapshotDescriptor>
+        CompleteCanonicalEpochRecoveryAsync(
+            PreparedTicketPublicationCandidateSnapshot candidate,
+            PreparedTicketCanonicalEpochRecoveryProof proof,
+            CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        ArgumentNullException.ThrowIfNull(proof);
+        ValidatePublicationCandidate(candidate);
+
+        // Keep verified bytes open read-only through the SQLite CAS. Publication
+        // is already journaled; this transaction never moves or rewrites a file.
+        await using FileStream verifiedFile = new(
+            candidate.FinalPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read);
+        await ValidateCanonicalEpochRecoverySnapshotFileAsync(
+            candidate,
+            candidate.FinalPath,
+            ct);
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteTransaction transaction =
+            connection.BeginTransaction(deferred: false);
+        try
+        {
+            CanonicalEpochRecoveryTransactionState state =
+                await ReadCanonicalEpochRecoveryTransactionStateAsync(
+                    connection,
+                    transaction,
+                    candidate.RunId,
+                    ct);
+            PreparedTicketCanonicalEpochRecoveryResolution? existing =
+                await ReadCanonicalEpochRecoveryResolutionAsync(
+                    connection,
+                    transaction,
+                    sourceRunId: null,
+                    runId: candidate.RunId,
+                    ct: ct);
+            if (existing is not null)
+            {
+                if (!string.Equals(
+                        existing.SnapshotId,
+                        candidate.SnapshotId,
+                        StringComparison.Ordinal) ||
+                    !string.Equals(
+                        existing.SnapshotSha256,
+                        candidate.Sha256,
+                        StringComparison.Ordinal))
+                {
+                    throw new PreparedTicketCanonicalEpochRecoveryException(
+                        PreparedTicketCanonicalEpochRecoveryFailureCodes
+                            .RecoveryEvidenceConflict,
+                        $"Recovery run '{candidate.RunId}' already resolved with different snapshot evidence.",
+                        [state.Recipe.SourceRunId, candidate.RunId]);
+                }
+                await transaction.CommitAsync(ct);
+                return await new AuthoringRunStore(this)
+                    .GetSnapshotDescriptorAsync(candidate.SnapshotId, ct)
+                    ?? throw new InvalidOperationException(
+                        $"Resolved snapshot '{candidate.SnapshotId}' has no descriptor.");
+            }
+
+            EnsureCanonicalEpochRecoveryProofMatchesRecipe(
+                proof,
+                state.Recipe);
+            EnsureCanonicalEpochRecoveryCandidateMatchesRecipe(
+                candidate,
+                state.Recipe);
+            if (!string.Equals(
+                    state.RunStatus,
+                    AuthoringStatusValues.Runs.Finalizing,
+                    StringComparison.Ordinal) ||
+                state.Journal.State !=
+                    PreparedTicketCanonicalEpochRecoveryStateValues
+                        .SnapshotPublishPending ||
+                !string.Equals(
+                    state.Journal.SnapshotDescriptorJson,
+                    JsonSerializer.Serialize(candidate),
+                    StringComparison.Ordinal))
+            {
+                throw new PreparedTicketCanonicalEpochRecoveryException(
+                    PreparedTicketCanonicalEpochRecoveryFailureCodes
+                        .RecoveryEvidenceConflict,
+                    $"Recovery run '{candidate.RunId}' is not at its exact final CAS boundary.",
+                    [state.Recipe.SourceRunId, candidate.RunId]);
+            }
+            await EnsureCanonicalEpochRecoveryCurrentAsync(
+                connection,
+                transaction,
+                state.Recipe,
+                requireFence: true,
+                ct);
+            await EnsureCanonicalEpochRecoverySnapshotRecordAsync(
+                connection,
+                transaction,
+                candidate,
+                proof,
+                ct);
+
+            DateTimeOffset resolvedAt = DateTimeOffset.UtcNow;
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                INSERT INTO
+                    prepared_ticket_canonical_epoch_recovery_resolutions(
+                        RunId, SourceRunId, AuthoringEpoch, SnapshotId,
+                        SnapshotSha256, CorpusFingerprint,
+                        GroupingFingerprint, ProofJson, ResolvedAt)
+                VALUES(
+                    @runId, @sourceRunId, @authoringEpoch, @snapshotId,
+                    @snapshotSha256, @corpusFingerprint,
+                    @groupingFingerprint, @proofJson, @resolvedAt)
+                """,
+                ct,
+                ("@runId", candidate.RunId),
+                ("@sourceRunId", state.Recipe.SourceRunId),
+                ("@authoringEpoch", state.Recipe.AuthoringEpoch),
+                ("@snapshotId", candidate.SnapshotId),
+                ("@snapshotSha256", candidate.Sha256),
+                ("@corpusFingerprint", state.Recipe.CorpusFingerprint),
+                ("@groupingFingerprint",
+                    state.Recipe.GroupingFingerprint),
+                ("@proofJson", JsonSerializer.Serialize(proof)),
+                ("@resolvedAt", Format(resolvedAt)));
+
+            AuthoringSnapshotDescriptor descriptor =
+                await AuthoringRunStore.MarkSnapshotReadyAsync(
+                    connection,
+                    transaction,
+                    candidate.SnapshotId,
+                    candidate.Sha256,
+                    candidate.SizeBytes,
+                    resolvedAt,
+                    ct);
+            int journalUpdated = await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                UPDATE prepared_ticket_canonical_epoch_recovery_journal
+                SET State = @ready,
+                    LastRecoveryAttemptAt = @resolvedAt,
+                    FailureCode = NULL,
+                    FailureDetail = NULL,
+                    UpdatedAt = @resolvedAt
+                WHERE RunId = @runId AND State = @pending
+                """,
+                ct,
+                ("@ready",
+                    PreparedTicketCanonicalEpochRecoveryStateValues.Ready),
+                ("@resolvedAt", Format(resolvedAt)),
+                ("@runId", candidate.RunId),
+                ("@pending",
+                    PreparedTicketCanonicalEpochRecoveryStateValues
+                        .SnapshotPublishPending));
+            if (journalUpdated != 1)
+            {
+                throw new PreparedTicketCanonicalEpochRecoveryException(
+                    PreparedTicketCanonicalEpochRecoveryFailureCodes
+                        .RecoveryEvidenceConflict,
+                    $"Recovery run '{candidate.RunId}' journal changed during final CAS.",
+                    [state.Recipe.SourceRunId, candidate.RunId]);
+            }
+            await AuthoringRunStore.CompleteRunAsync(
+                connection,
+                transaction,
+                candidate.RunId,
+                candidate.SnapshotId,
+                resolvedAt,
+                ct);
+            await transaction.CommitAsync(ct);
+            return descriptor;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
+    public static async Task ValidateCanonicalEpochRecoverySnapshotFileAsync(
+        PreparedTicketPublicationCandidateSnapshot candidate,
+        string path,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ValidatePublicationCandidate(candidate);
+        AuthoringReviewSnapshotRecord expected = new()
+        {
+            Id = candidate.SnapshotId,
+            ProcessorKind = candidate.ProcessorKind,
+            RunId = candidate.RunId,
+            AuthoringEpoch = candidate.AuthoringEpoch,
+            Sequence = candidate.Sequence,
+            SchemaVersion = candidate.SchemaVersion,
+            Status = AuthoringStatusValues.Snapshots.Creating,
+            TempPath = candidate.TemporaryPath,
+            Path = candidate.FinalPath,
+            ChecksumSha256 = candidate.Sha256,
+            SizeBytes = candidate.SizeBytes,
+            ItemCount = candidate.ItemCount,
+            ReceiptCount = candidate.ReceiptCount,
+            TableCountsJson = JsonSerializer.Serialize(candidate.TableCounts),
+            CreatedAt = candidate.CreatedAt,
+        };
+        SqliteReviewSnapshotValidationResult validation =
+            await SqliteReviewSnapshotValidator.ValidateAsync(
+                expected,
+                path,
+                ct: ct);
+        if (!validation.IsValid ||
+            validation.SizeBytes != candidate.SizeBytes ||
+            !string.Equals(
+                validation.ChecksumSha256,
+                candidate.Sha256,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Canonical-epoch recovery snapshot validation failed: {validation.Error ?? "digest or size mismatch"}");
+        }
+
+        await using SqliteConnection snapshot =
+            await SqliteReviewSnapshotValidator.OpenReadOnlyAsync(path, ct);
+        PreparedTicketPublicationProtectedInventory inventory =
+            await PreparedTicketPublicationProtectionReader.ReadSnapshotAsync(
+                snapshot,
+                candidate.SchemaVersion,
+                ct);
+        string groupingFingerprint = PreparedTicketPublicationContract
+            .ComputeGroupingFingerprint(inventory.Grouping.Select(partition =>
+                new PreparedTicketPublicationGroupingPartition(
+                    partition.PartitionKey,
+                    partition.Fingerprint.OutputFingerprint)));
+        if (inventory.Corpus.Count != candidate.ReceiptCount ||
+            !string.Equals(
+                inventory.CorpusFingerprint,
+                candidate.OverlayCorpusFingerprint,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                groupingFingerprint,
+                candidate.GroupingFingerprint,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The canonical-epoch recovery snapshot does not match its complete corpus and grouping proof.");
+        }
+    }
+
+    private sealed record CanonicalEpochRecoveryTransactionState(
+        PreparedTicketCanonicalEpochRecoveryRecipe Recipe,
+        PreparedTicketCanonicalEpochRecoveryJournal Journal,
+        string RunStatus,
+        int ItemCount);
+
+    private static async Task<CanonicalEpochRecoveryTransactionState>
+        ReadCanonicalEpochRecoveryTransactionStateAsync(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            string runId,
+            CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT recovery.RecipeJson, recovery.SourceRunId,
+                   recovery.AuthoringEpoch, recovery.CorpusFingerprint,
+                   recovery.GroupingFingerprint, recovery.RecipeFingerprint,
+                   journal.State, journal.SnapshotDescriptorJson,
+                   journal.UpdatedAt, journal.LastRecoveryAttemptAt,
+                   journal.FailureCode, journal.FailureDetail,
+                   run.Status, run.Purpose, run.SourceRunId,
+                   run.AuthoringEpoch,
+                   (SELECT COUNT(*) FROM authoring_run_items
+                    WHERE RunId = run.Id),
+                   run.DatabaseOnly, run.ProcessorKind
+            FROM prepared_ticket_canonical_epoch_recoveries recovery
+            INNER JOIN prepared_ticket_canonical_epoch_recovery_journal journal
+                ON journal.RunId = recovery.RunId
+            INNER JOIN authoring_runs run ON run.Id = recovery.RunId
+            WHERE recovery.RunId = @runId
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+        {
+            throw new KeyNotFoundException(
+                $"Canonical-epoch recovery '{runId}' was not found.");
+        }
+        PreparedTicketCanonicalEpochRecoveryRecipe recipe =
+            DeserializeCanonicalEpochRecoveryRecipe(
+                reader.GetString(0),
+                runId);
+        PreparedTicketCanonicalEpochRecoveryJournal journal = new(
+            runId,
+            reader.GetString(6),
+            reader.IsDBNull(7) ? null : reader.GetString(7),
+            reader.GetDateTimeOffset(8),
+            reader.IsDBNull(9) ? null : reader.GetDateTimeOffset(9),
+            reader.IsDBNull(10) ? null : reader.GetString(10),
+            reader.IsDBNull(11) ? null : reader.GetString(11));
+        bool matches =
+            string.Equals(
+                reader.GetString(1),
+                recipe.SourceRunId,
+                StringComparison.Ordinal) &&
+            reader.GetInt64(2) == recipe.AuthoringEpoch &&
+            string.Equals(
+                reader.GetString(3),
+                recipe.CorpusFingerprint,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                reader.GetString(4),
+                recipe.GroupingFingerprint,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                reader.GetString(5),
+                recipe.RecipeFingerprint,
+                StringComparison.Ordinal) &&
+            PreparedTicketCanonicalEpochRecoveryStateValues.IsValid(
+                journal.State) &&
+            string.Equals(
+                reader.GetString(13),
+                PreparedTicketCanonicalEpochRecoveryContract.Purpose,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                reader.GetString(14),
+                recipe.SourceRunId,
+                StringComparison.Ordinal) &&
+            reader.GetInt64(15) == recipe.AuthoringEpoch &&
+            reader.GetInt32(16) == recipe.Corpus.Count &&
+            !reader.GetBoolean(17) &&
+            string.Equals(
+                reader.GetString(18),
+                AuthoringProcessorKind,
+                StringComparison.Ordinal);
+        await using (SqliteCommand selection = connection.CreateCommand())
+        {
+            selection.Transaction = transaction;
+            selection.CommandText =
+                """
+                SELECT BusinessKey, ItemKind, ExpectedSourceRevision,
+                       Status, AcceptedReceiptId
+                FROM authoring_run_items
+                WHERE RunId = @runId
+                """;
+            selection.Parameters.AddWithValue("@runId", runId);
+            await using SqliteDataReader items =
+                await selection.ExecuteReaderAsync(ct);
+            HashSet<string> selected = new(StringComparer.Ordinal);
+            while (await items.ReadAsync(ct))
+            {
+                PreparedTicketPublicationCorpusItem? item =
+                    recipe.Corpus.SingleOrDefault(item =>
+                        string.Equals(
+                            item.TicketKey,
+                            items.GetString(0),
+                            StringComparison.Ordinal));
+                matches &= item is not null &&
+                    selected.Add(item.TicketKey) &&
+                    items.GetString(1) ==
+                        $"recovery:{runId}:{item.ItemKind}" &&
+                    items.GetString(2) == item.ExpectedSourceRevision &&
+                    items.GetString(3) ==
+                        AuthoringStatusValues.Items.Complete &&
+                    !items.IsDBNull(4) &&
+                    items.GetString(4) == item.ReceiptId;
+            }
+        }
+        if (!matches)
+        {
+            throw new PreparedTicketCanonicalEpochRecoveryException(
+                PreparedTicketCanonicalEpochRecoveryFailureCodes
+                    .RecoveryEvidenceConflict,
+                $"Recovery run '{runId}' has conflicting recipe, run, or journal coordinates.",
+                [recipe.SourceRunId, runId]);
+        }
+        return new(recipe, journal, reader.GetString(12), reader.GetInt32(16));
+    }
+
+    private static void EnsureCanonicalEpochRecoveryReservationMatches(
+        CanonicalEpochRecoverySnapshotReservation reservation,
+        CanonicalEpochRecoveryTransactionState state,
+        string temporaryPath,
+        string finalPath,
+        int schemaVersion,
+        long sequence)
+    {
+        if (!string.Equals(
+                reservation.ReservationKind,
+                CanonicalEpochRecoverySnapshotReservationKind,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                reservation.RunId,
+                state.Recipe.RunId,
+                StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(reservation.SnapshotId) ||
+            !string.Equals(
+                reservation.ProcessorKind,
+                AuthoringProcessorKind,
+                StringComparison.Ordinal) ||
+            !PathsEqual(reservation.TemporaryPath, temporaryPath) ||
+            !PathsEqual(reservation.FinalPath, finalPath) ||
+            reservation.SchemaVersion != schemaVersion ||
+            reservation.Sequence != sequence ||
+            reservation.AuthoringEpoch != state.Recipe.AuthoringEpoch ||
+            reservation.ItemCount != state.ItemCount ||
+            reservation.ReceiptCount != state.Recipe.Corpus.Count ||
+            reservation.CreatedAt == default ||
+            reservation.Candidate is not null)
+        {
+            throw new PreparedTicketCanonicalEpochRecoveryException(
+                PreparedTicketCanonicalEpochRecoveryFailureCodes
+                    .RecoveryEvidenceConflict,
+                $"Recovery run '{state.Recipe.RunId}' has conflicting snapshot reservation evidence.",
+                [state.Recipe.SourceRunId, state.Recipe.RunId]);
+        }
+    }
+
+    private static void
+        EnsureCanonicalEpochRecoveryCandidateMatchesReservation(
+            PreparedTicketPublicationCandidateSnapshot candidate,
+            CanonicalEpochRecoverySnapshotReservation reservation)
+    {
+        if (!string.Equals(
+                candidate.RunId,
+                reservation.RunId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                candidate.SnapshotId,
+                reservation.SnapshotId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                candidate.ProcessorKind,
+                reservation.ProcessorKind,
+                StringComparison.Ordinal) ||
+            !PathsEqual(
+                candidate.TemporaryPath,
+                reservation.TemporaryPath) ||
+            !PathsEqual(candidate.FinalPath, reservation.FinalPath) ||
+            candidate.SchemaVersion != reservation.SchemaVersion ||
+            candidate.Sequence != reservation.Sequence ||
+            candidate.AuthoringEpoch != reservation.AuthoringEpoch ||
+            candidate.ItemCount != reservation.ItemCount ||
+            candidate.ReceiptCount != reservation.ReceiptCount ||
+            candidate.CreatedAt != reservation.CreatedAt)
+        {
+            throw new PreparedTicketCanonicalEpochRecoveryException(
+                PreparedTicketCanonicalEpochRecoveryFailureCodes
+                    .RecoveryEvidenceConflict,
+                $"Recovery run '{candidate.RunId}' candidate does not match its reserved snapshot coordinates.",
+                [candidate.RunId]);
+        }
+    }
+
+    private static void EnsureCanonicalEpochRecoveryCandidateMatchesRecipe(
+        PreparedTicketPublicationCandidateSnapshot candidate,
+        PreparedTicketCanonicalEpochRecoveryRecipe recipe)
+    {
+        if (!string.Equals(
+                candidate.RunId,
+                recipe.RunId,
+                StringComparison.Ordinal) ||
+            candidate.AuthoringEpoch != recipe.AuthoringEpoch ||
+            candidate.SchemaVersion != PreparedTicketSnapshotSchemaV3.Version ||
+            candidate.ItemCount != recipe.Corpus.Count ||
+            candidate.ReceiptCount != recipe.Corpus.Count ||
+            !string.Equals(
+                candidate.OverlayCorpusFingerprint,
+                recipe.CorpusFingerprint,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                candidate.GroupingFingerprint,
+                recipe.GroupingFingerprint,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                candidate.GroupingImpactFingerprint,
+                recipe.RecipeFingerprint,
+                StringComparison.Ordinal))
+        {
+            throw new PreparedTicketCanonicalEpochRecoveryException(
+                PreparedTicketCanonicalEpochRecoveryFailureCodes
+                    .RecoveryEvidenceConflict,
+                $"Recovery run '{recipe.RunId}' candidate does not match its frozen canonical recipe.",
+                [recipe.SourceRunId, recipe.RunId]);
+        }
+    }
+
+    private static void EnsureCanonicalEpochRecoveryProofMatchesRecipe(
+        PreparedTicketCanonicalEpochRecoveryProof proof,
+        PreparedTicketCanonicalEpochRecoveryRecipe recipe)
+    {
+        if (proof != CreateCanonicalEpochRecoveryProof(recipe))
+        {
+            throw new PreparedTicketCanonicalEpochRecoveryException(
+                PreparedTicketCanonicalEpochRecoveryFailureCodes
+                    .RecoveryEvidenceConflict,
+                $"Recovery run '{recipe.RunId}' proof does not match its frozen canonical recipe.",
+                [recipe.SourceRunId, recipe.RunId]);
+        }
+    }
+
+    private static PreparedTicketPublicationCandidateSnapshot
+        DeserializeCanonicalEpochRecoveryCandidate(
+            string? json,
+            string runId)
+        => string.IsNullOrWhiteSpace(json)
+            ? throw new PreparedTicketCanonicalEpochRecoveryException(
+                PreparedTicketCanonicalEpochRecoveryFailureCodes
+                    .RecoveryEvidenceConflict,
+                $"Recovery run '{runId}' has no candidate descriptor.",
+                [runId])
+            : JsonSerializer.Deserialize<
+                PreparedTicketPublicationCandidateSnapshot>(json)
+              ?? throw new PreparedTicketCanonicalEpochRecoveryException(
+                  PreparedTicketCanonicalEpochRecoveryFailureCodes
+                      .RecoveryEvidenceConflict,
+                  $"Recovery run '{runId}' has an invalid candidate descriptor.",
+                  [runId]);
+
+    private static AuthoringSnapshotPublicationProof
+        CreateCanonicalEpochRecoverySnapshotProof(
+            PreparedTicketCanonicalEpochRecoveryProof proof)
+        => new(
+            PreparedTicketPublicationContract.CurrentVersion,
+            PreparedTicketPublicationContract
+                .CanonicalEpochRecoveryPurpose,
+            proof.SourceRunId,
+            PreparedTicketPublicationContract.JiraSourceName,
+            proof.AbandonedAt,
+            proof.AuthoringEpoch,
+            0,
+            proof.CorpusFingerprint,
+            proof.GroupingFingerprint,
+            proof.CapturedAt);
+
+    private static async Task EnsureCanonicalEpochRecoverySnapshotRecordAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        PreparedTicketPublicationCandidateSnapshot candidate,
+        PreparedTicketCanonicalEpochRecoveryProof proof,
+        CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT ProcessorKind, RunId, AuthoringEpoch, Sequence,
+                   SchemaVersion, Status, TempPath, Path, ChecksumSha256,
+                   SizeBytes, ItemCount, ReceiptCount, TableCountsJson,
+                   PublicationProofJson, CreatedAt
+            FROM authoring_review_snapshots
+            WHERE Id = @snapshotId
+            """;
+        command.Parameters.AddWithValue("@snapshotId", candidate.SnapshotId);
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+        {
+            throw new PreparedTicketCanonicalEpochRecoveryException(
+                PreparedTicketCanonicalEpochRecoveryFailureCodes
+                    .RecoveryEvidenceConflict,
+                $"Recovery snapshot '{candidate.SnapshotId}' has no durable record.",
+                [candidate.RunId]);
+        }
+        string expectedProof = JsonSerializer.Serialize(
+            CreateCanonicalEpochRecoverySnapshotProof(proof),
+            JsonSerializerOptions.Web);
+        bool matches =
+            string.Equals(
+                reader.GetString(0),
+                candidate.ProcessorKind,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                reader.GetString(1),
+                candidate.RunId,
+                StringComparison.Ordinal) &&
+            reader.GetInt64(2) == candidate.AuthoringEpoch &&
+            reader.GetInt64(3) == candidate.Sequence &&
+            reader.GetInt32(4) == candidate.SchemaVersion &&
+            reader.GetString(5) is
+                AuthoringStatusValues.Snapshots.Creating or
+                AuthoringStatusValues.Snapshots.Promoted or
+                AuthoringStatusValues.Snapshots.Ready &&
+            PathsEqual(reader.GetString(6), candidate.TemporaryPath) &&
+            PathsEqual(reader.GetString(7), candidate.FinalPath) &&
+            string.Equals(
+                reader.GetString(8),
+                candidate.Sha256,
+                StringComparison.Ordinal) &&
+            reader.GetInt64(9) == candidate.SizeBytes &&
+            reader.GetInt32(10) == candidate.ItemCount &&
+            reader.GetInt32(11) == candidate.ReceiptCount &&
+            string.Equals(
+                reader.GetString(12),
+                JsonSerializer.Serialize(candidate.TableCounts),
+                StringComparison.Ordinal) &&
+            string.Equals(
+                reader.GetString(13),
+                expectedProof,
+                StringComparison.Ordinal) &&
+            reader.GetDateTimeOffset(14) == candidate.CreatedAt;
+        if (!matches)
+        {
+            throw new PreparedTicketCanonicalEpochRecoveryException(
+                PreparedTicketCanonicalEpochRecoveryFailureCodes
+                    .RecoveryEvidenceConflict,
+                $"Recovery snapshot '{candidate.SnapshotId}' conflicts with journaled evidence.",
+                [candidate.RunId]);
+        }
     }
 
     public async Task<AuthoringRunRecord> CreatePublicationReconciliationAsync(

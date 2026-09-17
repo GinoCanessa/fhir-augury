@@ -3,8 +3,10 @@ using System.Text.Json;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Text;
 using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
+using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Client;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Planner.Contracts;
@@ -266,10 +268,14 @@ internal sealed class TicketSnapshotFixture
         CreatePromotedReconciliationAsync(
             string root,
             DateTimeOffset capturedAt,
-            long stableJiraGeneration)
+            long stableJiraGeneration,
+            bool canonicalEpochRecovery = false)
     {
         const string processorKind = "jira-fhir";
         const string ticketKey = "FHIR-1001";
+        string[] ticketKeys = canonicalEpochRecovery
+            ? [ticketKey, "FHIR-1002"]
+            : [ticketKey];
         DateTimeOffset utcCapturedAt = capturedAt.ToUniversalTime();
         string fixtureDirectory = Path.Combine(
             root,
@@ -295,7 +301,7 @@ internal sealed class TicketSnapshotFixture
 
         AuthoringRunRecord sourceRun = await store.CreateRunAsync(
             processorKind,
-            [new(ticketKey, "fhir", "rev-1")],
+            ticketKeys.Select(key => new AuthoringRunItemDefinition(key, "fhir", "rev-1")).ToArray(),
             now: utcCapturedAt.AddMinutes(-10),
             inputProvenance:
             [
@@ -312,47 +318,49 @@ internal sealed class TicketSnapshotFixture
             throw new InvalidOperationException(
                 "The source fixture could not acquire its mutation fence.");
         }
-        AuthoringRunItemRecord sourceItem = (await store.GetRunItemsAsync(
-            sourceRun.Id)).Single();
-        AuthoringOperationClaim sourceClaim =
-            await store.ClaimItemAsync(
-                sourceRun.Id,
-                sourceItem.Id,
-                utcCapturedAt.AddMinutes(-8))
-            ?? throw new InvalidOperationException(
-                "The source fixture item could not be claimed.");
-        PreparedTicketPayload payload =
-            CreateReconciliationSourcePayload(ticketKey, utcCapturedAt);
-        string contentHash =
-            PreparedTicketAuthoringDtos.ComputeContentHash(payload);
-        AuthoringReceiptAcceptance sourceAcceptance =
-            await store.AcceptResultAsync(
-                new(
+        foreach (AuthoringRunItemRecord sourceItem in
+                 await store.GetRunItemsAsync(sourceRun.Id))
+        {
+            AuthoringOperationClaim sourceClaim =
+                await store.ClaimItemAsync(
                     sourceRun.Id,
                     sourceItem.Id,
-                    sourceClaim.OperationId,
-                    sourceItem.ExpectedSourceRevision,
-                    contentHash),
-                sourceClaim.OperationToken,
-                (connection, ct) =>
-                    database.SavePreparedTicketForAuthoringAsync(
-                        connection,
-                        payload,
-                        contentHash,
+                    utcCapturedAt.AddMinutes(-8))
+                ?? throw new InvalidOperationException(
+                    "The source fixture item could not be claimed.");
+            PreparedTicketPayload payload =
+                CreateReconciliationSourcePayload(sourceItem.BusinessKey, utcCapturedAt);
+            string contentHash =
+                PreparedTicketAuthoringDtos.ComputeContentHash(payload);
+            AuthoringReceiptAcceptance sourceAcceptance =
+                await store.AcceptResultAsync(
+                    new(
                         sourceRun.Id,
                         sourceItem.Id,
                         sourceClaim.OperationId,
-                        ct),
-                now: utcCapturedAt.AddMinutes(-7));
-        await database.SaveHydrationAsync(
-            CreateReconciliationSourceHydration(
-                ticketKey,
-                utcCapturedAt,
-                stableJiraGeneration));
-        await store.MarkItemCompleteAsync(
-            sourceItem.Id,
-            sourceAcceptance.Receipt.ReceiptId,
-            now: utcCapturedAt.AddMinutes(-6));
+                        sourceItem.ExpectedSourceRevision,
+                        contentHash),
+                    sourceClaim.OperationToken,
+                    (connection, ct) =>
+                        database.SavePreparedTicketForAuthoringAsync(
+                            connection,
+                            payload,
+                            contentHash,
+                            sourceRun.Id,
+                            sourceItem.Id,
+                            sourceClaim.OperationId,
+                            ct),
+                    now: utcCapturedAt.AddMinutes(-7));
+            await database.SaveHydrationAsync(
+                CreateReconciliationSourceHydration(
+                    sourceItem.BusinessKey,
+                    utcCapturedAt,
+                    stableJiraGeneration));
+            await store.MarkItemCompleteAsync(
+                sourceItem.Id,
+                sourceAcceptance.Receipt.ReceiptId,
+                now: utcCapturedAt.AddMinutes(-6));
+        }
         await store.MarkRunFinalizingAsync(
             sourceRun.Id,
             now: utcCapturedAt.AddMinutes(-5));
@@ -376,7 +384,26 @@ internal sealed class TicketSnapshotFixture
                     WorkGroupDisplay = partition.WorkGroupDisplay,
                     Specification = partition.Specification,
                     Type = partition.Type,
-                    Topics = [],
+                    Topics = canonicalEpochRecovery
+                        ? [new()
+                        {
+                            ShortDescription = "Canonical recovery topic",
+                            LongerDescription = "Complete retained grouping output",
+                            RenderOrderHint = 1,
+                            LinkedTicketGroups = [new()
+                            {
+                                FirstTicketKey = ticketKey,
+                                Rationale = "Shared canonical context",
+                                Members = ticketKeys.Select((key, index) =>
+                                    new PreparedTicketTopicGroupMemberPayload
+                                    {
+                                        TicketKey = key,
+                                        Order = index,
+                                    }).ToList(),
+                            }],
+                            RemainingTicketKeys = [],
+                        }]
+                        : [],
                 },
                 sourceRun.Id,
                 stage.Id,
@@ -418,35 +445,31 @@ internal sealed class TicketSnapshotFixture
                 await PreparedTicketPublicationProtectionReader
                     .ReadCurrentAsync(connection);
         }
-        PreparedTicketPublicationCorpusItem sourceCoordinate =
-            inventory.Corpus.Single(item => string.Equals(
-                item.TicketKey,
-                ticketKey,
-                StringComparison.OrdinalIgnoreCase));
-        PreparedTicketPublicationProtectedRow sourceState =
-            inventory.Rows.Single(row =>
-                string.Equals(
-                    row.Table,
-                    "prepared_ticket_authoring_state",
-                    StringComparison.Ordinal) &&
-                string.Equals(
-                    row.Scope,
-                    ticketKey,
-                    StringComparison.OrdinalIgnoreCase));
-        string sourceGraphHash = sourceState.Values.Single(value =>
-                string.Equals(
-                    value.Column,
-                    "GraphHash",
-                    StringComparison.Ordinal))
-            .Value
-            ?? throw new InvalidOperationException(
-                "The source fixture has no authored graph fingerprint.");
-        PreparedTicketPublicationProtectedGrouping sourceGrouping =
-            inventory.Grouping.Single(partition =>
-                partition.Corpus.Any(item => string.Equals(
-                    item.TicketKey,
-                    ticketKey,
-                    StringComparison.OrdinalIgnoreCase)));
+        PreparedTicketPublicationReconciliationItemDecision[] decisions =
+            inventory.Corpus.Select(coordinate =>
+            {
+                string graphHash = inventory.Rows.Single(row =>
+                    row.Table == "prepared_ticket_authoring_state" &&
+                    row.Scope == coordinate.TicketKey).Values
+                    .Single(value => value.Column == "GraphHash").Value
+                    ?? throw new InvalidOperationException(
+                        "The source fixture has no authored graph fingerprint.");
+                PreparedTicketPublicationProtectedGrouping partition =
+                    inventory.Grouping.Single(partition =>
+                        partition.Corpus.Any(item => item.TicketKey == coordinate.TicketKey));
+                return new PreparedTicketPublicationReconciliationItemDecision(
+                    coordinate.TicketKey,
+                    PreparedTicketPublicationReconciliationDispositionValues.CarryForward,
+                    coordinate.ExpectedSourceRevision,
+                    coordinate.ExpectedSourceRevision,
+                    coordinate.ReceiptId,
+                    coordinate.RunItemId,
+                    coordinate.ContributingRunId,
+                    graphHash,
+                    partition.Fingerprint.OutputFingerprint,
+                    coordinate.ItemKind,
+                    coordinate.ExpectedSourceRevision);
+            }).ToArray();
         PreparedTicketPublicationReconciliationComparison comparison = new(
             PreparedTicketPublicationReconciliationContract.CurrentVersion,
             sourceRun.Id,
@@ -456,21 +479,7 @@ internal sealed class TicketSnapshotFixture
                 System.Globalization.CultureInfo.InvariantCulture),
             utcCapturedAt,
             inventory.CorpusFingerprint,
-            [
-                new(
-                    ticketKey,
-                    PreparedTicketPublicationReconciliationDispositionValues
-                        .CarryForward,
-                    sourceCoordinate.ExpectedSourceRevision,
-                    sourceCoordinate.ExpectedSourceRevision,
-                    sourceCoordinate.ReceiptId,
-                    sourceCoordinate.RunItemId,
-                    sourceCoordinate.ContributingRunId,
-                    sourceGraphHash,
-                    sourceGrouping.Fingerprint.OutputFingerprint,
-                    sourceCoordinate.ItemKind,
-                    sourceCoordinate.ExpectedSourceRevision),
-            ]);
+            decisions);
         AuthoringRunRecord reconciliation =
             await database.CreatePublicationReconciliationAsync(
                 comparison,
@@ -508,20 +517,63 @@ internal sealed class TicketSnapshotFixture
             database,
             store,
             NullLogger<PreparedTicketPublicationRecoveryService>.Instance);
-        AuthoringSnapshotDescriptor descriptor =
-            await recovery.RecoverAsync(reconciliation.Id);
+        AuthoringSnapshotDescriptor descriptor;
+        string publishedPath;
+        if (canonicalEpochRecovery)
+        {
+            await database.AbandonPublicationReconciliationAsync(
+                reconciliation.Id,
+                "publisher fixture resumes canonical epoch",
+                utcCapturedAt.AddMinutes(1));
+            AuthoringRunControlService runControl = new(
+                store,
+                new AuthoringRetryPolicy(
+                    Options.Create(new ProcessingServiceOptions())));
+            PreparedTicketCanonicalEpochRecoveryService canonicalRecovery =
+                new(
+                    database,
+                    store,
+                    runControl,
+                    materializer,
+                    new AuthoringRunSchedulerWakeSignal(),
+                    NullLogger<
+                        PreparedTicketCanonicalEpochRecoveryService>.Instance);
+            PreparedTicketCanonicalEpochRecoveryStartResult started =
+                await canonicalRecovery.StartAsync(reconciliation.Id);
+            descriptor = await canonicalRecovery.RecoverAsync(
+                started.Status.Run.RunId);
+            publishedPath = Path.Combine(
+                snapshotDirectory,
+                descriptor.FileName);
+        }
+        else
+        {
+            descriptor = await recovery.RecoverAsync(reconciliation.Id);
+            publishedPath = promotion.FinalPath;
+        }
         if (descriptor.PublicationProof is null)
         {
             throw new InvalidOperationException(
                 "The promoted reconciliation descriptor has no publication proof.");
         }
-        string descriptorPath = promotion.FinalPath + ".json";
+        string descriptorPath = publishedPath + ".json";
         await WriteDescriptorAsync(descriptorPath, descriptor);
         return new TicketSnapshotFixture(
-            promotion.FinalPath,
+            publishedPath,
             descriptorPath,
             descriptor);
     }
+
+    public static Task<TicketSnapshotFixture>
+        CreateCanonicalEpochRecoveryAsync(
+            string root,
+            DateTimeOffset capturedAt,
+            long stableJiraGeneration)
+        => CreatePromotedReconciliationAsync(
+            root,
+            capturedAt,
+            stableJiraGeneration,
+            canonicalEpochRecovery: true);
 
     private static PreparedTicketPayload CreateReconciliationSourcePayload(
         string ticketKey,

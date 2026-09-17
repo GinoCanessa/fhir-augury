@@ -396,7 +396,9 @@ internal static class DiscussionSiteDatabaseValidator
                 DiscussionPublicationReadinessEvidence.OrdinarySnapshot and not
                 DiscussionPublicationReadinessEvidence.PublicationRefresh and not
                 DiscussionPublicationReadinessEvidence
-                    .PublicationReconciliation ||
+                    .PublicationReconciliation and not
+                DiscussionPublicationReadinessEvidence
+                    .CanonicalEpochRecovery ||
             readiness.PublicDisplayNamePolicyVersion is not null and not
                 PublicDisplayNamePolicy.CurrentVersion ||
             readiness.JiraSourceContentRevision is < 0)
@@ -432,7 +434,9 @@ internal static class DiscussionSiteDatabaseValidator
             (readiness.Evidence is
                 DiscussionPublicationReadinessEvidence.PublicationRefresh or
                 DiscussionPublicationReadinessEvidence
-                    .PublicationReconciliation) &&
+                    .PublicationReconciliation or
+                DiscussionPublicationReadinessEvidence
+                    .CanonicalEpochRecovery) &&
             readiness.IsReady &&
             (refresh is null ||
              readiness.JiraSourceContentRevision is null))

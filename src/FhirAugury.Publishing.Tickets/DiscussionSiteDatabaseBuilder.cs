@@ -32,6 +32,18 @@ public static class PreparedTicketPublicationFingerprintReader
             sourceDatabasePath,
             contractVersion,
             ct);
+
+    public static Task<PreparedTicketPublicationFingerprints>
+        ReadCanonicalEpochRecoveryAsync(
+            string sourceDatabasePath,
+            int contractVersion =
+                PreparedTicketPublicationContract.CurrentVersion,
+            CancellationToken ct = default)
+        => DiscussionSiteDatabaseBuilder
+            .ComputeCanonicalEpochRecoveryFingerprintsAsync(
+                sourceDatabasePath,
+                contractVersion,
+                ct);
 }
 
 internal readonly record struct DiscussionOrdinaryProvenance(
@@ -624,6 +636,44 @@ internal static class DiscussionSiteDatabaseBuilder
         if (descriptor?.PublicationProof is
             AuthoringSnapshotPublicationProof proof)
         {
+            if (string.Equals(
+                    proof.Purpose,
+                    PreparedTicketPublicationContract
+                        .CanonicalEpochRecoveryPurpose,
+                    StringComparison.Ordinal))
+            {
+                bool recoveryValid =
+                    await IsValidCanonicalEpochRecoveryProofAsync(
+                        source,
+                        descriptor,
+                        proof,
+                        currentPeoplePolicy,
+                        ct).ConfigureAwait(false);
+                if (!recoveryValid)
+                {
+                    reasonCodes.Add(
+                        DiscussionPublicationReadinessReasonCodes
+                            .InvalidCanonicalEpochRecoveryProof);
+                }
+                DiscussionPublicationReadiness recoveryReadiness =
+                    DiscussionPublicationReadiness.Create(
+                        DiscussionPublicationReadinessEvidence
+                            .CanonicalEpochRecovery,
+                        recoveryValid
+                            ? proof.SourceContentRevision
+                            : null,
+                        currentPeoplePolicy
+                            ? PublicDisplayNamePolicy.CurrentVersion
+                            : null,
+                        reasonCodes);
+                return (
+                    recoveryValid
+                        ? proof.SourceLastSuccessfulRefreshAt
+                            .ToUniversalTime()
+                        : null,
+                    recoveryReadiness);
+            }
+
             bool reconciliationProof =
                 string.Equals(
                     proof.Purpose,
@@ -897,6 +947,111 @@ internal static class DiscussionSiteDatabaseBuilder
     }
 
     private static async Task<bool>
+        IsValidCanonicalEpochRecoveryProofAsync(
+            SqliteConnection source,
+            AuthoringSnapshotDescriptor descriptor,
+            AuthoringSnapshotPublicationProof proof,
+            bool currentPeoplePolicy,
+            CancellationToken ct)
+    {
+        try
+        {
+            PreparedTicketPublicationContract.EnsureSupportedVersion(
+                proof.ContractVersion);
+            if (descriptor.SchemaVersion !=
+                    PreparedTicketSnapshotSchemaV3.Version ||
+                !string.Equals(
+                    descriptor.ProcessorKind,
+                    PreparedTicketSnapshotSchemaV3.ProcessorKind,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    proof.Purpose,
+                    PreparedTicketPublicationContract
+                        .CanonicalEpochRecoveryPurpose,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    proof.SourceName,
+                    PreparedTicketPublicationContract.JiraSourceName,
+                    StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrWhiteSpace(proof.SourceRunId) ||
+                string.Equals(
+                    proof.SourceRunId,
+                    descriptor.RunId,
+                    StringComparison.Ordinal) ||
+                proof.SourceLastSuccessfulRefreshAt == default ||
+                proof.SourceLastSuccessfulRefreshAt.Offset != TimeSpan.Zero ||
+                proof.CapturedAt == default ||
+                proof.CapturedAt.Offset != TimeSpan.Zero ||
+                proof.SourceContentRevision != descriptor.AuthoringEpoch ||
+                proof.PublicDisplayNamePolicyVersion != 0 ||
+                !IsCanonicalSha256(proof.CorpusFingerprint) ||
+                !IsCanonicalSha256(proof.GroupingFingerprint) ||
+                !currentPeoplePolicy ||
+                !await HasCurrentPeoplePolicyForEntireCorpusAsync(
+                    source,
+                    ct).ConfigureAwait(false))
+            {
+                return false;
+            }
+
+            long matchingRunPair = await ScalarInt64Async(
+                source,
+                """
+                SELECT COUNT(*)
+                FROM authoring_runs recovery
+                INNER JOIN authoring_runs abandoned
+                    ON abandoned.Id = @sourceRunId
+                WHERE recovery.Id = @recoveryRunId
+                  AND recovery.ProcessorKind = @processorKind
+                  AND recovery.AuthoringEpoch = @authoringEpoch
+                  AND recovery.Status = 'finalizing'
+                  AND recovery.DatabaseOnly = 0
+                  AND recovery.TotalItems = @itemCount
+                  AND recovery.CreatedAt = @capturedAt
+                  AND abandoned.Id = @sourceRunId
+                  AND abandoned.ProcessorKind = recovery.ProcessorKind
+                  AND abandoned.Status = 'abandoned'
+                  AND abandoned.DatabaseOnly = 0
+                  AND abandoned.CompletedAt = @abandonedAt
+                  AND abandoned.AuthoringEpoch = recovery.AuthoringEpoch
+                """,
+                ct,
+                ("@recoveryRunId", descriptor.RunId),
+                ("@processorKind", descriptor.ProcessorKind),
+                ("@sourceRunId", proof.SourceRunId),
+                ("@authoringEpoch", proof.SourceContentRevision),
+                ("@itemCount", descriptor.ItemCount),
+                ("@capturedAt", proof.CapturedAt.ToString("O", CultureInfo.InvariantCulture)),
+                ("@abandonedAt", proof.SourceLastSuccessfulRefreshAt.ToString("O", CultureInfo.InvariantCulture)))
+                .ConfigureAwait(false);
+            if (matchingRunPair != 1)
+            {
+                return false;
+            }
+
+            PreparedTicketPublicationFingerprints fingerprints =
+                await ComputeCanonicalEpochRecoveryFingerprintsAsync(
+                    source,
+                    proof.ContractVersion,
+                    ct).ConfigureAwait(false);
+            return string.Equals(
+                       proof.CorpusFingerprint,
+                       fingerprints.Corpus,
+                       StringComparison.Ordinal) &&
+                   string.Equals(
+                       proof.GroupingFingerprint,
+                       fingerprints.Grouping,
+                       StringComparison.Ordinal);
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or InvalidOperationException or
+            NotSupportedException or FormatException or OverflowException)
+        {
+            return false;
+        }
+    }
+
+    private static async Task<bool>
         HasCurrentPeoplePolicyForEntireCorpusAsync(
             SqliteConnection source,
             CancellationToken ct)
@@ -1144,6 +1299,44 @@ internal static class DiscussionSiteDatabaseBuilder
             await ReadPublicationCorpusAsync(source, ct).ConfigureAwait(false);
         IReadOnlyList<PreparedTicketPublicationGroupingPartition> grouping =
             await ReadGroupingFingerprintsAsync(
+                source,
+                contractVersion,
+                ct).ConfigureAwait(false);
+        return new PreparedTicketPublicationFingerprints(
+            PreparedTicketPublicationContract.ComputeCorpusFingerprint(
+                corpus,
+                contractVersion),
+            PreparedTicketPublicationContract.ComputeGroupingFingerprint(
+                grouping,
+                contractVersion));
+    }
+
+    internal static async Task<PreparedTicketPublicationFingerprints>
+        ComputeCanonicalEpochRecoveryFingerprintsAsync(
+            string sourceDatabasePath,
+            int contractVersion =
+                PreparedTicketPublicationContract.CurrentVersion,
+            CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceDatabasePath);
+        await using SqliteConnection source = OpenReadOnly(sourceDatabasePath);
+        await source.OpenAsync(ct).ConfigureAwait(false);
+        return await ComputeCanonicalEpochRecoveryFingerprintsAsync(
+            source,
+            contractVersion,
+            ct).ConfigureAwait(false);
+    }
+
+    private static async Task<PreparedTicketPublicationFingerprints>
+        ComputeCanonicalEpochRecoveryFingerprintsAsync(
+            SqliteConnection source,
+            int contractVersion,
+            CancellationToken ct)
+    {
+        IReadOnlyList<PreparedTicketPublicationCorpusItem> corpus =
+            await ReadPublicationCorpusAsync(source, ct).ConfigureAwait(false);
+        IReadOnlyList<PreparedTicketPublicationGroupingPartition> grouping =
+            await ReadCurrentGroupingFingerprintsAsync(
                 source,
                 contractVersion,
                 ct).ConfigureAwait(false);

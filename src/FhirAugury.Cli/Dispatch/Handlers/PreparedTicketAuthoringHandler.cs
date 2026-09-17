@@ -82,8 +82,23 @@ public static class PreparedTicketAuthoringHandler
                     Required(request.RunId, "runId"),
                     Required(request.Reason, "reason"),
                     ct),
+            "recover-canonical-epoch" =>
+                await client.StartCanonicalEpochRecoveryAsync(
+                    "Preparer",
+                    Required(request.SourceRunId, "sourceRunId"),
+                    ct),
+            "canonical-epoch-recovery-status" =>
+                await client.GetCanonicalEpochRecoveryStatusAsync(
+                    "Preparer",
+                    Required(request.RunId, "runId"),
+                    ct),
+            "retry-canonical-epoch-recovery" =>
+                await client.RetryCanonicalEpochRecoveryAsync(
+                    "Preparer",
+                    Required(request.RunId, "runId"),
+                    ct),
             _ => throw new ArgumentException(
-                "Action must be start, status, retry, supersede, submit, snapshot, refresh-publication, reconcile-publication, reconciliation-status, retry-reconciliation, cancel-reconciliation, or abandon-reconciliation."),
+                "Action must be start, status, retry, supersede, submit, snapshot, refresh-publication, reconcile-publication, reconciliation-status, retry-reconciliation, cancel-reconciliation, abandon-reconciliation, recover-canonical-epoch, canonical-epoch-recovery-status, or retry-canonical-epoch-recovery."),
         };
     }
 

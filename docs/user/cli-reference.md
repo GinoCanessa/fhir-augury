@@ -276,7 +276,7 @@ Three typed command families control processor-owned authoring runs:
 | `ballot-note-authoring` | BallotNotes | [Generating Ballot Notes](generating-ballot-notes.md) |
 
 All three families register six shared actions. The Preparer additionally
-registers six publication-maintenance actions, for twelve exact action
+registers nine publication-maintenance actions, for fifteen exact action
 values:
 
 | Action | Required coordinates and fields | Purpose and boundaries |
@@ -293,12 +293,17 @@ values:
 | `retry-reconciliation` (Preparer only) | `runId` | Explicitly resume a database-promoted `snapshot-publish-pending` publication. Recovery is idempotent and does not reapply canonical replacement or overwrite a conflicting final file. |
 | `cancel-reconciliation` (Preparer only) | `runId`, non-blank `reason` | Terminally cancel only a `staged` reconciliation before trusted candidate or canonical promotion. It retains the frozen comparison and cancellation audit, deletes disposable workspace, releases both fences, and reports the generic run as `superseded`. |
 | `abandon-reconciliation` (Preparer only) | `runId`, non-blank `reason` | After database promotion only, audit explicit abandonment as terminal `canonical-unpublished`. It does not roll back canonical data or create a publication and it restricts later snapshot-producing runs. |
+| `recover-canonical-epoch` (Preparer only) | `sourceRunId` | Start or find the dedicated recovery of a terminal abandoned reconciliation's current canonical epoch. All selection items are complete; no authoring/regrouping runs. |
+| `canonical-epoch-recovery-status` (Preparer only) | `runId` | Read the distinct recovery run, frozen corpus/grouping, source abandonment, journal/fence, failure detail, and verified snapshot. |
+| `retry-canonical-epoch-recovery` (Preparer only) | `runId` | Resume the same recovery run and exact-byte snapshot journal without reopening the abandoned reconciliation. |
 
 The exact Preparer action set is `start`, `status`, `retry`, `supersede`,
 `submit`, `snapshot`, `refresh-publication`, `reconcile-publication`,
 `reconciliation-status`, `retry-reconciliation`, `cancel-reconciliation`,
-and `abandon-reconciliation`. Planner and BallotNotes do not accept any of
-the six publication-maintenance actions.
+`abandon-reconciliation`, `recover-canonical-epoch`,
+`canonical-epoch-recovery-status`, and `retry-canonical-epoch-recovery`.
+Planner and BallotNotes do not accept any of
+the nine publication-maintenance actions.
 
 Start selectors are not interchangeable:
 
@@ -564,8 +569,54 @@ finalization/promotion with
 `canonical-unpublished-restriction`; database-only ordinary authoring may
 continue. A snapshot run queued before abandonment is terminally refused
 before it can acquire the fence. `canonical-epoch-recovery` is the sole
-snapshot-producing bypass, reserved for the separate explicit recovery that
+snapshot-producing bypass, used by the separate explicit recovery that
 verifies this canonical epoch.
+
+Use the abandoned reconciliation as `sourceRunId`, not the original
+publication and not the new recovery run:
+
+```json
+{"command":"prepared-ticket-authoring","action":"recover-canonical-epoch","sourceRunId":"<abandonedRunId>"}
+```
+
+Start returns `status` and `existingRun`; duplicate admission returns the
+existing active/retryable recovery rather than creating a second run.
+Save `status.run.runId` for these actions:
+
+```json
+{"command":"prepared-ticket-authoring","action":"canonical-epoch-recovery-status","runId":"<recoveryRunId>"}
+```
+
+```json
+{"command":"prepared-ticket-authoring","action":"retry-canonical-epoch-recovery","runId":"<recoveryRunId>"}
+```
+
+Status includes `sourceAbandonment`, `frozen`, `recovery`, nullable
+`publicationProof`, and nullable `snapshot`. Retry returns `status` and
+`recoveryStarted`. `recovery.state` advances from `materialization-pending`
+to `snapshot-publish-pending` to `ready`. A failed attempt retains the
+restriction and fence, including a crash after final-file publication but
+before the one SQLite resolution transaction. Retry/startup reuse the same
+run and journaled bytes; they never overwrite a conflicting final file or
+substitute the prior publication.
+
+Only `ready` releases the matching restriction. The abandoned run remains
+`abandoned`/`canonical-unpublished`, with unchanged reason/time and an
+append-only `canonicalEpochRecovery` link visible in
+`reconciliation-status`. The recovery has a new schema-v3 snapshot ID,
+sequence, filename, and proof of the current canonical corpus/grouping.
+Download it with ordinary `snapshot` using **the recovery run ID**; local
+Discussion site generation remains a separate step.
+
+Recovery errors include `invalid-source-reconciliation`,
+`source-not-abandoned`, `canonical-epoch-already-recovered`,
+`stale-canonical-epoch`, `canonical-state-changed`, `recovery-in-progress`,
+`snapshot-recovery-failure`, `recovery-evidence-conflict`, and
+`run-not-retryable`. Inspect typed status and related coordinates; do not
+change epochs, recipes, checksums, or abandonment history to force success.
+The client never automatically replays a lost mutation response. Read the
+known recovery or list runs by `purpose:"canonical-epoch-recovery"` and
+`sourceRunId` before taking another explicit action.
 
 Reconciliation HTTP failures retain their stable processor code in the CLI's
 ordinary top-level error envelope:

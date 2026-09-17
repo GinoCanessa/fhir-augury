@@ -183,6 +183,45 @@ internal sealed class AuthoringHttpClient : IDisposable
             ct);
     }
 
+    public Task<CanonicalEpochRecoveryStartResult>
+        StartCanonicalEpochRecoveryAsync(
+            string serviceName,
+            string sourceRunId,
+            CancellationToken ct)
+    {
+        EnsureOuterMode();
+        return _controlClient.StartCanonicalEpochRecoveryAsync(
+            serviceName,
+            sourceRunId,
+            ct);
+    }
+
+    public Task<CanonicalEpochRecoveryStatusResult>
+        GetCanonicalEpochRecoveryStatusAsync(
+            string serviceName,
+            string runId,
+            CancellationToken ct)
+    {
+        EnsureOuterMode();
+        return _controlClient.GetCanonicalEpochRecoveryAsync(
+            serviceName,
+            runId,
+            ct);
+    }
+
+    public Task<CanonicalEpochRecoveryRetryResult>
+        RetryCanonicalEpochRecoveryAsync(
+            string serviceName,
+            string runId,
+            CancellationToken ct)
+    {
+        EnsureOuterMode();
+        return _controlClient.RetryCanonicalEpochRecoveryAsync(
+            serviceName,
+            runId,
+            ct);
+    }
+
     public Task<AuthoringRunListResponse> ListAsync(
         string serviceName,
         int? limit,
