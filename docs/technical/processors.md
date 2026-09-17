@@ -69,11 +69,11 @@ Typical run states are `queued`, `running`, `finalizing`, `completed`,
 `completed-database-only`, `error`, and `superseded`.
 
 Run status also carries additive lineage fields. `purpose` is one of
-`authoring`, `initial-revalidation`, `grouping-maintenance`, or
-`publication-refresh`; `sourceRunId` is populated when a maintenance run is
-linked to an earlier run. A publication repair therefore has its own `runId`,
-`purpose:"publication-refresh"`, and the selected snapshot-producing run in
-`sourceRunId`.
+`authoring`, `initial-revalidation`, `grouping-maintenance`,
+`publication-refresh`, or `publication-reconciliation`; `sourceRunId` is
+populated when a maintenance run is linked to an earlier run. Each publication
+maintenance operation therefore has its own `runId`, distinct purpose, and the
+selected snapshot-producing run in `sourceRunId`.
 
 New publication-enrichment runs also expose optional `corpusComparison` in
 public run status: `sourceSnapshotId`, `sourceExportedTicketCount`,
@@ -139,7 +139,8 @@ listed, as are purpose-marked maintenance runs. In particular, a
 `publication-refresh` remains visible whether it has legacy null request
 metadata or the new versioned maintenance recipe in `RequestJson`, allowing
 clients to reconcile an ambiguous POST by `purpose` and `sourceRunId`.
-Purpose-marked `grouping-maintenance` runs are visible too.
+Purpose-marked `publication-reconciliation` and `grouping-maintenance` runs
+are visible too.
 Initial revalidation and legacy unmarked authoring rows remain available by
 exact ID but are intentionally absent. The response contains `runs` and
 `truncated`; use exact detail as the escape hatch for a known older run.
@@ -316,18 +317,174 @@ accepts a live processor database or performs an in-place renderer migration.
 - **Source revision change:** stale work is superseded or the initial
   revalidation run is atomically replaced. The gate is not cleared by stale
   work.
-- **Ambiguous outer mutation:** start, immediate retry, supersede, and
-  publication refresh are single-attempt. If transport is lost after the
-  server may have received the request, report **outcome unknown**, never
-  replay, and reconcile only through list/detail reads. Repeating the mutation
-  requires explicit operator review first.
+- **Ambiguous outer mutation:** start, immediate retry, supersede, publication
+  refresh, reconciliation start/retry, and reconciliation abandonment are
+  single-attempt. If transport is lost after the server may have received the
+  request, report **outcome unknown**, never replay, and reconcile only through
+  list/detail/status reads. Repeating the mutation requires explicit operator
+  review first.
+
+### Changed-ticket Discussion publication reconciliation
+
+`publication-reconciliation` is the processor-owned replacement strategy when
+one or more accepted Jira revisions differ from a completed Discussion
+publication. It is deliberately separate from `publication-refresh`:
+metadata-only refresh certifies that accepted revisions and grouping are
+unchanged and refuses drift; reconciliation freezes the drift, authors the
+complete changed set, recomputes its grouping consequences, and creates a new
+immutable publication. Neither strategy mutates the selected source snapshot
+or an existing site.
+
+#### Admission and frozen recipe
+
+The operator supplies a completed, snapshot-producing Preparer
+`sourceRunId`. The planner uses
+`PreparedTicketPublicationBaselineReader` to verify the ready immutable pair
+and uses the protection reader to require the baseline's accepted authored
+output, receipt coordinates, and grouping to remain a valid subset of current
+canonical state. It then fetches **every accepted baseline ticket** through
+the typed Orchestrator Jira boundary. Discovery completes the whole pass:
+newer revisions become decisions rather than a first-mismatch exception, and
+source failures are accumulated. Every successful observation must have
+stable source provenance and the same Jira content generation.
+
+The resulting version-1 comparison records baseline snapshot identity and
+digest, stable Jira generation, corpus fingerprint, and for every ticket:
+baseline/current source revision, `carry-forward` or `re-author`, baseline
+receipt/run-item/contributing-run coordinates, authored graph fingerprint,
+and baseline grouping fingerprint. While holding an immediate Preparer
+transaction and the mutation fence, admission revalidates the baseline and
+repeats the complete Jira observation. Any generation/revision race aborts
+with `unstable-jira-generation`. Only then are the comparison,
+`purpose:"publication-reconciliation"` run, mixed carried/pending item set,
+reconciliation fence, and source lineage committed together.
+
+Carry-forward items remain complete and retain their accepted receipt
+coordinates. A changed item is accepted only for its frozen current revision
+and operation token. Receipt acceptance, complete payload/hydration staging,
+and the item transition share the caller-owned SQLite transaction. The result
+does not write canonical authored or hydration tables. A later Jira change is
+reported as `revision-invalidation` and blocks finalization.
+
+#### Overlay and grouping closure
+
+`PreparedTicketCorpusView` resolves each carry-forward ticket from the exact
+frozen canonical receipt and each changed ticket from one complete staged
+graph/hydration/receipt tuple. Missing, duplicated, or fingerprint-divergent
+children make the overlay invalid; reads never silently combine old and new
+children.
+
+The grouping delta compares every changed ticket's old baseline membership
+with its staged self-Jira partition. Its impact closure includes both sides of
+a partition move and every shared topic/group/container whose identity, text,
+membership, or order can change. Each impacted partition is staged as a
+complete replacement, including an empty replacement when the overlay leaves
+no grouped container there. Unchanged ticket authored content is fixed input
+to the replacement; the workflow does not re-author unchanged tickets or
+regroup unrelated partitions.
+
+Before candidate materialization, the Preparer freezes and rechecks three
+independent unaffected components:
+
+- protected canonical authored rows for tickets outside the changed set;
+- exact accepted receipt/item/source-revision coordinates for those tickets;
+- topic/group/member rows and ordering outside the impacted partition set.
+
+The reconciliation run's own `authoring_runs` row is intentionally excluded
+from the authored-row component because its `running` → `finalizing` →
+`completed` lifecycle is workflow state, not unaffected authored output. No
+canonical ticket row is excluded by that rule, and receipt and grouping
+fingerprints remain separate and exact. Any other drift fails with
+`staging-mismatch` or `grouping-impact-mismatch`.
+
+Once all changed items and grouping replacements are complete, finalization
+rechecks frozen Jira revisions and builds a sanitized schema-v3 temporary
+snapshot from the carried-plus-staged overlay. The candidate is integrity
+checked, sized, and SHA-256 hashed before canonical promotion. Its proof binds
+purpose `publication-reconciliation`, source run/snapshot, stable Jira
+generation, accepted/carried/re-authored counts, overlay corpus fingerprint,
+grouping-impact fingerprint, and capture time.
+
+#### Database-first promotion journal
+
+Promotion is intentionally database-first and resumable. It does **not** claim
+physical atomicity between SQLite and the filesystem.
+
+1. In `staged`, the complete workspace and verified temporary candidate exist,
+   while canonical rows and the prior immutable publication are unchanged.
+2. One immediate transaction on one connection revalidates the run/fences and
+   staged/unaffected fingerprints, replaces each revised canonical graph and
+   hydration batch, advances its receipt-backed authoring state, replaces
+   every impacted grouping partition, creates the new snapshot record, writes
+   the durable promotion descriptor, and moves both reconciliation and journal
+   to `snapshot-publish-pending`.
+3. After commit, recovery writes/validates snapshot provenance in the
+   temporary candidate, moves it once to the immutable final path, validates
+   the final bytes, advances the snapshot record from creating/promoted to
+   ready, completes the same run, marks the journal/reconciliation `ready`,
+   releases the mutation fence, and finally removes staging.
+
+The pending journal is the cross-resource handoff. While it exists, every
+competing Preparer mutation returns `recovery-in-progress`. Startup invokes
+recovery for every pending run; the status-specific retry endpoint invokes the
+same operation. Canonical replacement is never applied twice and an existing
+final file is never overwritten.
+
+Recovery handles each evidence combination explicitly:
+
+| Evidence at restart | Required action |
+|---------------------|-----------------|
+| State `staged`; graph/group staging missing or divergent | Refuse before canonical promotion with `staging-mismatch` or `grouping-impact-mismatch`; preserve prior publication. |
+| Pending; final absent; temporary candidate matches journal | Add matching promotion provenance if needed, validate it, then move it to the final path. |
+| Pending; final absent; temporary missing/corrupt/checksum-divergent | Record `promotion-recovery-failure`, retain journal/workspace/fence, and stop. |
+| Pending; final present and matching | Reuse it and continue, regardless of whether the crash occurred immediately after the file move. |
+| Pending; final present but conflicting/corrupt | Record `promotion-recovery-failure`, do not overwrite it, and retain the fence. |
+| Pending snapshot record absent or inconsistent | Record `promotion-recovery-failure`; filesystem evidence alone is not adopted. |
+| Snapshot record creating | Validate final bytes and mark it promoted, then ready. |
+| Snapshot record promoted | Mark the same record ready after validation. |
+| Snapshot record already ready; run incomplete | Reuse its descriptor and complete the same run. |
+| Run complete; journal still pending | Mark reconciliation/journal ready, release the fence, and clean workspace. |
+| Reconciliation `ready` | No canonical replay; the verified replacement is terminal success and cleanup is idempotent. |
+
+Missing staging after the database promotion commit is not a reason to replay
+the overlay: pending recovery is driven by the journal, snapshot record, and
+verified file evidence. Conversely, no pending journal means recovery cannot
+infer that canonical promotion occurred merely from an unclaimed temporary
+file.
+
+#### Audited unpublished canonical state
+
+An operator may abandon only `snapshot-publish-pending`, only with a non-blank
+reason, and only through the explicit endpoint. The transaction records
+`canonical-unpublished`, abandonment time/reason, the run error/completion
+time, and releases both fences. It does not compensate canonical data, publish
+or delete the candidate, alter the prior verified pair, or count as successful
+publication.
+
+The database trigger then rejects every new `authoring_runs` row with
+`DatabaseOnly = 0`, returning `canonical-unpublished-restriction`. Therefore
+metadata refresh, another reconciliation, and ordinary snapshot-producing
+authoring remain blocked. Ordinary `databaseOnly:true` authoring can continue.
+The state must remain visible until a separately explicit recovery operation
+creates and verifies a snapshot for that canonical epoch; the pending retry
+endpoint and abandonment itself do not clear it.
+
+Stable lifecycle failures are `invalid-baseline`,
+`unstable-jira-generation`, `revision-invalidation`, `staging-mismatch`,
+`grouping-impact-mismatch`, `recovery-in-progress`,
+`promotion-recovery-failure`, and
+`canonical-unpublished-restriction`. Status exposes counts, decisions,
+grouping impacts, invalidated keys, promotion/journal/fence state, recovery
+failure details, audit fields, and the nullable replacement proof so callers
+do not infer processor state from private tables.
 
 ### Metadata-only Discussion publication refresh
 
 A publication refresh enriches publication metadata without replaying authored
-work. Its source coordinate must be a completed, non-database-only Preparer
-run with a ready snapshot. Retain that run's original descriptor/database pair
-and complete site, including their digests, as the immutable fallback.
+work or recomputing grouping and refuses changed accepted Jira revisions. Its
+source coordinate must be a completed, non-database-only Preparer run with a
+ready snapshot. Retain that run's original descriptor/database pair and
+complete site, including their digests, as the immutable fallback.
 
 Admission makes two comparisons. First it verifies the source run's own
 immutable snapshot and requires its actual accepted content, receipt
@@ -495,13 +652,21 @@ fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"status"
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"retry","runId":"<runId>","itemId":"<itemId>"}'
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"supersede","runId":"<runId>","itemId":"<itemId>","reason":"<explicit reason>"}'
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"snapshot","runId":"<runId>","snapshotPath":"cache\\authoring-snapshots\\preparer\\<runId>\\"}'
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"reconcile-publication","sourceRunId":"<sourceRunId>"}'
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"reconciliation-status","runId":"<reconciliationRunId>"}'
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"retry-reconciliation","runId":"<reconciliationRunId>"}'
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"abandon-reconciliation","runId":"<reconciliationRunId>","reason":"<reviewed reason>"}'
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"refresh-publication","runId":"<sourceRunId>"}'
 ```
 
-`refresh-publication` uses `runId` as the completed source-run coordinate. On
-success, follow the returned new run ID with `status`, then use that new ID for
-`snapshot` and site publication. Do not use a refresh run as the source of
-another refresh.
+Use `reconcile-publication` when accepted Jira revisions changed; it selects
+the baseline with `sourceRunId`. Use `refresh-publication` only for
+metadata-only repair with unchanged revisions; it selects the completed
+source run in `runId`. Both return a different new run ID. Follow a
+reconciliation with `reconciliation-status` (and pending recovery controls);
+follow a refresh with ordinary `status`. After successful completion, use the
+new run ID for `snapshot` and site publication. Do not use either maintenance
+run as the source of another maintenance operation.
 
 Publish a downloaded verified pair:
 

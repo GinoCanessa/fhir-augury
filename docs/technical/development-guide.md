@@ -287,6 +287,72 @@ The orchestrator registers:
 - `ServiceHealthMonitor`, `HealthCheckWorker`
 - HTTP API controllers (`OrchestratorController`)
 
+### Prepared-ticket publication reconciliation invariants
+
+Changed-ticket Discussion publication is a Preparer-owned workflow. Keep these
+boundaries when changing it:
+
+- **Service ownership:** only the Jira source service reads its source
+  database, and only the Preparer opens its processing database. The planner,
+  Preparer, Dev UI, and CLI obtain current Jira evidence through the typed
+  Orchestrator HTTP boundary. The Orchestrator forwards start/status/retry/
+  abandon requests; it does not inspect Preparer tables.
+- **Separate purposes:** `publication-refresh` is metadata-only and must refuse
+  accepted source-revision drift. `publication-reconciliation` is the only
+  replacement workflow for that drift. Do not make refresh re-author or
+  regroup as a convenience fallback.
+- **Complete admission:** verify the completed source run and immutable
+  baseline, read every accepted baseline ticket from one stable Jira content
+  generation, collect every mismatch, then repeat the observation under the
+  mutation fence. Persist the comparison, mixed carry-forward/re-author item
+  set, and fences in one caller-owned SQLite transaction.
+- **Staging isolation:** accepting a changed item writes its receipt, complete
+  authored payload, and complete hydration into run-scoped staging in the same
+  transaction. It must not change canonical ticket/hydration rows. The corpus
+  overlay resolves carried tickets only at frozen receipt coordinates and
+  revised tickets only from matching complete staging; never merge old and new
+  child rows.
+- **Fixed unchanged context:** derive the complete grouping closure from old
+  and proposed memberships, including both sides of partition moves and all
+  shared containers whose text, identity, membership, or ordering can change.
+  Stage complete partition replacements. Unchanged authored ticket content is
+  fixed input; do not re-author it or rewrite partitions outside the closure.
+- **Exact unaffected protection:** fingerprint canonical authored rows and
+  receipt coordinates for unaffected tickets and grouping rows/order outside
+  the closure independently. The reconciliation run's own mutable
+  `authoring_runs` lifecycle row is excluded from the authored-output
+  fingerprint; no canonical ticket, receipt coordinate, or unaffected
+  grouping row is excluded.
+- **Immutable output:** build, sanitize, integrity-check, size, and hash a
+  temporary schema-v3 snapshot from the overlay before promotion. A successful
+  reconciliation creates a new run/snapshot/sequence/file pair and never edits
+  the source publication.
+- **Database-first, not cross-resource atomic:** one immediate transaction on
+  one connection applies revised canonical graphs and complete impacted
+  grouping, creates the snapshot record, and journals
+  `snapshot-publish-pending`. Filesystem publication occurs after commit. The
+  journal and mutation fence make that gap durable; never describe it as a
+  physical atomic transaction.
+- **Idempotent recovery:** startup and explicit retry must handle absent,
+  matching, or conflicting final files; missing/corrupt temporary candidates;
+  creating/promoted/ready or missing snapshot rows; missing staging;
+  checksum/provenance mismatch; ready-before-run-complete; and
+  run-complete-before-journal-ready. Never reapply a promoted canonical
+  fingerprint or overwrite a conflicting final file.
+- **Audited abandonment:** only a database-promoted pending reconciliation may
+  enter `canonical-unpublished`, and only with a non-blank operator reason.
+  It releases the fence without rollback or publication. Database-only
+  ordinary work may continue, but all snapshot-producing workflows must fail
+  with `canonical-unpublished-restriction` until an explicit operation
+  verifies a snapshot for that canonical epoch.
+
+Credential-free end-to-end tests should create their SQLite corpus and
+immutable snapshots at runtime. Cover multiple revised tickets, a changed
+shared container and order, a partition move, exact unaffected ticket/receipt/
+grouping bytes or fingerprints, each durable promotion boundary, idempotent
+restart, and abandonment eligibility. Do not check in `.db` fixtures or
+require Jira credentials.
+
 ### Error Handling
 
 - **HTTP errors:** Standard HTTP status codes for error responses (404, 503,

@@ -830,8 +830,8 @@ Run purpose and repair lineage are additive live-state fields:
 
 | Table | Column | Type | Description |
 |-------|--------|------|-------------|
-| `authoring_runs` | `Purpose` | TEXT NOT NULL | `authoring` by default; also `initial-revalidation`, `grouping-maintenance`, or `publication-refresh` |
-| `authoring_runs` | `SourceRunId` | TEXT? | Earlier run selected as maintenance lineage; required for a publication refresh |
+| `authoring_runs` | `Purpose` | TEXT NOT NULL | `authoring` by default; also `initial-revalidation`, `grouping-maintenance`, `publication-refresh`, or `publication-reconciliation` |
+| `authoring_runs` | `SourceRunId` | TEXT? | Earlier run selected as maintenance lineage; required for publication refresh and reconciliation |
 | `authoring_review_snapshots` | `PublicationProofJson` | TEXT? | Canonical serialized publication proof retained with snapshot lifecycle state and recovery |
 
 Startup adds the missing columns without replacing the live table or any
@@ -839,9 +839,9 @@ immutable snapshot. Existing rows initially receive the `authoring` default;
 the migration then conservatively marks only recognizable database-only
 maintenance rows as `grouping-maintenance` and known revalidation lineage as
 `initial-revalidation`. Ambiguous historical rows remain `authoring`. New
-`publication-refresh` rows are snapshot-producing, have a distinct run ID,
-and point `SourceRunId` at a completed Preparer run whose snapshot record is
-ready.
+`publication-refresh` and `publication-reconciliation` rows are
+snapshot-producing, have a distinct run ID, and point `SourceRunId` at a
+completed Preparer run whose snapshot record is ready.
 
 New protected enrichment uses the existing `authoring_runs.RequestJson` column
 for a versioned maintenance envelope: recipe `publication-enrichment`, version
@@ -857,14 +857,14 @@ The immutable JSON snapshot descriptor exposes the optional
 | Field | Meaning |
 |-------|---------|
 | `contractVersion` | Canonical Preparer publication-proof contract version |
-| `purpose` | Exact value `publication-refresh` |
+| `purpose` | Exact value `publication-refresh` or `publication-reconciliation` |
 | `sourceRunId` | Operator-selected completed source run |
 | `sourceName` | Exact source value `jira` |
-| `sourceLastSuccessfulRefreshAt` | Frozen canonical UTC upstream-success watermark |
-| `sourceContentRevision` | One stable Jira content generation shared by the repaired corpus |
-| `publicDisplayNamePolicyVersion` | Current public people-policy version |
-| `corpusFingerprint` | Canonical accepted receipt/item/source-revision membership |
-| `groupingFingerprint` | Canonical output fingerprints for all retained grouping partitions |
+| `sourceLastSuccessfulRefreshAt` | Refresh: frozen canonical UTC upstream-success watermark; reconciliation: proof capture coordinate |
+| `sourceContentRevision` | One stable Jira content generation shared by the refreshed/reconciled corpus |
+| `publicDisplayNamePolicyVersion` | Refresh: current public people-policy version; reconciliation: `0` because changed-ticket proof uses its dedicated contract fields |
+| `corpusFingerprint` | Refresh: accepted receipt/item/source-revision membership; reconciliation: carried-plus-staged overlay corpus |
+| `groupingFingerprint` | Refresh: retained grouping output; reconciliation: complete grouping-impact fingerprint |
 | `capturedAt` | Canonical UTC time after all proof-bearing stages completed |
 
 `PublicationProofJson` lets snapshot promotion/reconciliation restore the same
@@ -908,6 +908,138 @@ v1, v2, and v3 catalogs. The current Preparer host requires v3. V1 and v2
 remain usable for freshness and source data available in their catalogs, but
 their unversioned people values are always treated as unavailable. Planner and
 Tickets for Applying remain on the separate Planner snapshot v1 catalog.
+
+### Preparer publication-reconciliation live state
+
+Changed-ticket publication reconciliation is private Preparer state. None of
+the tables in this section is copied into the public schema-v3 snapshot. The
+public boundary is the sanitized snapshot plus its descriptor proof.
+
+#### Reconciliation identity and frozen comparison
+
+`prepared_ticket_publication_reconciliations` has one row per
+`purpose = 'publication-reconciliation'` run:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `RowId` | INTEGER PK | Generated row identifier |
+| `RunId` | TEXT UNIQUE | Owning reconciliation run |
+| `SourceRunId` | TEXT | Completed baseline run selected by the operator |
+| `SourceSnapshotId` | TEXT | Verified immutable baseline snapshot |
+| `SourceSnapshotSha256` | TEXT | Baseline database digest |
+| `StableJiraGeneration` | TEXT | One generation shared by the complete Jira observation |
+| `CorpusFingerprint` | TEXT | Frozen accepted baseline corpus |
+| `ComparisonJson` | TEXT | Contract-v1 complete per-ticket decisions and coordinates |
+| `PromotionState` | TEXT | `staged`, `snapshot-publish-pending`, `ready`, or `canonical-unpublished` |
+| `CapturedAt` | TEXT | UTC comparison capture time |
+| `AbandonedAt` | TEXT? | Audited explicit abandonment time |
+| `AbandonmentReason` | TEXT? | Required operator reason for `canonical-unpublished` |
+
+`prepared_ticket_publication_reconciliation_items` is the relational index of
+that comparison. Its primary key is `(RunId, TicketKey)`; ticket keys use
+case-insensitive collation. Each row stores `Disposition` (`carry-forward` or
+`re-author`), baseline/current source revisions, baseline receipt ID, run-item
+ID, contributing run ID, authored fingerprint, and grouping fingerprint.
+Admission writes these rows, the reconciliation record, mixed
+`authoring_run_items`, both fences, and the initial journal through one
+caller-owned immediate transaction after repeating the Jira observation.
+
+#### Revised-ticket staging and overlay
+
+Only `re-author` decisions receive staging rows:
+
+| Table | Key | Durable contents |
+|-------|-----|------------------|
+| `prepared_ticket_publication_staged_graphs` | `(RunId, TicketKey)` | Run item/operation, frozen source revision, receipt content fingerprint, complete authored payload JSON, and `StagedAt` |
+| `prepared_ticket_publication_staged_hydration` | `(RunId, TicketKey)` | Complete hydration JSON, hydration fingerprint, and `StagedAt` |
+| `prepared_ticket_publication_staged_receipts` | `(RunId, TicketKey)` plus unique `ReceiptId` | Receipt/run-item/operation coordinates, authored receipt fingerprint, and `PersistedAt` |
+
+Receipt acceptance and all three staged representations commit with the
+authoring item transition on the same SQLite connection. Canonical ticket and
+hydration rows are not changed at acceptance. Overlay reads resolve
+carry-forward decisions from their frozen canonical receipts and changed
+decisions from matching complete staging tuples; duplicate, missing, or
+fingerprint-divergent children are rejected.
+
+#### Grouping impact and unaffected fingerprints
+
+| Table | Key | Durable contents |
+|-------|-----|------------------|
+| `prepared_ticket_publication_grouping_impacts` | `(RunId, PartitionKey)` | `ImpactJson`, completion bit, and update time for each old/new affected partition |
+| `prepared_ticket_publication_staged_grouping` | `(RunId, PartitionKey)` | Complete replacement JSON plus overlay corpus, semantic output, protected-row fingerprints, and staging time |
+| `prepared_ticket_publication_unaffected_fingerprints` | `RunId` | JSON containing impacted partition keys and independent authored-row, receipt-coordinate, grouping-row, and combined fingerprints |
+
+The impacted key is the normalized
+`WorkGroupClean + U+001F + Specification + U+001F + Type` coordinate. A
+partition move therefore records both old and new partitions. Staged grouping
+is replacement data, not a merge; empty output is represented by a complete
+payload with no topics.
+
+The unaffected authored-row component includes every protected canonical row
+outside the revised ticket set except the reconciliation run's own
+`authoring_runs` row. That row's expected lifecycle fields change from running
+through finalizing/completed and are workflow state, not authored output.
+Unchanged canonical ticket rows are not exempted. Receipt coordinates and
+unaffected topic/group/member values and ordering are separately fingerprinted
+and remain exact.
+
+#### Candidate, proof, fences, and promotion journal
+
+| Table | Key | Durable contents |
+|-------|-----|------------------|
+| `prepared_ticket_publication_snapshot_descriptors` | `RunId` | Verified temporary candidate descriptor JSON, candidate SHA-256, and persistence time |
+| `prepared_ticket_publication_reconciliation_proofs` | `RunId` | Contract-v1 proof JSON and capture time |
+| `prepared_ticket_publication_reconciliation_fences` | `RunId` | Reconciliation lease ID and acquisition time, paired with the processor-wide `authoring_mutation_fences` row |
+| `prepared_ticket_publication_reconciliation_journal` | `RunId` UNIQUE | State, nullable promotion descriptor JSON, last recovery attempt, stable failure code/detail, and update time |
+
+The proof JSON binds source run/snapshot, stable Jira generation,
+accepted/carried/re-authored counts, overlay corpus fingerprint,
+grouping-impact fingerprint, and capture time. The candidate descriptor binds
+the temporary path, schema version, checksum, size, table counts, and the same
+overlay/grouping evidence. A restarted finalizer may replace the candidate
+descriptor and proof while `PromotionState = 'staged'` after rematerializing
+from the same validated workspace. Neither row is replaceable after promotion
+becomes pending.
+
+The journal starts at `staged`. The database-first promotion transaction
+revalidates the candidate/workspace/fingerprints, applies every revised graph
+and complete impacted grouping replacement, creates an
+`authoring_review_snapshots` row in creating state, and stores a promotion
+descriptor while moving both state rows to `snapshot-publish-pending`. That
+descriptor binds run/snapshot IDs, temporary and immutable final paths,
+candidate digest, sequence/epoch/schema, counts, and creation time. This
+transaction does not claim to atomically move a filesystem file.
+
+Pending recovery uses the journal plus the snapshot row:
+
+- absent final + valid temporary: write/verify snapshot provenance, validate,
+  then move without overwrite;
+- matching final: validate and reuse it;
+- conflicting/corrupt final, missing/corrupt temporary when no final is
+  usable, checksum/provenance divergence, or missing/inconsistent snapshot
+  row: persist `promotion-recovery-failure` and retain the fence;
+- creating/promoted/ready snapshot rows: advance only the missing transitions;
+- ready snapshot with incomplete run, or complete run with pending journal:
+  finish the same run/journal/fence transitions without replaying canonical
+  replacement.
+
+Successful recovery sets snapshot, run, reconciliation, and journal ready,
+releases the fences, then idempotently removes graph/hydration/receipt impact
+workspace and the candidate descriptor. Proof, comparison, item decisions,
+unaffected fingerprint, and journal remain auditable. Startup and the explicit
+retry endpoint use the same pending-journal protocol.
+
+Explicit abandonment is valid only from `snapshot-publish-pending`. It writes
+`canonical-unpublished`, `AbandonedAt`, and `AbandonmentReason`, records the
+canonical-unpublished error and completion time on `authoring_runs`, and
+releases both fences without rolling back canonical rows or changing the prior
+ready snapshot. The
+`prevent_snapshot_after_unpublished_canonical` trigger rejects every future
+`authoring_runs` insert whose `DatabaseOnly = 0` with
+`canonical-unpublished-restriction`. This covers metadata refresh,
+reconciliation, and ordinary snapshot-producing authoring while allowing
+database-only ordinary work. The restriction is durable until a separately
+explicit operation verifies a snapshot for that canonical epoch.
 
 ### Preparer publication-refresh live state
 

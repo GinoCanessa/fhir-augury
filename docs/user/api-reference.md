@@ -343,6 +343,10 @@ The Orchestrator exposes configured processors under
 | `POST` | `/api/v1/processing-services/{name}/authoring/runs` | Create an authoring run |
 | `GET` | `/api/v1/processing-services/{name}/authoring/runs?limit=N` | List bounded operator-visible runs (Preparer and Planner only) |
 | `POST` | `/api/v1/processing-services/{name}/authoring/runs/{sourceRunId}/publication-refresh` | Start a linked metadata-only Discussion publication refresh (Preparer only) |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs/{sourceRunId}/publication-reconciliation` | Start changed-ticket Discussion publication reconciliation (Preparer only) |
+| `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation` | Read the frozen comparison, grouping impact, invalidation, and promotion state (Preparer only) |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation/retry` | Retry a pending immutable snapshot publication (Preparer only) |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation/abandon` | Audit post-promotion abandonment without publication (Preparer only) |
 | `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}` | Get run and item status |
 | `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible current error item |
 | `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/items/{itemId}/supersede` | Explicitly supersede one current non-receipt-backed error |
@@ -370,11 +374,11 @@ For Preparer and Planner, the run collection defaults to 20 entries and accepts
 `limit` from 1 through 100. It selects at most `limit + 1` operator-visible
 runs before item aggregation, prioritizes `queued`, `running`,
 `finalizing`, and recoverable `error` runs, then orders terminal history newest
-first. Ordinary runs require their durable request marker. Purpose-marked
-maintenance runs, including `grouping-maintenance` and
-`publication-refresh`, are also visible without that marker so clients can
-reconcile by `purpose` and `sourceRunId`. Initial revalidation and legacy
-unmarked authoring rows are omitted. The response is:
+first. Ordinary runs require their durable request marker. Purpose-marked maintenance runs, including `grouping-maintenance`,
+`publication-refresh`, and `publication-reconciliation`, are also visible
+without that marker so clients can reconcile by `purpose` and `sourceRunId`.
+Initial revalidation and legacy unmarked authoring rows are omitted. The
+response is:
 
 ```jsonc
 {
@@ -395,11 +399,12 @@ Run status appends processor-owned state:
 - `state.nextAutomaticRecoveryAt` describes the next run-level recovery time
   when known.
 - `purpose` is an additive value such as `authoring`,
-  `initial-revalidation`, `grouping-maintenance`, or
-  `publication-refresh`.
+  `initial-revalidation`, `grouping-maintenance`,
+  `publication-refresh`, or `publication-reconciliation`.
 - `sourceRunId` is additive maintenance lineage. For a
-  `publication-refresh`, it identifies the completed run selected by the
-  operator; the refresh itself has a different `runId`.
+  `publication-refresh` or `publication-reconciliation`, it identifies the
+  completed run selected by the operator; the maintenance run itself has a
+  different `runId`.
 
 Items retain the legacy `error` field and append `currentError`,
 `supersessionReason`, and processor-computed `allowedActions`.
@@ -533,15 +538,190 @@ refused, and legacy receipts cannot satisfy the new stage. Quiesce/reconcile
 new-recipe runs before a binary downgrade. These contracts do not authorize
 live repair or establish recovery of a particular historical publication.
 
-Outer-control clients do not replay start, retry, supersede, or
-publication-refresh after transport loss because the processor may have
-committed the mutation. For an unknown refresh outcome, issue one bounded
-read-only
+Outer-control clients do not replay start, retry, supersede,
+publication-refresh, or publication-reconciliation mutations after transport
+loss because the processor may have committed the mutation. For an unknown
+refresh outcome, issue one bounded read-only
 `GET /api/v1/processing-services/Preparer/authoring/runs?limit=20` and inspect
 runs created since submission whose `purpose` is `publication-refresh` and
 whose `sourceRunId` matches. Zero, one, or multiple candidates require
 operator review, and `truncated:true` must be surfaced. Reads and snapshot
 downloads may use transient retry.
+
+#### Preparer changed-ticket publication reconciliation
+
+This is a separate lifecycle from the metadata-only publication refresh
+above. Refresh refuses changed accepted Jira revisions and never re-authors or
+regroups. Reconciliation discovers the complete changed baseline set,
+re-authors only that set into staging, recomputes the affected grouping
+closure with unchanged tickets as fixed input, and publishes a new immutable
+replacement.
+
+Start it with the bodyless proxied mutation:
+
+```http
+POST /api/v1/processing-services/Preparer/authoring/runs/{sourceRunId}/publication-reconciliation
+```
+
+The direct Preparer route is
+`POST /processing/authoring/runs/{sourceRunId}/publication-reconciliation`.
+`sourceRunId` must identify a completed, non-database-only Preparer run with a
+valid ready snapshot. Admission validates that immutable baseline, reads every
+accepted baseline ticket through the Orchestrator from one stable Jira content
+generation, and records every ticket as `carry-forward` or `re-author`.
+Revision differences are collected across the complete pass rather than
+stopping at the first mismatch. The observation is repeated under the
+mutation fence before the comparison, run, mixed items, and staging recipe are
+committed.
+
+Success returns `202 Accepted`. The proxied `Location` is the reconciliation
+status endpoint for the new run:
+
+```jsonc
+{
+  "run": {
+    "runId": "<reconciliationRunId>",
+    "processorKind": "jira-fhir",
+    "purpose": "publication-reconciliation",
+    "sourceRunId": "<sourceRunId>",
+    "databaseOnly": false
+  },
+  "items": [
+    {
+      "businessKey": "FHIR-123",
+      "status": "pending"
+    }
+  ],
+  "comparison": {
+    "contractVersion": 1,
+    "sourceRunId": "<sourceRunId>",
+    "sourceSnapshotId": "<sourceSnapshotId>",
+    "sourceSnapshotSha256": "<sha256>",
+    "stableJiraGeneration": "1234",
+    "capturedAt": "<UTC timestamp>",
+    "corpusFingerprint": "<sha256>",
+    "items": [
+      {
+        "ticketKey": "FHIR-123",
+        "disposition": "re-author",
+        "baselineSourceRevision": "<revision>",
+        "currentSourceRevision": "<revision>",
+        "baselineReceiptId": "<receiptId>",
+        "baselineRunItemId": "<itemId>",
+        "baselineContributingRunId": "<runId>",
+        "baselineAuthoredFingerprint": "<sha256>",
+        "baselineGroupingFingerprint": "<sha256>"
+      }
+    ]
+  },
+  "counts": {
+    "acceptedTicketCount": 20,
+    "carryForwardTicketCount": 18,
+    "reAuthorTicketCount": 2,
+    "invalidatedTicketCount": 0
+  }
+}
+```
+
+Carry-forward items are already complete at their frozen receipt coordinates.
+Changed items accept complete authored graph/hydration output into run-scoped
+staging only. The grouping impact includes every old/new partition and shared
+topic/group/container whose text, identity, membership, or ordering can
+change. Canonical rows are untouched until all changed items, complete
+grouping replacements, unaffected-row/receipt/grouping fingerprints, and the
+temporary candidate snapshot validate.
+
+Read the complete state with:
+
+```http
+GET /api/v1/processing-services/Preparer/authoring/runs/{runId}/publication-reconciliation
+```
+
+The direct route is
+`GET /processing/authoring/runs/{runId}/publication-reconciliation`. It
+returns `200 OK` with `run`, `items`, `comparison`, `counts`,
+`groupingImpacts`, `promotion`, `invalidatedTicketKeys`, nullable
+`publicationProof`, and nullable `failureCode`/`failureDetail`.
+`promotion` contains `state`, nullable `journalState`, `mutationFenceHeld`,
+`lastRecoveryAttemptAt`, recovery failure fields, and abandonment audit
+fields. The proof is present only for the verified replacement and has exact
+purpose `publication-reconciliation`.
+
+Promotion uses database-first ordering. The temporary snapshot is
+materialized and verified while state is `staged`. One immediate SQLite
+transaction then applies revised canonical graphs, accepted receipt state,
+and complete affected grouping replacements; creates the snapshot row; and
+journals `snapshot-publish-pending` while retaining the fence. Filesystem
+publication and the snapshot/run/journal ready transitions occur afterward.
+This is a durable resumable protocol, not physical atomicity across SQLite and
+the filesystem.
+
+| Promotion/evidence state | Recovery behavior |
+|--------------------------|-------------------|
+| `staged` | Canonical output is unchanged. Missing graph/group staging is `staging-mismatch`/`grouping-impact-mismatch`; abandonment is refused. Normal finalization can rematerialize/resume. |
+| Pending, final absent, temporary valid | Add/verify snapshot provenance, validate the candidate, and move it once to the immutable final path. |
+| Pending, final matching | Reuse and validate it; never reapply canonical replacement. This covers interruption immediately after the move. |
+| Pending, final conflicting/corrupt | Stop with `promotion-recovery-failure`, never overwrite the file, and keep the fence. |
+| Pending, temporary missing/corrupt with no valid final | Stop with `promotion-recovery-failure`; retain journal/fence for repair. A checksum or provenance mismatch is handled the same way. |
+| Snapshot row absent/conflicting | Stop with `promotion-recovery-failure`. A creating row advances after file validation, a promoted row advances to ready, and a ready row is reused. |
+| Snapshot ready, run incomplete | Complete the same run and continue the journal/fence transition. |
+| Run complete, journal still pending | Mark the reconciliation `ready`, release the fence, and clean staging. |
+| `ready` | Final snapshot, run, and journal agree; staging is no longer required. Recovery is idempotent. |
+| `canonical-unpublished` | Explicit terminal abandonment; it is not recoverable through the pending retry route and is not a successful publication. |
+
+Startup recovery automatically scans pending journals. The explicit equivalent
+is bodyless and returns `{ "status": { /* full reconciliation status */ },
+"recoveryStarted": true }` on success:
+
+```http
+POST /api/v1/processing-services/Preparer/authoring/runs/{runId}/publication-reconciliation/retry
+```
+
+The direct route has the same suffix under
+`/processing/authoring/runs`. While pending, all competing Preparer mutations
+return `409` with `error:"recovery-in-progress"`.
+
+Only after the database transaction has committed may an operator explicitly
+release the fence without a replacement publication:
+
+```http
+POST /api/v1/processing-services/Preparer/authoring/runs/{runId}/publication-reconciliation/abandon
+Content-Type: application/json
+
+{"reason":"<non-blank audited reason>"}
+```
+
+The direct route again uses `/processing/authoring/runs`. Success returns the
+full `status`, `abandonedAt`, and exact `reason`. It records
+`canonical-unpublished`, leaves promoted canonical rows in place, retains the
+prior immutable publication, and does not treat abandonment as proof. All
+later snapshot-producing run creation—including metadata refresh, another
+reconciliation, and ordinary `databaseOnly:false` authoring—is rejected with
+`canonical-unpublished-restriction`; database-only ordinary authoring remains
+eligible. A separately explicit canonical-epoch recovery must create and
+verify a snapshot before that restriction can be removed.
+
+Stable reconciliation failure codes are:
+
+| `error` / `failureCode` | Meaning |
+|-------------------------|---------|
+| `invalid-baseline` | Missing/ineligible source run, invalid snapshot, or baseline/current protected-output mismatch |
+| `unstable-jira-generation` | Any baseline ticket lacked stable source evidence, observations spanned generations, or Jira changed while admission was frozen |
+| `revision-invalidation` | A frozen changed ticket moved again before completion |
+| `staging-mismatch` | Changed-ticket graph/receipt staging is incomplete or divergent |
+| `grouping-impact-mismatch` | The affected closure or a complete partition replacement is missing/divergent |
+| `recovery-in-progress` | A pending promotion owns the mutation fence |
+| `promotion-recovery-failure` | Temporary/final file, snapshot row, checksum/provenance, or transition evidence conflicts |
+| `canonical-unpublished-restriction` | The live canonical epoch was explicitly abandoned without a verified replacement snapshot |
+
+Start returns `404` with `invalid-baseline` when the source coordinate is not
+found and `409` for typed admission/fence conflicts. Status returns `404`
+`invalid-baseline` for an unknown/non-reconciliation run. Retry and abandon
+return `409` with a typed failure when their state/evidence preconditions are
+not met. The Orchestrator preserves processor status, body, `Location`, and
+`Retry-After`; clients must branch on the stable code, not prose. Never replay
+a lost start/retry/abandon response. Use the bounded run list filtered by
+`purpose` and `sourceRunId`, or status when `runId` is known.
 
 Snapshot bytes are streamed through the Orchestrator rather than buffered as a
 complete SQLite file. Range and conditional request headers are forwarded, and
@@ -872,7 +1052,7 @@ Processing.Common surface:
 
 Preparer and Planner expose the common direct control family under
 `/api/v1/processing/authoring/runs`. Preparer additionally exposes the
-unversioned publication-refresh route shown below:
+unversioned publication-maintenance routes shown below:
 
 | Method | Route | Purpose |
 |--------|-------|---------|
@@ -880,6 +1060,10 @@ unversioned publication-refresh route shown below:
 | `GET` | `/api/v1/processing/authoring/runs?limit=N` | List bounded operator-visible runs |
 | `GET` | `/api/v1/processing/authoring/runs/{runId}` | Get run and item status |
 | `POST` | `/processing/authoring/runs/{sourceRunId}/publication-refresh` | Start a linked Preparer metadata-only publication refresh (Preparer only) |
+| `POST` | `/processing/authoring/runs/{sourceRunId}/publication-reconciliation` | Start Preparer changed-ticket publication reconciliation |
+| `GET` | `/processing/authoring/runs/{runId}/publication-reconciliation` | Get complete reconciliation and recovery status |
+| `POST` | `/processing/authoring/runs/{runId}/publication-reconciliation/retry` | Retry pending snapshot publication |
+| `POST` | `/processing/authoring/runs/{runId}/publication-reconciliation/abandon` | Audit abandonment after canonical promotion |
 | `POST` | `/api/v1/processing/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible current error item |
 | `POST` | `/api/v1/processing/authoring/runs/{runId}/items/{itemId}/supersede` | Supersede one current error with an explicit reason |
 | `GET` | `/api/v1/processing/authoring/runs/{runId}/operations/{operationId}/receipt` | Retrieve the durable operation receipt |

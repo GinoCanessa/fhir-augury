@@ -276,7 +276,8 @@ Three typed command families control processor-owned authoring runs:
 | `ballot-note-authoring` | BallotNotes | [Generating Ballot Notes](generating-ballot-notes.md) |
 
 All three families register six shared actions. The Preparer additionally
-registers `refresh-publication`, for seven exact action values:
+registers five publication-maintenance actions, for eleven exact action
+values:
 
 | Action | Required coordinates and fields | Purpose and boundaries |
 |--------|---------------------------------|------------------------|
@@ -287,10 +288,16 @@ registers `refresh-publication`, for seven exact action values:
 | `submit` | Prepared/planned: `payload` and `observedSourceRevision`. BallotNotes: `prose` and `observedSourceRevision`. | Worker callback only. It is valid inside a processor-launched worker with the complete `FHIR_AUGURY_AUTHORING_*` callback environment; outer operators and automation must not manufacture callback context or tokens. |
 | `snapshot` | `runId`, `snapshotPath`; optional `descriptorPath` | Download and verify the immutable snapshot and trusted descriptor. The descriptor's filename and the returned `snapshotPath` / `descriptorPath` pair are authoritative. |
 | `refresh-publication` (Preparer only) | `runId` | Start one metadata-only repair from the completed snapshot-producing source run named by `runId`. Returns a new run with `purpose:"publication-refresh"` and `sourceRunId` equal to the request coordinate. It reuses accepted receipts, does not replay authoring or grouping, and produces a separate snapshot. |
+| `reconcile-publication` (Preparer only) | `sourceRunId` | Start changed-ticket reconciliation from a completed immutable publication baseline. Discovers every revised accepted ticket in one stable Jira generation, carries unchanged receipt coordinates, stages revised graphs and affected grouping, and produces a new immutable replacement. |
+| `reconciliation-status` (Preparer only) | `runId` | Read the reconciliation run, frozen per-ticket comparison/dispositions, counts, grouping impacts, later invalidations, promotion/journal state, mutation fence, failure detail, and publication proof. |
+| `retry-reconciliation` (Preparer only) | `runId` | Explicitly resume a database-promoted `snapshot-publish-pending` publication. Recovery is idempotent and does not reapply canonical replacement or overwrite a conflicting final file. |
+| `abandon-reconciliation` (Preparer only) | `runId`, non-blank `reason` | After database promotion only, audit explicit abandonment as terminal `canonical-unpublished`. It does not roll back canonical data or create a publication and it restricts later snapshot-producing runs. |
 
 The exact Preparer action set is `start`, `status`, `retry`, `supersede`,
-`submit`, `snapshot`, and `refresh-publication`. Planner and BallotNotes do not
-accept `refresh-publication`.
+`submit`, `snapshot`, `refresh-publication`, `reconcile-publication`,
+`reconciliation-status`, `retry-reconciliation`, and
+`abandon-reconciliation`. Planner and BallotNotes do not accept any of the
+five publication-maintenance actions.
 
 Start selectors are not interchangeable:
 
@@ -303,9 +310,15 @@ Start selectors are not interchangeable:
 Authoring responses use several identifiers for distinct purposes:
 
 - `runId` is the frozen run coordinate used by `status`, `retry`,
-  `supersede`, and `snapshot`. For Preparer `refresh-publication`, it instead
-  selects the completed source run; the response supplies a different run ID
-  for subsequent status and snapshot actions.
+  `supersede`, `snapshot`, `reconciliation-status`,
+  `retry-reconciliation`, and `abandon-reconciliation`. For Preparer
+  `refresh-publication`, it instead selects the completed source run; the
+  response supplies a different run ID for subsequent status and snapshot
+  actions.
+- `sourceRunId` is used only by `reconcile-publication` to select the
+  completed source publication baseline. The start result supplies a new
+  reconciliation `run.runId`; use that new ID for all later reconciliation,
+  snapshot, and publication operations.
 - `itemId` identifies one item inside a run and is the outer retry/supersede
   coordinate.
 - `operationId` correlates a processor-launched worker operation and its
@@ -336,12 +349,23 @@ Minimal outer-control examples:
 
 // Start metadata-only publication repair from a completed source run
 { "command": "prepared-ticket-authoring", "action": "refresh-publication", "runId": "<sourceRunId>" }
+
+// Start changed-ticket reconciliation from a completed source run
+{ "command": "prepared-ticket-authoring", "action": "reconcile-publication", "sourceRunId": "<sourceRunId>" }
+
+// Inspect or explicitly retry a pending snapshot publication
+{ "command": "prepared-ticket-authoring", "action": "reconciliation-status", "runId": "<reconciliationRunId>" }
+{ "command": "prepared-ticket-authoring", "action": "retry-reconciliation", "runId": "<reconciliationRunId>" }
+
+// Explicitly accept a canonical database epoch with no replacement publication
+{ "command": "prepared-ticket-authoring", "action": "abandon-reconciliation", "runId": "<reconciliationRunId>", "reason": "<reviewed reason>" }
 ```
 
 Automatic retry is processor-owned. Outer automation should normally keep
 polling instead of issuing `retry`; use immediate retry only as an explicit
-operator choice. Never replay `start`, `retry`, `supersede`, or
-`refresh-publication` after an ambiguous transport failure.
+operator choice. Never replay `start`, `retry`, `supersede`,
+`refresh-publication`, `reconcile-publication`, `retry-reconciliation`, or
+`abandon-reconciliation` after an ambiguous transport failure.
 
 Run status `error` is recoverable and non-terminal. Continue polling whenever
 `state.isTerminal` is false (`queued`, `running`, `finalizing`, or `error`).
@@ -361,8 +385,9 @@ list at
 `GET /api/v1/processing-services/{name}/authoring/runs?limit=N`, with active
 and recovering runs first, terminal history newest first, and
 `truncated:true` when older rows were omitted. Purpose-marked maintenance runs,
-including `publication-refresh`, are also visible even without an ordinary
-start request so clients can reconcile by `purpose` and `sourceRunId`.
+including `publication-refresh` and `publication-reconciliation`, are also
+visible even without an ordinary start request so clients can reconcile by
+`purpose` and `sourceRunId`.
 Initial-revalidation and legacy unmarked rows remain omitted. There is no
 `list` action in any authoring command family; use the Dev UI operations
 overview for guided history, or the HTTP route for a headless list. Exact CLI
@@ -416,8 +441,8 @@ separately. `refresh-publication` uses only `runId`; omit `databaseOnly`,
 ticket selection, callback payload, and unrelated fields because they do not
 alter this operation. If accepted Jira revisions change or the metadata read
 spans more than one Jira content revision, the new run becomes terminal
-`superseded`, has no snapshot, and its `error` states that ordinary
-re-authoring is required.
+`superseded` and has no snapshot. Retain the old publication and use the
+separate `reconcile-publication` workflow after reviewing the mismatch.
 
 Transport or response-body loss returns a successful CLI envelope whose
 command data is an explicit unknown-outcome result, rather than replaying the
@@ -447,6 +472,99 @@ sets `reconciliation` to `failed` with an empty candidate list and non-null
 `error` if that read fails. Zero, one, or multiple candidates require operator
 review; a single candidate is not selected automatically. `listTruncated:true`
 means the bounded result cannot prove that all candidates were seen.
+
+Changed-ticket reconciliation is intentionally not an alias for
+`refresh-publication`. A successful `reconcile-publication` result has the
+following top-level data shape (fields are abbreviated here, not optional in
+the actual typed comparison):
+
+```jsonc
+{
+  "run": {
+    "runId": "<reconciliationRunId>",
+    "purpose": "publication-reconciliation",
+    "sourceRunId": "<sourceRunId>",
+    "databaseOnly": false
+  },
+  "items": [ /* carried complete items and changed authoring items */ ],
+  "comparison": {
+    "sourceRunId": "<sourceRunId>",
+    "sourceSnapshotId": "<snapshotId>",
+    "stableJiraGeneration": "1234",
+    "items": [
+      {
+        "ticketKey": "FHIR-123",
+        "disposition": "re-author",
+        "baselineSourceRevision": "...",
+        "currentSourceRevision": "...",
+        "baselineReceiptId": "..."
+      }
+    ]
+  },
+  "counts": {
+    "acceptedTicketCount": 20,
+    "carryForwardTicketCount": 18,
+    "reAuthorTicketCount": 2,
+    "invalidatedTicketCount": 0
+  }
+}
+```
+
+Admission reads the complete accepted baseline and reports all revision
+decisions from one stable Jira generation. It freezes carry-forward receipt
+coordinates and changed-ticket revisions before authoring begins. Revised
+graphs remain staged, unchanged authored content is fixed grouping input, and
+the old publication remains intact. `reconciliation-status` adds:
+
+- `groupingImpacts`, including old/new partitions and whether each complete
+  replacement is staged;
+- `invalidatedTicketKeys` and `failureCode:"revision-invalidation"` when a
+  frozen changed revision moves again;
+- `promotion.state`, `journalState`, `mutationFenceHeld`,
+  `lastRecoveryAttemptAt`, and recovery failure/audit fields;
+- `publicationProof` only for the verified immutable replacement.
+
+Promotion states are `staged`, `snapshot-publish-pending`, `ready`, and
+terminal `canonical-unpublished`. Database promotion occurs before immutable
+file publication, so `snapshot-publish-pending` means canonical rows have
+already changed and all competing mutations remain fenced. Startup recovery
+and `retry-reconciliation` validate and reuse matching temporary/final file
+and snapshot-record evidence, advance an already promoted or ready record,
+and finish an already-ready run without a second canonical apply. Missing,
+corrupt, checksum-divergent, or conflicting evidence returns
+`promotion-recovery-failure`; a conflicting final file is never overwritten.
+
+`abandon-reconciliation` is accepted only in that pending post-database state
+and requires the exact non-blank `reason` returned with `abandonedAt`. It
+leaves canonical data promoted, produces no replacement snapshot, preserves
+the previous verified pair, and releases the fence. Thereafter every
+snapshot-producing run is rejected with
+`canonical-unpublished-restriction`; database-only ordinary authoring may
+continue until a separate explicit canonical-epoch recovery verifies a
+snapshot.
+
+Reconciliation HTTP failures retain their stable processor code in the CLI's
+ordinary top-level error envelope:
+
+```jsonc
+{
+  "success": false,
+  "command": "prepared-ticket-authoring",
+  "error": {
+    "code": "recovery-in-progress",
+    "message": "Snapshot publication is still pending.",
+    "details": "..."
+  }
+}
+```
+
+The complete code set is `invalid-baseline`, `unstable-jira-generation`,
+`revision-invalidation`, `staging-mismatch`, `grouping-impact-mismatch`,
+`recovery-in-progress`, `promotion-recovery-failure`, and
+`canonical-unpublished-restriction`. Do not branch on human-readable detail.
+If a reconciliation mutation loses its response, do not replay it; inspect
+the bounded run list for matching `purpose:"publication-reconciliation"` and
+`sourceRunId`, or use `reconciliation-status` when the run ID is known.
 
 Do not copy `submit` into an outer control script. For exhaustive request and
 response shapes, run `fhir-augury --help <command>` or export them with

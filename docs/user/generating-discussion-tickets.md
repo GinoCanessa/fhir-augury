@@ -315,27 +315,158 @@ replacement evidence. Stale, expired, consumed, or restart-lost previews need a
 new preview. A lost apply response is an unknown outcome: inspect and obtain
 fresh evidence, never blindly replay the mutation.
 
-## Refresh publication data without replacing original output
+## Choose the correct publication replacement workflow
 
-Publication repair is a Preparer-owned metadata-only lifecycle followed by
+Generating a site again from an existing verified pair reproduces that pair;
+it cannot incorporate a newer Jira revision. The Preparer has two separate
+replacement operations:
+
+| Operator intent | Dev UI action | CLI action | What may change |
+|-----------------|---------------|------------|-----------------|
+| Incorporate one or more newer accepted Jira revisions | **Reconcile changed tickets and refresh snapshot** | `reconcile-publication` | Re-authors every changed baseline ticket, replaces the complete affected grouping closure, and publishes a new immutable snapshot |
+| Repair current publication metadata when accepted Jira revisions have not changed | **Advanced: repair publication metadata only** → **Repair publication metadata and snapshot** | `refresh-publication` | Refreshes allowlisted Jira/Zulip publication metadata and certifies existing grouping; never re-authors or regroups |
+
+Do not use metadata repair as a shortcut for changed tickets. It deliberately
+refuses revision drift. Do not start reconciliation merely to update names,
+links, or freshness metadata: reconciliation is the changed-authored-output
+workflow and has a different recovery boundary.
+
+## Reconcile changed tickets and refresh the snapshot
+
+Start from the completed, snapshot-producing Preparer run whose published
+corpus is the baseline. Keep its verified descriptor/database pair and
+run-scoped site: reconciliation always creates a new run, snapshot ID,
+sequence, files, and site. It never edits or removes the baseline pair.
+
+1. Open `/operations/prepare/<sourceRunId>` and choose **Reconcile changed
+   tickets and refresh snapshot**.
+2. Admission verifies the source run and its immutable snapshot, then compares
+   **every accepted ticket in that snapshot** with Jira through the
+   Orchestrator. The pass does not stop at the first newer revision. Every
+   ticket is observed from one stable Jira content generation and is recorded
+   as either `carry-forward` or `re-author`, with both baseline and current
+   revisions. Admission repeats the complete observation while holding the
+   Preparer mutation fence and persists the frozen comparison and mixed run in
+   one transaction. An invalid baseline, incomplete Jira read, mixed
+   generation, or revision race refuses admission rather than freezing a
+   partial changed set.
+3. On the new `purpose:"publication-reconciliation"` run, review the stable
+   Jira generation, accepted/carried/re-authored counts, and every item
+   disposition. Carry-forward items keep their exact accepted receipt
+   coordinates and do not launch an author. Each `re-author` item must produce
+   a complete authored graph and hydration batch for its frozen current
+   revision. Those results are durable run-scoped staging only; the canonical
+   graph still serves the prior publication at this point.
+4. Grouping derives the closure from each revised ticket's old and proposed
+   partition membership. It replaces every affected shared
+   topic/group/container in full, including both sides of a partition move.
+   Unchanged ticket authored content is fixed input to that computation; it is
+   not re-authored. Canonical authored rows and receipt coordinates for
+   unaffected tickets, plus topic/group/member values and ordering outside the
+   closure, must retain their exact fingerprints.
+5. Finalization rechecks every frozen revised Jira revision, requires all
+   staged graphs and grouping replacements, and materializes and hashes a
+   sanitized temporary snapshot from the carried-plus-staged overlay. Only
+   then does promotion begin.
+6. After the run reaches `completed` with promotion state `ready`, choose
+   **Generate review site** for the reconciliation run. Download and render
+   that run's pair in a new run-scoped directory. Its publication proof has
+   purpose `publication-reconciliation` and binds the baseline snapshot,
+   stable Jira generation, carried/re-authored counts, overlay corpus, and
+   grouping impact. The old pair and site remain independently verifiable.
+
+Status can report later `invalidatedTicketKeys` with
+`failureCode:"revision-invalidation"` if a frozen changed ticket moves again.
+Do not submit output for the newer revision into the frozen run; retain the
+baseline publication, inspect the complete invalidation list, and start a new
+comparison only after the current run has terminated safely.
+
+### Database-first promotion and recovery
+
+Promotion is a resumable protocol across SQLite and the filesystem, **not** a
+claim that the two resources commit atomically:
+
+1. A verified temporary snapshot and all staged replacements exist while the
+   reconciliation is `staged`; canonical output is still unchanged.
+2. One immediate SQLite transaction revalidates protected fingerprints,
+   replaces revised canonical graphs and the complete affected grouping
+   closure, advances accepted receipt state, creates the snapshot record, and
+   journals `snapshot-publish-pending`. The mutation fence remains held.
+3. Recovery publishes the already verified temporary file to its new,
+   immutable final path without overwriting an existing file, validates its
+   size/checksum/provenance, advances the snapshot record through promoted to
+   ready, completes the run, marks the reconciliation `ready`, releases the
+   fence, and removes staging only after those transitions succeed.
+
+The observable promotion states are:
+
+| State | Meaning and operator action |
+|-------|-----------------------------|
+| `staged` | Canonical output has not been promoted. Staging and the candidate remain restartable. Abandonment is refused here. Let normal finalization resume; the explicit snapshot-publication retry is not yet applicable. |
+| `snapshot-publish-pending` | The database transaction committed, so canonical output is already the replacement, but the immutable snapshot/run transitions are incomplete. All competing Preparer mutations remain blocked with `recovery-in-progress`. Startup recovery retries automatically; **Retry snapshot publication** / `retry-reconciliation` invokes the same idempotent recovery explicitly. |
+| `ready` | The final file and snapshot record are verified, the run is complete, staging is cleaned, and the fence is released. Repeating recovery does not reapply canonical replacement. |
+| `canonical-unpublished` | An operator explicitly abandoned a pending promotion with an audited reason. Canonical replacement remains in the database, no replacement publication is claimed, and the prior verified pair is unchanged. This is terminal, not success. |
+
+Recovery evaluates each durable boundary rather than assuming which operation
+ran last:
+
+- With no final file, a matching temporary candidate is given the pending
+  snapshot provenance, validated, and moved. A missing/corrupt temporary file
+  when no valid final exists, or a checksum/provenance mismatch, reports
+  `promotion-recovery-failure` and keeps the journal and fence.
+- A matching final file is reused whether the interruption occurred just
+  after the move or later. A conflicting or corrupt final file is never
+  overwritten; recovery stops with `promotion-recovery-failure` and retains
+  the fence for investigation.
+- A missing or conflicting snapshot database record is a recovery failure.
+  A creating record is advanced after file validation; a promoted record is
+  made ready; an already-ready record is reused.
+- Missing staging before database promotion is `staging-mismatch` or
+  `grouping-impact-mismatch`. After the database-first transaction commits,
+  recovery uses the durable journal and snapshot evidence and never applies
+  staging a second time.
+- A restart after the snapshot is ready but before run completion completes
+  the same run. A restart after run completion but before the journal/fence
+  transition finishes marks the same reconciliation ready and cleans up.
+
+Use **Abandon without publication…** only while
+`snapshot-publish-pending`, after retry and evidence repair cannot recover the
+snapshot. The non-blank reason and time are persisted. Abandonment does not
+copy the old snapshot back, undo canonical rows, delete the temporary
+evidence, or make the new epoch publishable. It releases the fence, but every
+snapshot-producing run—including ordinary `databaseOnly:false` authoring,
+metadata refresh, and another reconciliation—is refused with
+`canonical-unpublished-restriction`. Database-only ordinary authoring may
+continue. The restriction remains until a separately explicit recovery
+operation creates and verifies a snapshot for that canonical epoch; neither
+abandonment nor an ordinary retry counts as publication.
+
+## Repair publication metadata only
+
+Metadata repair is a Preparer-owned metadata-only lifecycle followed by
 ordinary pair download and local site generation. It does not edit the legacy
-pair or site and does not replay authoring or grouping.
+pair or site, does not replay authoring or grouping, and refuses any accepted
+ticket whose Jira revision differs from its accepted revision.
 
-**Generate/Regenerate review site** and **Refresh publication data and
-snapshot** are independent Dev UI actions for an eligible completed Prepare
-source run with an existing publication, even if it is already proof-ready.
+**Generate/Regenerate review site** and the advanced **Repair publication
+metadata and snapshot** action are independent for an eligible completed
+Prepare source run with an existing publication, even if it is already
+proof-ready.
 An unpublished completed run offers generation only. Readiness does not
 guarantee complete names or links.
 Generation uses the verified pair already associated with that run; refresh
 requests a different linked run and pair. Planner, database-only, superseded,
-active, and `publication-refresh` source runs remain ineligible in this UI.
+active, `publication-refresh`, and `publication-reconciliation` source runs
+remain ineligible in this UI. In the current UI, metadata refresh is the
+advanced **Repair publication metadata and snapshot** action.
 
 1. Open the completed source run at `/operations/prepare/<sourceRunId>` and
    retain its original descriptor, database, and complete site. Record their
    identities/digests and review readiness and coverage separately.
 2. Complete the effective-configuration preflight and, only if separately
-   authorized and needed, the source people preview/apply above. Then choose
-   **Refresh publication data and snapshot** once.
+   authorized and needed, the source people preview/apply above. Then expand
+   **Advanced: repair publication metadata only** and choose **Repair
+   publication metadata and snapshot** once.
 3. The Preparer creates a different run with
    `purpose:"publication-refresh"`, `sourceRunId:"<sourceRunId>"`, and
    `databaseOnly:false`; the UI navigates to
@@ -504,10 +635,11 @@ lifecycle success even when item-level `superseded` outcomes make the result
 partial. Continue snapshot and site publication from accepted results, and
 surface every superseded item and reason.
 
-Outer start, retry, supersede, and publication-refresh calls are not replayed
-after an ambiguous transport failure. Reconcile through run/list reads before
-deciding whether to act again; do not treat a missing response as permission
-to resubmit.
+Outer start, retry, supersede, publication-refresh, and
+publication-reconciliation mutations are not replayed after an ambiguous
+transport failure. Reconcile through run/list or reconciliation-status reads
+before deciding whether to act again; do not treat a missing response as
+permission to resubmit.
 
 Topic grouping is part of fenced finalization. Do not run a separate direct
 database grouping pass. The grouping maintenance endpoint exists only for an
@@ -542,7 +674,55 @@ source refresh, structured `discussionReadiness` and `discussionCorpus`, source
 snapshot identity, and renderer schema version in
 `discussion\site-manifest.json`.
 
-### Headless publication repair
+### Headless changed-ticket reconciliation
+
+Retain the baseline pair/site, then start the distinct changed-ticket
+operation. This action uses `sourceRunId`, not `runId`:
+
+```powershell
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"reconcile-publication","sourceRunId":"<sourceRunId>"}'
+```
+
+The result contains the new reconciliation `run`, complete frozen
+`comparison`, and `counts`. Save `run.runId` as `<reconciliationRunId>`.
+Inspect the complete lifecycle—including per-ticket dispositions, grouping
+impacts, invalidations, promotion journal, fence, and proof—with:
+
+```powershell
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"reconciliation-status","runId":"<reconciliationRunId>"}'
+```
+
+Continue normal item authoring while required, but use this status rather than
+the generic run status to decide publication recovery. When promotion is
+`snapshot-publish-pending`, an explicit idempotent retry is:
+
+```powershell
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"retry-reconciliation","runId":"<reconciliationRunId>"}'
+```
+
+If recovery cannot be repaired and the operator accepts an unpublished
+canonical epoch, provide an auditable reason:
+
+```powershell
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"abandon-reconciliation","runId":"<reconciliationRunId>","reason":"<reviewed reason>"}'
+```
+
+That last command is accepted only after database promotion. It is
+irreversible through this lifecycle, does not restore the baseline, and
+activates the `canonical-unpublished-restriction` described above. Prefer
+retry. Once reconciliation reports `ready` and the run is `completed`, use
+the ordinary `snapshot` action with `<reconciliationRunId>`, then publish that
+new pair with `ticket-site`.
+
+The CLI keeps stable reconciliation failures as the top-level error code
+instead of collapsing them to `HTTP_ERROR`: `invalid-baseline`,
+`unstable-jira-generation`, `revision-invalidation`, `staging-mismatch`,
+`grouping-impact-mismatch`, `recovery-in-progress`,
+`promotion-recovery-failure`, and
+`canonical-unpublished-restriction`. Human-readable detail is diagnostic;
+branch automation on the stable code and inspect returned run coordinates.
+
+### Headless metadata-only publication repair
 
 After retaining the original pair/site, reviewing coverage independently of
 readiness, and completing the schema-v3 configuration and preservation
@@ -593,6 +773,21 @@ and renders the verified pair supplied after processor completion.
   and accepted Zulip enrichment outcomes and writes a durable apply receipt.
   It does not modify authored content, accepted receipts, historical input
   provenance, or grouping output.
+- A publication reconciliation first stages all revised graphs and complete
+  affected grouping replacements. Before the database promotion commit, a
+  failure leaves canonical output and the old publication unchanged. After
+  that commit, `snapshot-publish-pending` is a durable, fenced recovery state:
+  retry snapshot publication rather than re-authoring or starting another
+  mutation.
+- Pending reconciliation recovery accepts only matching temporary/final file,
+  snapshot-record, checksum, and provenance evidence. Missing or conflicting
+  evidence produces `promotion-recovery-failure`; it never overwrites a
+  conflicting final file or reapplies canonical replacement.
+- `canonical-unpublished` is reachable only by explicit reason-bearing
+  abandonment after canonical promotion. It releases the fence but leaves the
+  database replacement in place, preserves the old pair, and rejects all
+  later snapshot-producing workflows with
+  `canonical-unpublished-restriction` until explicit canonical-epoch recovery.
 - Original protected-output drift refuses admission; an execution-time
   protection, source-revision, or source-generation conflict supersedes the
   refresh run and releases the fence. Retain the original publication, inspect

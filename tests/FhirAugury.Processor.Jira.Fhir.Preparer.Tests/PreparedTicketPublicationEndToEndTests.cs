@@ -1,14 +1,24 @@
 using System.Globalization;
 using System.IO.Compression;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Text;
+using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Client;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
+using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Contracts;
+using FhirAugury.Processing.Jira.Common.Authoring;
+using FhirAugury.Processing.Jira.Common.Configuration;
+using FhirAugury.Processing.Jira.Common.Database;
+using FhirAugury.Processing.Jira.Common.Filtering;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Api;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
@@ -17,6 +27,7 @@ using FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
 using FhirAugury.Publishing.Tickets;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using static FhirAugury.Processor.Jira.Fhir.Preparer.Tests.PreparedTicketPublicationTestFixture;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Tests;
@@ -29,8 +40,20 @@ public sealed class PreparedTicketPublicationEndToEndTests
     private static readonly string[] FhirKeys =
         ["FHIR-10028", "FHIR-29212", "FHIR-803", "FHIR-804", "FHIR-805", "FHIR-806"];
     private static readonly string[] CdaKeys = ["CDA-901", "CDA-902"];
+    private static readonly string[] RevisedKeys =
+        ["FHIR-10028", "FHIR-803"];
+    private static readonly string[] PreservedKeys =
+        [
+            "FHIR-29212",
+            "FHIR-804",
+            "FHIR-805",
+            "FHIR-806",
+            "CDA-901",
+            "CDA-902",
+        ];
     private static readonly DateTimeOffset SelectedMaximum =
         new(2026, 9, 15, 1, 30, 0, TimeSpan.Zero);
+    private const string MovedTicketType = "Technical Correction";
 
     [Fact]
     public void ReconciliationPublicationContract_HasDistinctProofPurpose()
@@ -268,12 +291,1164 @@ public sealed class PreparedTicketPublicationEndToEndTests
         Assert.Equal(originalHashes, await ArtifactHashesAsync(fixture, original));
     }
 
+    [Theory]
+    [InlineData("candidate-materialized")]
+    [InlineData("database-promoted")]
+    [InlineData("snapshot-file-published")]
+    [InlineData("snapshot-record-promoted")]
+    [InlineData("snapshot-record-ready")]
+    [InlineData("run-completed")]
+    public async Task ChangedTicketReconciliationRecoversAfterEveryDurableBoundary(
+        string interruptionBoundary)
+    {
+        using Fixture fixture = new(richGraph: true);
+        Corpus corpus = await CreateCorpusAsync(fixture);
+        PublicationHttpHandler handler = new(fixture, corpus.Updates);
+        using HttpClient http = handler.CreateClient();
+        AuthoringControlClient client = new(http);
+        Publication original =
+            await PublishAsync(fixture, client, corpus.Source.Descriptor);
+        KeyValuePair<string, string>[] originalHashes =
+            await ArtifactHashesAsync(fixture, original);
+        Dictionary<string, TicketPreservation> preserved =
+            await CaptureTicketPreservationAsync(
+                fixture,
+                original,
+                PreservedKeys);
+        byte[] cdaGroupingBytes;
+        using (SqliteConnection snapshot =
+               await SqliteReviewSnapshotValidator.OpenReadOnlyAsync(
+                   original.Pair.DatabasePath))
+        {
+            AssertOrderedFhirGrouping(snapshot);
+            cdaGroupingBytes = ReadGroupingBytes(snapshot, "CDA");
+        }
+
+        StagedReconciliation staged =
+            await StageChangedTicketReconciliationAsync(
+                fixture,
+                corpus,
+                handler,
+                http);
+
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .Staged,
+            fixture.Scalar<string>(
+                $"""
+                SELECT PromotionState
+                FROM prepared_ticket_publication_reconciliations
+                WHERE RunId = '{staged.RunId}'
+                """));
+        InvalidOperationException prematureAbandonment =
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => fixture.Database
+                    .AbandonPublicationReconciliationAsync(
+                        staged.RunId,
+                        "candidate is still recoverable"));
+        Assert.Contains(
+            "only be abandoned after canonical promotion",
+            prematureAbandonment.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(
+            $"Request {RevisedKeys[0]}\n\nExact authored text: caf\u00e9.",
+            fixture.Scalar<string>(
+                $"SELECT RequestSummary FROM prepared_tickets WHERE Key = '{RevisedKeys[0]}'"));
+
+        PreparedTicketPublicationRecoveryService recovery = new(
+            fixture.Database,
+            fixture.Store,
+            NullLogger<PreparedTicketPublicationRecoveryService>.Instance);
+        AuthoringSnapshotDescriptor replacementDescriptor;
+        if (interruptionBoundary == "candidate-materialized")
+        {
+            replacementDescriptor =
+                await ResumeCandidateFinalizationAsync(
+                    fixture,
+                    staged,
+                    http,
+                    recovery);
+        }
+        else
+        {
+            PreparerDatabase.PublicationReconciliationPromotion promotion =
+                await fixture.Database
+                    .PromotePublicationReconciliationAsync(
+                        staged.RunId,
+                        Path.Combine(
+                            fixture.SnapshotDirectory,
+                            $"jira-fhir-{staged.RunId}.db"));
+            Assert.Equal(
+                PreparedTicketPublicationReconciliationPromotionStateValues
+                    .SnapshotPublishPending,
+                fixture.Scalar<string>(
+                    $"""
+                    SELECT PromotionState
+                    FROM prepared_ticket_publication_reconciliations
+                    WHERE RunId = '{staged.RunId}'
+                    """));
+            Assert.Equal(
+                $"Reconciled request {RevisedKeys[0]}",
+                fixture.Scalar<string>(
+                    $"SELECT RequestSummary FROM prepared_tickets WHERE Key = '{RevisedKeys[0]}'"));
+            Assert.Equal(
+                MovedTicketType,
+                fixture.Scalar<string>(
+                    $"""
+                    SELECT Type
+                    FROM prepared_jira_hydration
+                    WHERE TicketKey = '{RevisedKeys[1]}'
+                      AND JiraKey = TicketKey
+                    """));
+            Assert.Equal(
+                originalHashes,
+                await ArtifactHashesAsync(fixture, original));
+
+            await AdvancePendingPromotionToBoundaryAsync(
+                fixture,
+                promotion,
+                interruptionBoundary);
+            replacementDescriptor =
+                await recovery.RecoverAsync(staged.RunId);
+        }
+        await recovery.RecoverPendingAsync();
+
+        Assert.Equal(staged.RunId, replacementDescriptor.RunId);
+        Assert.Equal(
+            PreparedTicketPublicationContract.PublicationReconciliationPurpose,
+            replacementDescriptor.PublicationProof?.Purpose);
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationPromotionStateValues.Ready,
+            fixture.Scalar<string>(
+                $"""
+                SELECT PromotionState
+                FROM prepared_ticket_publication_reconciliations
+                WHERE RunId = '{staged.RunId}'
+                """));
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationPromotionStateValues.Ready,
+            fixture.Scalar<string>(
+                $"""
+                SELECT State
+                FROM prepared_ticket_publication_reconciliation_journal
+                WHERE RunId = '{staged.RunId}'
+                """));
+        Assert.Null(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+        Assert.Empty(
+            await fixture.Database
+                .ListPendingPublicationReconciliationsAsync());
+        Assert.All(
+            new[]
+            {
+                "prepared_ticket_publication_staged_graphs",
+                "prepared_ticket_publication_staged_hydration",
+                "prepared_ticket_publication_staged_receipts",
+                "prepared_ticket_publication_grouping_impacts",
+                "prepared_ticket_publication_staged_grouping",
+                "prepared_ticket_publication_snapshot_descriptors",
+                "prepared_ticket_publication_reconciliation_fences",
+            },
+            table => Assert.Equal(0, fixture.CountLive(table)));
+
+        PreparedTicketPublicationReconciliationStatusResult status =
+            await staged.Planner.GetStatusAsync(staged.RunId);
+        Assert.Equal(AuthoringStatusValues.Runs.Completed, status.Run.Status);
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationPromotionStateValues.Ready,
+            status.Promotion.State);
+        Assert.False(status.Promotion.MutationFenceHeld);
+        Assert.Empty(status.InvalidatedTicketKeys);
+        Assert.Equal(
+            PreparedTicketPublicationContract.PublicationReconciliationPurpose,
+            status.PublicationProof?.Purpose);
+
+        VerifiedAuthoringSnapshotPair replacement =
+            await client.DownloadSnapshotPairAsync(
+                "Preparer",
+                staged.RunId,
+                Path.Combine(
+                    fixture.DirectoryPath,
+                    "reconciliation-downloads",
+                    staged.RunId),
+                CancellationToken.None);
+        Assert.NotEqual(original.Pair.RunId, replacement.RunId);
+        Assert.NotEqual(original.Pair.SnapshotId, replacement.SnapshotId);
+        Assert.NotEqual(
+            original.Pair.Manifest.DatabaseSha256,
+            replacement.Manifest.DatabaseSha256);
+        Assert.True(
+            replacement.Descriptor.Sequence >
+            original.Pair.Descriptor.Sequence);
+
+        using (SqliteConnection snapshot =
+               await SqliteReviewSnapshotValidator.OpenReadOnlyAsync(
+                   replacement.DatabasePath))
+        {
+            foreach ((string key, TicketPreservation expected) in preserved)
+            {
+                Assert.Equal(
+                    expected.SnapshotBytes,
+                    ReadTicketSnapshotBytes(snapshot, key));
+                Assert.Equal(
+                    expected.LiveFingerprint,
+                    ReadLiveTicketFingerprint(fixture, key));
+            }
+            Assert.Equal(cdaGroupingBytes, ReadGroupingBytes(snapshot, "CDA"));
+            AssertReconciledGrouping(snapshot);
+            AssertRow(
+                snapshot,
+                "SELECT RequestSummary, ProposalA FROM prepared_tickets WHERE Key = 'FHIR-10028'",
+                ["Reconciled request FHIR-10028", "Reconciled A FHIR-10028"]);
+            AssertRow(
+                snapshot,
+                "SELECT RequestSummary, ProposalA FROM prepared_tickets WHERE Key = 'FHIR-803'",
+                ["Reconciled request FHIR-803", "Reconciled A FHIR-803"]);
+            AssertRow(
+                snapshot,
+                """
+                SELECT Type, Specification
+                FROM prepared_jira_hydration
+                WHERE TicketKey = 'FHIR-803' AND JiraKey = TicketKey
+                """,
+                [MovedTicketType, "FHIR"]);
+        }
+
+        _ = await new AuthoringSnapshotPairVerifier().VerifyReadyPairAsync(
+            "Preparer",
+            original.Pair.RunId,
+            original.Pair.DirectoryPath);
+        Assert.Equal(
+            originalHashes,
+            await ArtifactHashesAsync(fixture, original));
+    }
+
+    [Fact]
+    public async Task CanonicalUnpublishedAbandonmentIsAuditedAndRestrictsSnapshotWorkflows()
+    {
+        using Fixture fixture = new(richGraph: true);
+        Corpus corpus = await CreateCorpusAsync(fixture);
+        PublicationHttpHandler handler = new(fixture, corpus.Updates);
+        using HttpClient http = handler.CreateClient();
+        AuthoringControlClient client = new(http);
+        Publication original =
+            await PublishAsync(fixture, client, corpus.Source.Descriptor);
+        KeyValuePair<string, string>[] originalHashes =
+            await ArtifactHashesAsync(fixture, original);
+        StagedReconciliation staged =
+            await StageChangedTicketReconciliationAsync(
+                fixture,
+                corpus,
+                handler,
+                http);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => fixture.Database.AbandonPublicationReconciliationAsync(
+                staged.RunId,
+                "not yet database-promoted"));
+        PreparerDatabase.PublicationReconciliationPromotion promotion =
+            await fixture.Database.PromotePublicationReconciliationAsync(
+                staged.RunId,
+                Path.Combine(
+                    fixture.SnapshotDirectory,
+                    $"jira-fhir-{staged.RunId}.db"));
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => fixture.Database.AbandonPublicationReconciliationAsync(
+                staged.RunId,
+                " "));
+
+        DateTimeOffset abandonedAt =
+            new(2026, 9, 17, 12, 0, 0, TimeSpan.Zero);
+        const string reason =
+            "operator accepted canonical data without replacement snapshot";
+        await fixture.Database.AbandonPublicationReconciliationAsync(
+            staged.RunId,
+            reason,
+            abandonedAt);
+
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .CanonicalUnpublished,
+            fixture.Scalar<string>(
+                $"""
+                SELECT PromotionState
+                FROM prepared_ticket_publication_reconciliations
+                WHERE RunId = '{staged.RunId}'
+                """));
+        Assert.Equal(
+            JsonSerializer.Serialize(new object?[]
+            {
+                abandonedAt.ToString("O", CultureInfo.InvariantCulture),
+                reason,
+            }),
+            ReadAbandonmentAudit(fixture, staged.RunId));
+        Assert.Null(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+        Assert.False(File.Exists(promotion.FinalPath));
+        Assert.True(File.Exists(promotion.TemporaryPath));
+        Assert.Equal(
+            $"Reconciled request {RevisedKeys[0]}",
+            fixture.Scalar<string>(
+                $"SELECT RequestSummary FROM prepared_tickets WHERE Key = '{RevisedKeys[0]}'"));
+
+        await AssertCanonicalUnpublishedRestrictionAsync(
+            () => fixture.Store.CreateRunAsync(
+                "jira-fhir",
+                [new("FHIR-99001", "fhir", "revision-1")],
+                databaseOnly: false));
+        PreparedTicketPublicationProtectedInventory inventory =
+            await fixture.ReadCurrentAsync();
+        PreparedTicketPublicationCorpusItem retained = inventory.Corpus[0];
+        await AssertCanonicalUnpublishedRestrictionAsync(
+            () => fixture.Store.CreateMaintenanceRunAsync(
+                "jira-fhir",
+                [
+                    new AuthoringMaintenanceRunItem(
+                        retained.TicketKey,
+                        retained.ItemKind,
+                        retained.ExpectedSourceRevision,
+                        retained.ReceiptId),
+                ],
+                AuthoringRunPurposeValues.PublicationRefresh,
+                databaseOnly: false,
+                sourceRunId: corpus.Source.Run.Id));
+        await AssertCanonicalUnpublishedRestrictionAsync(
+            () => fixture.Database.CreatePublicationReconciliationAsync(
+                staged.Comparison));
+
+        AuthoringRunRecord databaseOnly = await fixture.Store.CreateRunAsync(
+            "jira-fhir",
+            [new("FHIR-99002", "fhir", "revision-1")],
+            databaseOnly: true);
+        Assert.True(databaseOnly.DatabaseOnly);
+        Assert.Equal(AuthoringStatusValues.Runs.Queued, databaseOnly.Status);
+        Assert.Equal(
+            originalHashes,
+            await ArtifactHashesAsync(fixture, original));
+        _ = await new AuthoringSnapshotPairVerifier().VerifyReadyPairAsync(
+            "Preparer",
+            original.Pair.RunId,
+            original.Pair.DirectoryPath);
+    }
+
     private sealed record Corpus(SourceResult Source, IReadOnlyDictionary<string, DateTimeOffset> Updates);
     private sealed record Publication(
         VerifiedAuthoringSnapshotPair DownloadedPair,
         VerifiedAuthoringSnapshotPair Pair,
         TicketSitePublishResult Site,
         string RendererPath);
+    private sealed record TicketPreservation(
+        byte[] SnapshotBytes,
+        string LiveFingerprint);
+    private sealed record StagedReconciliation(
+        string RunId,
+        PreparedTicketPublicationReconciliationComparison Comparison,
+        PreparedTicketPublicationReconciliationPlanner Planner);
+
+    private static async Task<StagedReconciliation>
+        StageChangedTicketReconciliationAsync(
+            Fixture fixture,
+            Corpus corpus,
+            PublicationHttpHandler handler,
+            HttpClient http)
+    {
+        Dictionary<string, DateTimeOffset> revisedAt =
+            new(StringComparer.OrdinalIgnoreCase)
+            {
+                ["FHIR-10028"] =
+                    corpus.Updates["FHIR-10028"].AddDays(1).ToUniversalTime(),
+                ["FHIR-803"] =
+                    corpus.Updates["FHIR-803"].AddDays(1).ToUniversalTime(),
+            };
+        foreach ((string key, DateTimeOffset revision) in revisedAt)
+        {
+            ItemResponse current = handler.JiraItems[key];
+            handler.JiraItems[key] = current with { UpdatedAt = revision };
+            fixture.Execute(
+                """
+                UPDATE jira_processing_source_tickets
+                SET LastUpdated = @revision
+                WHERE Key = @key
+                """,
+                ("@revision",
+                    revision.ToString("O", CultureInfo.InvariantCulture)),
+                ("@key", key));
+        }
+
+        JiraAuthoringRunCoordinator coordinator = new(
+            fixture.Store,
+            new JiraProcessingSourceTicketStore(
+                fixture.Database.DatabasePath),
+            new JiraProcessingFilterResolver(),
+            Options.Create(new JiraProcessingOptions
+            {
+                AgentCliCommand = "agent {ticketKey}",
+                JiraSourceAddress = "http://source",
+                SourceTicketShape = "fhir",
+                TicketStatusesToProcess = ["Triaged"],
+            }));
+        AuthoringRetryPolicy retryPolicy = new(
+            Options.Create(new ProcessingServiceOptions()));
+        PreparedTicketPublicationReconciliationPlanner planner = new(
+            fixture.CreateBaselineReader(),
+            new OrchestratorHydrationFetcher(http, NullLogger.Instance),
+            fixture.Database,
+            new AuthoringRunControlService(fixture.Store, retryPolicy),
+            coordinator,
+            new AuthoringRunSchedulerWakeSignal());
+
+        PreparedTicketPublicationReconciliationStartResult start =
+            await planner.StartAsync(corpus.Source.Run.Id);
+
+        Assert.Equal(8, start.Counts.AcceptedTicketCount);
+        Assert.Equal(6, start.Counts.CarryForwardTicketCount);
+        Assert.Equal(2, start.Counts.ReAuthorTicketCount);
+        Assert.Equal("901", start.Comparison.StableJiraGeneration);
+        Assert.Equal(
+            RevisedKeys.Order(StringComparer.Ordinal),
+            start.Comparison.Items
+                .Where(item =>
+                    item.Disposition ==
+                    PreparedTicketPublicationReconciliationDispositionValues
+                        .ReAuthor)
+                .Select(item => item.TicketKey)
+                .Order(StringComparer.Ordinal));
+        Assert.All(
+            start.Comparison.Items.Where(item =>
+                !RevisedKeys.Contains(
+                    item.TicketKey,
+                    StringComparer.OrdinalIgnoreCase)),
+            item => Assert.Equal(
+                PreparedTicketPublicationReconciliationDispositionValues
+                    .CarryForward,
+                item.Disposition));
+        Assert.Equal(
+            2,
+            handler.JiraRequests
+                .GroupBy(key => key, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.Count())
+                .Distinct()
+                .Single());
+        Assert.Equal(
+            FhirKeys.Concat(CdaKeys).Order(StringComparer.Ordinal),
+            handler.JiraRequests
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Order(StringComparer.Ordinal));
+
+        foreach (string key in RevisedKeys)
+        {
+            AuthoringRunItemRecord item = Assert.Single(
+                await fixture.Store.GetRunItemsAsync(start.Run.RunId),
+                candidate => string.Equals(
+                    candidate.BusinessKey,
+                    key,
+                    StringComparison.OrdinalIgnoreCase));
+            AuthoringOperationClaim claim =
+                Assert.IsType<AuthoringOperationClaim>(
+                    await fixture.Store.ClaimItemAsync(
+                        start.Run.RunId,
+                        item.Id));
+            PreparedTicketPayload payload =
+                CreateRevisedPayload(key, revisedAt[key]);
+            string contentHash =
+                PreparedTicketAuthoringDtos.ComputeContentHash(payload);
+            HydrationBatch hydration = CreateRevisedHydration(
+                key,
+                revisedAt[key],
+                key == "FHIR-803"
+                    ? MovedTicketType
+                    : "Change Request");
+            AuthoringReceiptAcceptance acceptance =
+                await fixture.Store.AcceptResultWithReceiptAsync(
+                    new(
+                        start.Run.RunId,
+                        item.Id,
+                        claim.OperationId,
+                        item.ExpectedSourceRevision,
+                        contentHash),
+                    claim.OperationToken,
+                    async (connection, receiptId, ct) =>
+                    {
+                        await JiraProcessingSourceTicketStore
+                            .EnsureCurrentSourceRevisionAsync(
+                                connection,
+                                key,
+                                item.ItemKind,
+                                item.ExpectedSourceRevision,
+                                ct);
+                        await fixture.Database
+                            .StagePublicationReconciliationTicketAsync(
+                                connection,
+                                start.Run.RunId,
+                                item.Id,
+                                claim.OperationId,
+                                receiptId,
+                                item.ExpectedSourceRevision,
+                                contentHash,
+                                payload,
+                                hydration,
+                                ct: ct);
+                    });
+            Assert.False(acceptance.IsReplay);
+            await fixture.Store.MarkItemCompleteAsync(
+                item.Id,
+                acceptance.Receipt.ReceiptId);
+        }
+
+        PreparedTicketPublicationReconciliationStatusResult authored =
+            await planner.GetStatusAsync(start.Run.RunId);
+        Assert.Empty(authored.InvalidatedTicketKeys);
+        Assert.All(
+            authored.Items,
+            item => Assert.Equal(
+                AuthoringStatusValues.Items.Complete,
+                item.Status));
+        Assert.Equal(
+            $"Request {RevisedKeys[0]}\n\nExact authored text: caf\u00e9.",
+            fixture.Scalar<string>(
+                $"SELECT RequestSummary FROM prepared_tickets WHERE Key = '{RevisedKeys[0]}'"));
+
+        PreparedTicketGroupingDeltaDispatcher grouping = new(
+            fixture.Database);
+        PreparedTicketPublicationGroupingDelta delta =
+            await grouping.PrepareAsync(start.Run.RunId);
+        Assert.Equal(2, delta.Impacts.Count);
+        PreparedTicketPublicationReconciliationGroupingImpact oldPartition =
+            Assert.Single(
+                delta.Impacts,
+                impact => impact.PartitionKey.EndsWith(
+                    "\u001fFHIR\u001fChange Request",
+                    StringComparison.Ordinal));
+        PreparedTicketPublicationReconciliationGroupingImpact newPartition =
+            Assert.Single(
+                delta.Impacts,
+                impact => impact.PartitionKey.EndsWith(
+                    $"\u001fFHIR\u001f{MovedTicketType}",
+                    StringComparison.Ordinal));
+        Assert.Equal(
+            RevisedKeys.Order(StringComparer.Ordinal),
+            oldPartition.RevisedTicketKeys.Order(StringComparer.Ordinal));
+        Assert.Equal(
+            ["FHIR-803"],
+            newPartition.RevisedTicketKeys);
+
+        await grouping.StageReplacementsAsync(
+            start.Run.RunId,
+            [
+                CreateChangedSharedGrouping(oldPartition.PartitionKey),
+                CreateEmptyGrouping(newPartition.PartitionKey),
+            ]);
+        PreparedTicketPublicationGroupingDelta complete =
+            await grouping.PrepareAsync(start.Run.RunId);
+        Assert.All(complete.Impacts, impact => Assert.True(impact.Complete));
+        Assert.Equal(
+            delta.Unaffected.CombinedFingerprint,
+            complete.Unaffected.CombinedFingerprint);
+        await fixture.Database.ValidatePublicationReconciliationUnaffectedAsync(
+            start.Run.RunId);
+
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Running,
+            fixture.Scalar<string>(
+                $"""
+                SELECT Status
+                FROM authoring_runs
+                WHERE Id = '{start.Run.RunId}'
+                """));
+        await fixture.Store.MarkRunFinalizingAsync(start.Run.RunId);
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Finalizing,
+            fixture.Scalar<string>(
+                $"""
+                SELECT Status
+                FROM authoring_runs
+                WHERE Id = '{start.Run.RunId}'
+                """));
+        await fixture.Database.ValidatePublicationReconciliationUnaffectedAsync(
+            start.Run.RunId);
+        PreparedTicketPublicationGroupingDelta finalizingDelta =
+            await grouping.PrepareAsync(start.Run.RunId);
+        Assert.Equal(
+            complete.Unaffected.ImpactedPartitionKeys,
+            finalizingDelta.Unaffected.ImpactedPartitionKeys);
+        Assert.Equal(
+            complete.Unaffected.AuthoredRowsFingerprint,
+            finalizingDelta.Unaffected.AuthoredRowsFingerprint);
+        Assert.Equal(
+            complete.Unaffected.ReceiptCoordinatesFingerprint,
+            finalizingDelta.Unaffected.ReceiptCoordinatesFingerprint);
+        Assert.Equal(
+            complete.Unaffected.GroupingRowsFingerprint,
+            finalizingDelta.Unaffected.GroupingRowsFingerprint);
+        Assert.Equal(
+            complete.Unaffected.CombinedFingerprint,
+            finalizingDelta.Unaffected.CombinedFingerprint);
+        PreparedTicketPublicationReconciliationProof proof =
+            await grouping.CreateProofAsync(start.Run.RunId);
+        PreparedTicketSnapshotMaterializer materializer = new(
+            fixture.Database,
+            fixture.Store,
+            new SqliteReviewSnapshotReconciler(fixture.Store),
+            Options.Create(new PreparerServiceOptions
+            {
+                SnapshotDirectory = fixture.SnapshotDirectory,
+                SnapshotSchemaVersion =
+                    PreparedTicketSnapshotSchemaV3.Version,
+            }));
+        AuthoringRunRecord finalizing = Assert.IsType<AuthoringRunRecord>(
+            await fixture.Store.GetRunAsync(start.Run.RunId));
+        PreparedTicketPublicationCandidateSnapshot candidate =
+            await materializer.MaterializeReconciliationCandidateAsync(
+                finalizing,
+                proof);
+        Assert.True(File.Exists(candidate.TemporaryPath));
+        Assert.Equal(
+            PreparedTicketSnapshotSchemaV3.Version,
+            candidate.SchemaVersion);
+        Assert.Equal(
+            PreparedTicketPublicationContract.PublicationReconciliationPurpose,
+            proof.Purpose);
+
+        return new(
+            start.Run.RunId,
+            start.Comparison,
+            planner);
+    }
+
+    private static PreparedTicketPayload CreateRevisedPayload(
+        string key,
+        DateTimeOffset savedAt)
+        => new()
+        {
+            Key = key,
+            RequestSummary = $"Reconciled request {key}",
+            CommentSummary = $"Reconciled comments {key}",
+            LinkedTicketSummary = $"Reconciled linked tickets {key}",
+            RelatedTicketSummary = $"Reconciled related tickets {key}",
+            RelatedZulipSummary = $"Reconciled Zulip {key}",
+            RelatedGitHubSummary = $"Reconciled GitHub {key}",
+            ExistingProposed = $"Reconciled existing proposal {key}",
+            ProposalA = $"Reconciled A {key}",
+            ProposalAJustification = $"Reconciled reason A {key}",
+            ProposalAImpact = PreparedTicketImpactValues.NonSubstantive,
+            ProposalB = $"Reconciled B {key}",
+            ProposalBJustification = $"Reconciled reason B {key}",
+            ProposalBImpact = PreparedTicketImpactValues.NonSubstantive,
+            ProposalC = $"Reconciled C {key}",
+            ProposalCJustification = $"Reconciled reason C {key}",
+            Recommendation =
+                PreparedTicketRecommendationValues.ProposalA,
+            RecommendationJustification =
+                $"Reconciled recommendation {key}",
+            SavedAt = savedAt,
+        };
+
+    private static HydrationBatch CreateRevisedHydration(
+        string key,
+        DateTimeOffset updatedAt,
+        string type)
+    {
+        DateTimeOffset hydratedAt =
+            new(2026, 9, 17, 10, 0, 0, TimeSpan.Zero);
+        return new(
+            key,
+            new HydrationTicketRow(
+                key,
+                "Major",
+                "Persuasive",
+                $"Reconciled resolution {key}",
+                "FHIR",
+                "R6",
+                "2026-09",
+                "Correction",
+                "Non-substantive",
+                "reconciled",
+                2,
+                $"Reconciled description {key}",
+                hydratedAt,
+                "resolved",
+                null,
+                DescriptionHtml: $"<p>Reconciled description {key}</p>",
+                ResolutionDescriptionHtml:
+                    $"<p>Reconciled resolution {key}</p>",
+                CreatedAt: updatedAt.AddYears(-1),
+                Assignee: $"Assignee {key}",
+                InPersonRequesters: [$"Requester {key}"],
+                SourceProject: "FHIR",
+                SourceLastSuccessfulRefreshAt:
+                    PublicationHttpHandler.SourceRefreshedAt,
+                SourceContentRevision: 901,
+                SourceIsStable: true,
+                StructuredReporter: $"Reporter {key}",
+                PublicDisplayNamePolicyVersion:
+                    PublicDisplayNamePolicy.CurrentVersion),
+            [
+                new HydrationJiraRow(
+                    key,
+                    key,
+                    $"Reconciled title {key}",
+                    "Triaged",
+                    type,
+                    "Major",
+                    "Persuasive",
+                    $"Reconciled resolution {key}",
+                    "FHIR Infrastructure",
+                    "FHIR",
+                    updatedAt,
+                    $"https://jira/{key}",
+                    hydratedAt,
+                    "resolved",
+                    null,
+                    DescriptionHtml:
+                        $"<p>Reconciled Jira description {key}</p>",
+                    ResolutionDescriptionHtml:
+                        $"<p>Reconciled Jira resolution {key}</p>",
+                    CreatedAt: updatedAt.AddYears(-1),
+                    Assignee: $"Assignee {key}",
+                    StructuredReporter: $"Reporter {key}",
+                    PublicDisplayNamePolicyVersion:
+                        PublicDisplayNamePolicy.CurrentVersion),
+            ],
+            [],
+            [],
+            [],
+            []);
+    }
+
+    private static PreparedTicketGroupingPayload CreateChangedSharedGrouping(
+        string partitionKey)
+    {
+        string[] coordinates = ParsePartitionKey(partitionKey);
+        return new()
+        {
+            WorkGroupClean = coordinates[0],
+            WorkGroupDisplay = "FHIR Infrastructure",
+            Specification = coordinates[1],
+            Type = coordinates[2],
+            SavedAt =
+                new DateTimeOffset(
+                    2026, 9, 17, 10, 30, 0, TimeSpan.Zero),
+            Topics =
+            [
+                new()
+                {
+                    ShortDescription =
+                        "Reconciled shared container",
+                    LongerDescription =
+                        "Changed text for the shared discussion container.",
+                    RenderOrderHint = 0,
+                    LinkedTicketGroups =
+                    [
+                        new()
+                        {
+                            FirstTicketKey = "FHIR-29212",
+                            Rationale =
+                                "Reconciled order keeps unchanged authored content fixed.",
+                            Members =
+                            [
+                                new()
+                                {
+                                    TicketKey = "FHIR-29212",
+                                    Order = 0,
+                                },
+                                new()
+                                {
+                                    TicketKey = "FHIR-10028",
+                                    Order = 1,
+                                },
+                            ],
+                        },
+                    ],
+                    RemainingTicketKeys =
+                        ["FHIR-806", "FHIR-805", "FHIR-804"],
+                },
+            ],
+        };
+    }
+
+    private static PreparedTicketGroupingPayload CreateEmptyGrouping(
+        string partitionKey)
+    {
+        string[] coordinates = ParsePartitionKey(partitionKey);
+        return new()
+        {
+            WorkGroupClean = coordinates[0],
+            WorkGroupDisplay = "FHIR Infrastructure",
+            Specification = coordinates[1],
+            Type = coordinates[2],
+            SavedAt =
+                new DateTimeOffset(
+                    2026, 9, 17, 10, 30, 0, TimeSpan.Zero),
+            Topics = [],
+        };
+    }
+
+    private static string[] ParsePartitionKey(string partitionKey)
+    {
+        string[] coordinates = partitionKey.Split('\u001f');
+        Assert.Equal(3, coordinates.Length);
+        return coordinates;
+    }
+
+    private static async Task<Dictionary<string, TicketPreservation>>
+        CaptureTicketPreservationAsync(
+            Fixture fixture,
+            Publication original,
+            IEnumerable<string> keys)
+    {
+        Dictionary<string, TicketPreservation> result =
+            new(StringComparer.OrdinalIgnoreCase);
+        using SqliteConnection snapshot =
+            await SqliteReviewSnapshotValidator.OpenReadOnlyAsync(
+                original.Pair.DatabasePath);
+        foreach (string key in keys)
+        {
+            result.Add(
+                key,
+                new(
+                    ReadTicketSnapshotBytes(snapshot, key),
+                    ReadLiveTicketFingerprint(fixture, key)));
+        }
+        return result;
+    }
+
+    private static byte[] ReadTicketSnapshotBytes(
+        SqliteConnection connection,
+        string key)
+    {
+        (string Table, string KeyColumn)[] tables =
+        [
+            ("prepared_tickets", "Key"),
+            ("prepared_ticket_repos", "TicketKey"),
+            ("prepared_ticket_related_jira", "TicketKey"),
+            ("prepared_ticket_related_zulip", "TicketKey"),
+            ("prepared_ticket_related_github", "TicketKey"),
+            ("prepared_ticket_hydration", "TicketKey"),
+            ("prepared_jira_hydration", "TicketKey"),
+            ("prepared_zulip_hydration", "TicketKey"),
+            ("prepared_github_hydration", "TicketKey"),
+            ("prepared_repo_hydration", "TicketKey"),
+            ("prepared_ticket_jira_xref", "TicketKey"),
+            ("prepared_ticket_jira_content", "TicketKey"),
+            ("prepared_ticket_artifacts", "TicketKey"),
+            ("prepared_ticket_pages", "TicketKey"),
+            ("prepared_ticket_in_person_requesters", "TicketKey"),
+        ];
+        StringBuilder bytes = new();
+        foreach ((string table, string keyColumn) in tables)
+        {
+            bytes.Append(table).Append('\n');
+            foreach (string row in ReadRows(
+                         connection,
+                         $"SELECT * FROM {table} WHERE {keyColumn} = @key COLLATE NOCASE ORDER BY RowId",
+                         ("@key", key)))
+            {
+                bytes.Append(row).Append('\n');
+            }
+        }
+        return Encoding.UTF8.GetBytes(bytes.ToString());
+    }
+
+    private static string ReadLiveTicketFingerprint(
+        Fixture fixture,
+        string key)
+    {
+        using SqliteConnection connection = fixture.Database.OpenConnection();
+        return Assert.Single(
+            ReadRows(
+                connection,
+                """
+                SELECT state.GraphHash, state.ReceiptContentHash,
+                       state.RunId, state.RunItemId, state.OperationId,
+                       item.AcceptedReceiptId, receipt.ContentHash,
+                       receipt.ExpectedSourceRevision,
+                       receipt.ObservedSourceRevision
+                FROM prepared_ticket_authoring_state state
+                INNER JOIN authoring_run_items item
+                  ON item.RunId = state.RunId
+                 AND item.Id = state.RunItemId
+                INNER JOIN authoring_result_receipts receipt
+                  ON receipt.Id = item.AcceptedReceiptId
+                 AND receipt.RunId = item.RunId
+                 AND receipt.RunItemId = item.Id
+                WHERE state.TicketKey = @key COLLATE NOCASE
+                """,
+                ("@key", key)));
+    }
+
+    private static byte[] ReadGroupingBytes(
+        SqliteConnection connection,
+        string specification)
+        => Encoding.UTF8.GetBytes(string.Join(
+            "\n",
+            ReadRows(
+                connection,
+                """
+                SELECT t.*, g.*, m.*
+                FROM prepared_ticket_topics t
+                LEFT JOIN prepared_ticket_topic_groups g
+                  ON g.TopicRowId = t.RowId
+                LEFT JOIN prepared_ticket_topic_members m
+                  ON m.TopicRowId = t.RowId
+                 AND (m.TopicGroupRowId = g.RowId OR
+                      m.TopicGroupRowId IS NULL AND g.RowId IS NULL)
+                WHERE t.Specification = @specification
+                ORDER BY t.RowId, g.RowId, m.RowId
+                """,
+                ("@specification", specification))));
+
+    private static async Task<AuthoringSnapshotDescriptor>
+        ResumeCandidateFinalizationAsync(
+            Fixture fixture,
+            StagedReconciliation staged,
+            HttpClient http,
+            PreparedTicketPublicationRecoveryService recovery)
+    {
+        PreparedTicketGroupingDeltaDispatcher grouping = new(
+            fixture.Database);
+        PreparedTicketSnapshotMaterializer materializer = new(
+            fixture.Database,
+            fixture.Store,
+            new SqliteReviewSnapshotReconciler(fixture.Store),
+            Options.Create(new PreparerServiceOptions
+            {
+                SnapshotDirectory = fixture.SnapshotDirectory,
+                SnapshotSchemaVersion =
+                    PreparedTicketSnapshotSchemaV3.Version,
+            }));
+        PreparedTicketRunWorkflowRegistry workflows = new(
+            fixture.Store,
+            fixture.Database,
+            new OrchestratorHydrationFetcher(http, NullLogger.Instance),
+            staged.Planner,
+            grouping,
+            materializer,
+            recovery,
+            Options.Create(new PreparerServiceOptions
+            {
+                SnapshotDirectory = fixture.SnapshotDirectory,
+                SnapshotSchemaVersion =
+                    PreparedTicketSnapshotSchemaV3.Version,
+            }),
+            NullLogger<PreparedTicketRunWorkflowRegistry>.Instance);
+        AuthoringRunRecord run = Assert.IsType<AuthoringRunRecord>(
+            await fixture.Store.GetRunAsync(staged.RunId));
+        return await workflows.FinalizeReconciliationAsync(run);
+    }
+
+    private static async Task AdvancePendingPromotionToBoundaryAsync(
+        Fixture fixture,
+        PreparerDatabase.PublicationReconciliationPromotion promotion,
+        string boundary)
+    {
+        string[] supported =
+        [
+            "database-promoted",
+            "snapshot-file-published",
+            "snapshot-record-promoted",
+            "snapshot-record-ready",
+            "run-completed",
+        ];
+        Assert.Contains(boundary, supported);
+        if (boundary == "database-promoted")
+        {
+            return;
+        }
+
+        await PublishPendingSnapshotFileAsync(promotion);
+        if (boundary == "snapshot-file-published")
+        {
+            return;
+        }
+
+        string checksum =
+            await SqliteReviewSnapshotWriter.ComputeSha256Async(
+                promotion.FinalPath);
+        long size = new FileInfo(promotion.FinalPath).Length;
+        await fixture.Store.MarkSnapshotPromotedAsync(
+            promotion.SnapshotId,
+            checksum,
+            size);
+        if (boundary == "snapshot-record-promoted")
+        {
+            return;
+        }
+
+        _ = await fixture.Store.MarkSnapshotReadyAsync(
+            promotion.SnapshotId);
+        if (boundary == "snapshot-record-ready")
+        {
+            return;
+        }
+
+        await fixture.Store.CompleteRunAsync(
+            promotion.RunId,
+            promotion.SnapshotId);
+    }
+
+    private static async Task PublishPendingSnapshotFileAsync(
+        PreparerDatabase.PublicationReconciliationPromotion promotion)
+    {
+        Assert.True(File.Exists(promotion.TemporaryPath));
+        Assert.False(File.Exists(promotion.FinalPath));
+        await using (SqliteConnection connection = new(
+            new SqliteConnectionStringBuilder
+            {
+                DataSource = promotion.TemporaryPath,
+                Mode = SqliteOpenMode.ReadWrite,
+                Pooling = false,
+            }.ToString()))
+        {
+            await connection.OpenAsync();
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                DROP TABLE IF EXISTS authoring_snapshot_provenance;
+                CREATE TABLE authoring_snapshot_provenance(
+                    SnapshotId TEXT NOT NULL,
+                    ProcessorKind TEXT NOT NULL,
+                    RunId TEXT NOT NULL,
+                    AuthoringEpoch INTEGER NOT NULL,
+                    Sequence INTEGER NOT NULL,
+                    SchemaVersion INTEGER NOT NULL,
+                    ItemCount INTEGER NOT NULL,
+                    ReceiptCount INTEGER NOT NULL,
+                    TableCountsJson TEXT NOT NULL,
+                    CreatedAt TEXT NOT NULL
+                );
+                INSERT INTO authoring_snapshot_provenance(
+                    SnapshotId, ProcessorKind, RunId, AuthoringEpoch,
+                    Sequence, SchemaVersion, ItemCount, ReceiptCount,
+                    TableCountsJson, CreatedAt)
+                VALUES(
+                    @snapshotId, 'jira-fhir', @runId, @epoch, @sequence,
+                    @schemaVersion, @itemCount, @receiptCount, @counts,
+                    @createdAt);
+                PRAGMA wal_checkpoint(TRUNCATE);
+                """;
+            command.Parameters.AddWithValue(
+                "@snapshotId",
+                promotion.SnapshotId);
+            command.Parameters.AddWithValue("@runId", promotion.RunId);
+            command.Parameters.AddWithValue(
+                "@epoch",
+                promotion.AuthoringEpoch);
+            command.Parameters.AddWithValue(
+                "@sequence",
+                promotion.Sequence);
+            command.Parameters.AddWithValue(
+                "@schemaVersion",
+                promotion.SchemaVersion);
+            command.Parameters.AddWithValue(
+                "@itemCount",
+                promotion.ItemCount);
+            command.Parameters.AddWithValue(
+                "@receiptCount",
+                promotion.ReceiptCount);
+            command.Parameters.AddWithValue(
+                "@counts",
+                JsonSerializer.Serialize(promotion.TableCounts));
+            command.Parameters.AddWithValue(
+                "@createdAt",
+                promotion.CreatedAt.ToString(
+                    "O",
+                    CultureInfo.InvariantCulture));
+            await command.ExecuteNonQueryAsync();
+        }
+        Directory.CreateDirectory(
+            Assert.IsType<string>(
+                Path.GetDirectoryName(promotion.FinalPath)));
+        File.Move(
+            promotion.TemporaryPath,
+            promotion.FinalPath,
+            overwrite: false);
+    }
+
+    private static void AssertReconciledGrouping(
+        SqliteConnection connection)
+    {
+        AssertRow(
+            connection,
+            """
+            SELECT ShortDescription, LongerDescription, RenderOrderHint
+            FROM prepared_ticket_topics
+            WHERE Specification = 'FHIR'
+              AND Type = 'Change Request'
+            """,
+            [
+                "Reconciled shared container",
+                "Changed text for the shared discussion container.",
+                0,
+            ]);
+        Assert.Equal(
+            new object?[][]
+            {
+                [
+                    "FHIR-29212",
+                    0,
+                    "FHIR-29212",
+                    "Reconciled order keeps unchanged authored content fixed.",
+                ],
+                [
+                    "FHIR-10028",
+                    1,
+                    "FHIR-29212",
+                    "Reconciled order keeps unchanged authored content fixed.",
+                ],
+                ["FHIR-806", 0, null, null],
+                ["FHIR-805", 1, null, null],
+                ["FHIR-804", 2, null, null],
+            }.Select(row => JsonSerializer.Serialize(row)),
+            ReadRows(
+                connection,
+                """
+                SELECT m.TicketKey, m.OrderInContainer,
+                       g.FirstTicketKey, g.Rationale
+                FROM prepared_ticket_topics t
+                INNER JOIN prepared_ticket_topic_members m
+                  ON m.TopicRowId = t.RowId
+                LEFT JOIN prepared_ticket_topic_groups g
+                  ON g.RowId = m.TopicGroupRowId
+                 AND g.TopicRowId = t.RowId
+                WHERE t.Specification = 'FHIR'
+                  AND t.Type = 'Change Request'
+                ORDER BY CASE WHEN g.RowId IS NULL THEN 1 ELSE 0 END,
+                         m.OrderInContainer
+                """));
+        Assert.Equal(
+            0,
+            Scalar<long>(
+                connection,
+                """
+                SELECT COUNT(*)
+                FROM prepared_ticket_topic_members
+                WHERE TicketKey = 'FHIR-803'
+                """));
+    }
+
+    private static string ReadAbandonmentAudit(
+        Fixture fixture,
+        string runId)
+    {
+        using SqliteConnection connection = fixture.Database.OpenConnection();
+        return Assert.Single(
+            ReadRows(
+                connection,
+                $"""
+                SELECT AbandonedAt, AbandonmentReason
+                FROM prepared_ticket_publication_reconciliations
+                WHERE RunId = '{runId}'
+                """));
+    }
+
+    private static async Task AssertCanonicalUnpublishedRestrictionAsync(
+        Func<Task> action)
+    {
+        SqliteException error =
+            await Assert.ThrowsAsync<SqliteException>(action);
+        Assert.Contains(
+            PreparedTicketPublicationReconciliationFailureCodes
+                .CanonicalUnpublishedRestriction,
+            error.Message,
+            StringComparison.Ordinal);
+    }
 
     private static async Task<Corpus> CreateCorpusAsync(Fixture fixture)
     {

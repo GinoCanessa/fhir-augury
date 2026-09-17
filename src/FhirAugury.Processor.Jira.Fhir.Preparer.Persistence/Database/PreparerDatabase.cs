@@ -6840,19 +6840,45 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             """
             INSERT INTO prepared_ticket_publication_snapshot_descriptors(
                 RunId, DescriptorJson, Sha256, PersistedAt)
-            VALUES(@runId, @json, @sha256, @persistedAt)
+            SELECT @runId, @json, @sha256, @persistedAt
+            WHERE EXISTS(
+                SELECT 1
+                FROM prepared_ticket_publication_reconciliations
+                WHERE RunId = @runId AND PromotionState = @staged)
             ON CONFLICT(RunId) DO UPDATE SET
                 DescriptorJson = excluded.DescriptorJson,
                 Sha256 = excluded.Sha256,
                 PersistedAt = excluded.PersistedAt
-            WHERE DescriptorJson = excluded.DescriptorJson
-              AND Sha256 = excluded.Sha256
+            WHERE EXISTS(
+                SELECT 1
+                FROM prepared_ticket_publication_reconciliations
+                WHERE RunId = @runId AND PromotionState = @staged)
             """,
             ct,
             ("@runId", descriptor.RunId),
             ("@json", descriptor.DescriptorJson),
             ("@sha256", descriptor.Sha256),
-            ("@persistedAt", Format(descriptor.PersistedAt)));
+            ("@persistedAt", Format(descriptor.PersistedAt)),
+            ("@staged",
+                PreparedTicketPublicationReconciliationPromotionStateValues
+                    .Staged));
+        await using SqliteCommand verify = connection.CreateCommand();
+        verify.CommandText =
+            """
+            SELECT 1
+            FROM prepared_ticket_publication_snapshot_descriptors
+            WHERE RunId = @runId
+              AND DescriptorJson = @json
+              AND Sha256 = @sha256
+            """;
+        verify.Parameters.AddWithValue("@runId", descriptor.RunId);
+        verify.Parameters.AddWithValue("@json", descriptor.DescriptorJson);
+        verify.Parameters.AddWithValue("@sha256", descriptor.Sha256);
+        if (await verify.ExecuteScalarAsync(ct) is null)
+        {
+            throw new InvalidOperationException(
+                $"Reconciliation '{descriptor.RunId}' can no longer replace its staged candidate snapshot.");
+        }
     }
 
     public async Task SavePublicationReconciliationProofAsync(
@@ -6878,16 +6904,40 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             """
             INSERT INTO prepared_ticket_publication_reconciliation_proofs(
                 RunId, ProofJson, CapturedAt)
-            VALUES(@runId, @json, @capturedAt)
+            SELECT @runId, @json, @capturedAt
+            WHERE EXISTS(
+                SELECT 1
+                FROM prepared_ticket_publication_reconciliations
+                WHERE RunId = @runId AND PromotionState = @staged)
             ON CONFLICT(RunId) DO UPDATE SET
                 ProofJson = excluded.ProofJson,
                 CapturedAt = excluded.CapturedAt
-            WHERE ProofJson = excluded.ProofJson
+            WHERE EXISTS(
+                SELECT 1
+                FROM prepared_ticket_publication_reconciliations
+                WHERE RunId = @runId AND PromotionState = @staged)
             """,
             ct,
             ("@runId", runId),
             ("@json", json),
-            ("@capturedAt", Format(proof.CapturedAt)));
+            ("@capturedAt", Format(proof.CapturedAt)),
+            ("@staged",
+                PreparedTicketPublicationReconciliationPromotionStateValues
+                    .Staged));
+        await using SqliteCommand verify = connection.CreateCommand();
+        verify.CommandText =
+            """
+            SELECT 1
+            FROM prepared_ticket_publication_reconciliation_proofs
+            WHERE RunId = @runId AND ProofJson = @json
+            """;
+        verify.Parameters.AddWithValue("@runId", runId);
+        verify.Parameters.AddWithValue("@json", json);
+        if (await verify.ExecuteScalarAsync(ct) is null)
+        {
+            throw new InvalidOperationException(
+                $"Reconciliation '{runId}' can no longer replace its staged publication proof.");
+        }
     }
 
     public async Task UpdatePublicationReconciliationJournalAsync(
@@ -7719,6 +7769,10 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 connection,
                 ticket.Hydration,
                 ct);
+            string graphHash = await ComputePreparedGraphHashAsync(
+                connection,
+                ticket.TicketKey,
+                ct);
             await ExecuteAsync(
                 connection,
                 """
@@ -7727,7 +7781,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                     ReceiptContentHash, RunId, RunItemId, OperationId,
                     UpdatedAt)
                 SELECT graph.TicketKey, 'receipt-backed',
-                       graph.AuthoredFingerprint,
+                       @graphHash,
                        graph.AuthoredFingerprint, graph.RunId,
                        graph.RunItemId, graph.OperationId, graph.StagedAt
                 FROM prepared_ticket_publication_staged_graphs graph
@@ -7743,6 +7797,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                     UpdatedAt = excluded.UpdatedAt
                 """,
                 ct,
+                ("@graphHash", graphHash),
                 ("@runId", runId),
                 ("@ticketKey", ticket.TicketKey));
         }
@@ -7931,7 +7986,13 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             DateTimeOffset capturedAt)
     {
         PreparedTicketPublicationProtectedRow[] authoredRows = inventory.Rows
-            .Where(row => !revisedTicketKeys.Contains(row.Scope))
+            .Where(row =>
+                !revisedTicketKeys.Contains(row.Scope) &&
+                !(row.Table == "authoring_runs" &&
+                  string.Equals(
+                      row.Scope,
+                      runId,
+                      StringComparison.Ordinal)))
             .ToArray();
         PreparedTicketPublicationCorpusItem[] receipts = inventory.Corpus
             .Where(item => !revisedTicketKeys.Contains(item.TicketKey))
