@@ -340,6 +340,26 @@ public static class OrchestratorCatalog
             Destructive: true),
 
         new ApiEndpointDescriptor(
+            Id: "processing.authoring.publication-reconciliation.cancel",
+            DisplayName: "Cancel Publication Reconciliation",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation/cancel",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("runId", ApiParameterKind.Path, Required: true),
+                new ApiParameter(
+                    "body",
+                    ApiParameterKind.Body,
+                    Required: true,
+                    DefaultValue: "{ \"reason\": \"frozen Jira revisions changed\" }",
+                    ValueType: ApiParameterValueType.Json),
+            ],
+            Destructive: true,
+            Description: "Terminates staged reconciliation before trusted or canonical promotion and retains its cancellation audit."),
+
+        new ApiEndpointDescriptor(
             Id: "processing.authoring.publication-reconciliation.abandon",
             DisplayName: "Abandon Publication Reconciliation",
             Group: "Processing",

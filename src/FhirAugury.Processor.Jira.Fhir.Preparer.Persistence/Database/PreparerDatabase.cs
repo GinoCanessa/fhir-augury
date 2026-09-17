@@ -380,6 +380,16 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             "prepared_ticket_publication_reconciliation_items",
             "ExpectedSourceRevision",
             "TEXT NULL");
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "prepared_ticket_publication_reconciliations",
+            "CancelledAt",
+            "TEXT NULL");
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "prepared_ticket_publication_reconciliations",
+            "CancellationReason",
+            "TEXT NULL");
     }
 
     public async Task<AuthoringRunRecord> CreatePublicationReconciliationAsync(
@@ -6009,17 +6019,81 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                AND impact.PartitionKey = @partitionKey
             WHERE run.Id = @runId
               AND run.Purpose = @purpose
+              AND reconciliation.PromotionState = @staged
+              AND EXISTS(
+                  SELECT 1
+                  FROM authoring_mutation_fences fence
+                  WHERE fence.ProcessorKind = run.ProcessorKind
+                    AND fence.RunId = run.Id)
+              AND EXISTS(
+                  SELECT 1
+                  FROM prepared_ticket_publication_reconciliation_fences fence
+                  WHERE fence.RunId = run.Id)
             """;
         command.Parameters.AddWithValue("@runId", runId);
         command.Parameters.AddWithValue(
             "@purpose",
             PreparedTicketPublicationReconciliationContract.Purpose);
+        command.Parameters.AddWithValue(
+            "@staged",
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .Staged);
         command.Parameters.AddWithValue("@partitionKey", partitionKey);
         if (await command.ExecuteScalarAsync(ct) is null)
         {
             throw new AuthoringConflictException(
                 AuthoringConflictCode.StageFingerprintMismatch,
                 $"Grouping partition '{partitionKey}' is not an impacted partition of reconciliation '{runId}'.");
+        }
+    }
+
+    private static async Task
+        EnsurePublicationReconciliationWorkspaceWritableAsync(
+            SqliteConnection connection,
+            SqliteTransaction? transaction,
+            string runId,
+            CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT 1
+            FROM prepared_ticket_publication_reconciliations reconciliation
+            INNER JOIN authoring_runs run
+              ON run.Id = reconciliation.RunId
+            INNER JOIN authoring_mutation_fences mutationFence
+              ON mutationFence.ProcessorKind = run.ProcessorKind
+             AND mutationFence.RunId = run.Id
+            INNER JOIN prepared_ticket_publication_reconciliation_fences
+                reconciliationFence
+              ON reconciliationFence.RunId = run.Id
+            WHERE reconciliation.RunId = @runId
+              AND reconciliation.PromotionState = @staged
+              AND run.Purpose = @purpose
+              AND run.Status IN (@running, @finalizing, @error)
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue(
+            "@staged",
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .Staged);
+        command.Parameters.AddWithValue(
+            "@purpose",
+            PreparedTicketPublicationReconciliationContract.Purpose);
+        command.Parameters.AddWithValue(
+            "@running",
+            AuthoringStatusValues.Runs.Running);
+        command.Parameters.AddWithValue(
+            "@finalizing",
+            AuthoringStatusValues.Runs.Finalizing);
+        command.Parameters.AddWithValue(
+            "@error",
+            AuthoringStatusValues.Runs.Error);
+        if (await command.ExecuteScalarAsync(ct) is null)
+        {
+            throw new InvalidOperationException(
+                $"Reconciliation '{runId}' workspace is no longer writable.");
         }
     }
 
@@ -6192,6 +6266,20 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                   $"Reconciliation '{runId}' has an invalid comparison.");
     }
 
+    public async Task<bool>
+        IsPublicationReconciliationStagingCompleteAsync(
+            string runId,
+            CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        await using SqliteConnection connection = OpenConnection();
+        return await IsPublicationReconciliationStagingCompleteAsync(
+            connection,
+            transaction: null,
+            runId,
+            ct);
+    }
+
     public async Task<PreparedTicketPublicationStagedTicket>
         StagePublicationReconciliationTicketAsync(
             string runId,
@@ -6310,6 +6398,8 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                     """
                     SELECT i.CurrentSourceRevision, r.Status, r.BusinessKey
                     FROM prepared_ticket_publication_reconciliation_items i
+                    INNER JOIN prepared_ticket_publication_reconciliations
+                        reconciliation ON reconciliation.RunId = i.RunId
                     INNER JOIN authoring_run_items r
                         ON r.RunId = i.RunId
                        AND r.Id = @runItemId
@@ -6320,6 +6410,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                     WHERE i.RunId = @runId
                       AND i.TicketKey = @ticketKey COLLATE NOCASE
                       AND i.Disposition = @disposition
+                      AND reconciliation.PromotionState = @staged
                     """;
             validate.Parameters.AddWithValue("@runId", runId);
             validate.Parameters.AddWithValue("@runItemId", runItemId);
@@ -6328,6 +6419,10 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 "@disposition",
                 PreparedTicketPublicationReconciliationDispositionValues
                     .ReAuthor);
+            validate.Parameters.AddWithValue(
+                "@staged",
+                PreparedTicketPublicationReconciliationPromotionStateValues
+                    .Staged);
             await using SqliteDataReader reader =
                 await validate.ExecuteReaderAsync(ct);
             if (!await reader.ReadAsync(ct))
@@ -6508,7 +6603,22 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             """
             INSERT INTO prepared_ticket_publication_grouping_impacts(
                 RunId, PartitionKey, ImpactJson, Complete, UpdatedAt)
-            VALUES(@runId, @partitionKey, @json, @complete, @updatedAt)
+            SELECT @runId, @partitionKey, @json, @complete, @updatedAt
+            WHERE EXISTS(
+                SELECT 1
+                FROM prepared_ticket_publication_reconciliations
+                    reconciliation
+                INNER JOIN authoring_runs run
+                  ON run.Id = reconciliation.RunId
+                INNER JOIN authoring_mutation_fences mutationFence
+                  ON mutationFence.ProcessorKind = run.ProcessorKind
+                 AND mutationFence.RunId = run.Id
+                INNER JOIN
+                    prepared_ticket_publication_reconciliation_fences
+                        reconciliationFence
+                  ON reconciliationFence.RunId = run.Id
+                WHERE reconciliation.RunId = @runId
+                  AND reconciliation.PromotionState = @staged)
             ON CONFLICT(RunId, PartitionKey) DO UPDATE SET
                 ImpactJson = excluded.ImpactJson,
                 Complete = excluded.Complete,
@@ -6520,7 +6630,10 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             ("@partitionKey", impact.PartitionKey),
             ("@json", json),
             ("@complete", impact.Complete),
-            ("@updatedAt", Format(now ?? DateTimeOffset.UtcNow)));
+            ("@updatedAt", Format(now ?? DateTimeOffset.UtcNow)),
+            ("@staged",
+                PreparedTicketPublicationReconciliationPromotionStateValues
+                    .Staged));
         await using SqliteCommand check = connection.CreateCommand();
         check.CommandText =
             """
@@ -7105,6 +7218,11 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 connection.BeginTransaction(deferred: false);
             try
             {
+                await EnsurePublicationReconciliationWorkspaceWritableAsync(
+                    connection,
+                    transaction,
+                    runId,
+                    ct);
                 List<PreparedTicketPublicationReconciliationGroupingImpact>
                     impacts = await ReadGroupingImpactsAsync(
                         connection,
@@ -7314,9 +7432,24 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             INSERT INTO prepared_ticket_publication_staged_grouping(
                 RunId, PartitionKey, ReplacementJson, CorpusFingerprint,
                 OutputFingerprint, ProtectedRowsFingerprint, StagedAt)
-            VALUES(
+            SELECT
                 @runId, @partitionKey, @replacementJson, @corpusFingerprint,
-                @outputFingerprint, @protectedRowsFingerprint, @stagedAt)
+                @outputFingerprint, @protectedRowsFingerprint, @stagedAt
+            WHERE EXISTS(
+                SELECT 1
+                FROM prepared_ticket_publication_reconciliations
+                    reconciliation
+                INNER JOIN authoring_runs run
+                  ON run.Id = reconciliation.RunId
+                INNER JOIN authoring_mutation_fences mutationFence
+                  ON mutationFence.ProcessorKind = run.ProcessorKind
+                 AND mutationFence.RunId = run.Id
+                INNER JOIN
+                    prepared_ticket_publication_reconciliation_fences
+                        reconciliationFence
+                  ON reconciliationFence.RunId = run.Id
+                WHERE reconciliation.RunId = @runId
+                  AND reconciliation.PromotionState = @staged)
             ON CONFLICT(RunId, PartitionKey) DO NOTHING
             """,
             ct,
@@ -7327,7 +7460,10 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             ("@outputFingerprint", replacement.OutputFingerprint),
             ("@protectedRowsFingerprint",
                 replacement.ProtectedRowsFingerprint),
-            ("@stagedAt", Format(replacement.StagedAt)));
+            ("@stagedAt", Format(replacement.StagedAt)),
+            ("@staged",
+                PreparedTicketPublicationReconciliationPromotionStateValues
+                    .Staged));
         await using SqliteCommand check = connection.CreateCommand();
         check.CommandText =
             """
@@ -8076,12 +8212,20 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 $"Unknown reconciliation journal state '{journal.State}'.",
                 nameof(journal));
         }
+        if (journal.State ==
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .Cancelled)
+        {
+            throw new ArgumentException(
+                "Use the dedicated reconciliation cancellation transaction.",
+                nameof(journal));
+        }
         await using SqliteConnection connection = OpenConnection();
         await using SqliteTransaction transaction =
             connection.BeginTransaction(deferred: false);
         try
         {
-            await ExecuteInTransactionAsync(
+            int journalUpdated = await ExecuteInTransactionAsync(
                 connection,
                 transaction,
                 """
@@ -8092,7 +8236,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                     FailureCode = @failureCode,
                     FailureDetail = @failureDetail,
                     UpdatedAt = @updatedAt
-                WHERE RunId = @runId
+                WHERE RunId = @runId AND State <> @cancelled
                 """,
                 ct,
                 ("@state", journal.State),
@@ -8103,18 +8247,29 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 ("@failureCode", journal.FailureCode),
                 ("@failureDetail", journal.FailureDetail),
                 ("@updatedAt", Format(journal.UpdatedAt)),
-                ("@runId", journal.RunId));
-            await ExecuteInTransactionAsync(
+                ("@runId", journal.RunId),
+                ("@cancelled",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .Cancelled));
+            int reconciliationUpdated = await ExecuteInTransactionAsync(
                 connection,
                 transaction,
                 """
                 UPDATE prepared_ticket_publication_reconciliations
                 SET PromotionState = @state
-                WHERE RunId = @runId
+                WHERE RunId = @runId AND PromotionState <> @cancelled
                 """,
                 ct,
                 ("@state", journal.State),
-                ("@runId", journal.RunId));
+                ("@runId", journal.RunId),
+                ("@cancelled",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .Cancelled));
+            if (journalUpdated != 1 || reconciliationUpdated != 1)
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{journal.RunId}' journal is no longer mutable.");
+            }
             await transaction.CommitAsync(ct);
         }
         catch
@@ -8652,6 +8807,105 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         }
     }
 
+    private static async Task<bool>
+        IsPublicationReconciliationStagingCompleteAsync(
+            SqliteConnection connection,
+            SqliteTransaction? transaction,
+            string runId,
+            CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM prepared_ticket_publication_reconciliations
+                    reconciliation
+                INNER JOIN authoring_runs run
+                    ON run.Id = reconciliation.RunId
+                WHERE reconciliation.RunId = @runId
+                  AND run.Purpose = @purpose
+                  AND NOT EXISTS(
+                      SELECT 1
+                      FROM authoring_run_items item
+                      WHERE item.RunId = run.Id
+                        AND item.Status <> @complete)
+                  AND NOT EXISTS(
+                      SELECT 1
+                      FROM prepared_ticket_publication_reconciliation_items
+                          decision
+                      WHERE decision.RunId = run.Id
+                        AND decision.Disposition = @reAuthor
+                        AND NOT EXISTS(
+                            SELECT 1
+                            FROM authoring_run_items item
+                            INNER JOIN
+                                prepared_ticket_publication_staged_graphs graph
+                              ON graph.RunId = item.RunId
+                             AND graph.TicketKey =
+                                 item.BusinessKey COLLATE NOCASE
+                             AND graph.RunItemId = item.Id
+                            INNER JOIN
+                                prepared_ticket_publication_staged_hydration
+                                    hydration
+                              ON hydration.RunId = graph.RunId
+                             AND hydration.TicketKey =
+                                 graph.TicketKey COLLATE NOCASE
+                            INNER JOIN
+                                prepared_ticket_publication_staged_receipts
+                                    stagedReceipt
+                              ON stagedReceipt.RunId = graph.RunId
+                             AND stagedReceipt.TicketKey =
+                                 graph.TicketKey COLLATE NOCASE
+                             AND stagedReceipt.RunItemId = item.Id
+                             AND stagedReceipt.OperationId =
+                                 graph.OperationId
+                             AND stagedReceipt.AuthoredFingerprint =
+                                 graph.AuthoredFingerprint
+                            INNER JOIN authoring_result_receipts receipt
+                              ON receipt.Id = stagedReceipt.ReceiptId
+                             AND receipt.RunId = item.RunId
+                             AND receipt.RunItemId = item.Id
+                             AND receipt.OperationId = graph.OperationId
+                             AND receipt.BusinessKey =
+                                 item.BusinessKey COLLATE NOCASE
+                             AND receipt.ContentHash =
+                                 graph.AuthoredFingerprint
+                             AND receipt.ExpectedSourceRevision =
+                                 item.ExpectedSourceRevision
+                             AND receipt.ObservedSourceRevision =
+                                 graph.SourceRevision
+                            WHERE item.RunId = decision.RunId
+                              AND item.BusinessKey =
+                                  decision.TicketKey COLLATE NOCASE
+                              AND item.ItemKind = decision.ItemKind
+                              AND item.ExpectedSourceRevision =
+                                  decision.ExpectedSourceRevision
+                              AND item.Status = @complete
+                              AND item.AcceptedReceiptId =
+                                  stagedReceipt.ReceiptId
+                              AND graph.SourceRevision =
+                                  decision.CurrentSourceRevision
+                              AND length(hydration.HydrationFingerprint) > 0
+                              AND length(hydration.HydrationJson) > 0)))
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue(
+            "@purpose",
+            PreparedTicketPublicationReconciliationContract.Purpose);
+        command.Parameters.AddWithValue(
+            "@complete",
+            AuthoringStatusValues.Items.Complete);
+        command.Parameters.AddWithValue(
+            "@reAuthor",
+            PreparedTicketPublicationReconciliationDispositionValues
+                .ReAuthor);
+        return Convert.ToBoolean(
+            await command.ExecuteScalarAsync(ct),
+            CultureInfo.InvariantCulture);
+    }
+
     private static async Task
         EnsurePublicationSnapshotReservationPreconditionsAsync(
             SqliteConnection connection,
@@ -8677,7 +8931,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
               AND NOT EXISTS(
                   SELECT 1 FROM authoring_run_items item
                   WHERE item.RunId = run.Id
-                    AND item.Status NOT IN (@complete, @superseded))
+                    AND item.Status <> @complete)
               AND NOT EXISTS(
                   SELECT 1 FROM authoring_run_stages stage
                   WHERE stage.RunId = run.Id
@@ -8708,12 +8962,14 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         command.Parameters.AddWithValue(
             "@complete",
             AuthoringStatusValues.Items.Complete);
-        command.Parameters.AddWithValue(
-            "@superseded",
-            AuthoringStatusValues.Items.Superseded);
         if (Convert.ToInt32(
                 await command.ExecuteScalarAsync(ct),
-                CultureInfo.InvariantCulture) != 1)
+                CultureInfo.InvariantCulture) != 1 ||
+            !await IsPublicationReconciliationStagingCompleteAsync(
+                connection,
+                transaction,
+                runId,
+                ct))
         {
             throw new InvalidOperationException(
                 $"Reconciliation '{runId}' is incomplete or lost its mutation fence before snapshot reservation.");
@@ -8997,7 +9253,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
               AND NOT EXISTS(
                   SELECT 1 FROM authoring_run_items item
                   WHERE item.RunId = run.Id
-                    AND item.Status NOT IN (@complete, @superseded))
+                    AND item.Status <> @complete)
               AND EXISTS(
                   SELECT 1 FROM authoring_mutation_fences fence
                   WHERE fence.ProcessorKind = run.ProcessorKind
@@ -9017,12 +9273,14 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         command.Parameters.AddWithValue(
             "@complete",
             AuthoringStatusValues.Items.Complete);
-        command.Parameters.AddWithValue(
-            "@superseded",
-            AuthoringStatusValues.Items.Superseded);
         if (Convert.ToInt32(
                 await command.ExecuteScalarAsync(ct),
-                CultureInfo.InvariantCulture) != 1)
+                CultureInfo.InvariantCulture) != 1 ||
+            !await IsPublicationReconciliationStagingCompleteAsync(
+                connection,
+                transaction,
+                runId,
+                ct))
         {
             throw new InvalidOperationException(
                 $"Reconciliation '{runId}' is incomplete or lost its mutation fence.");
@@ -9063,6 +9321,394 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 $"Reconciliation '{runId}' does not have a current publication proof.");
         }
         return proof;
+    }
+
+    public async Task<(DateTimeOffset CancelledAt, string Reason)>
+        CancelPublicationReconciliationAsync(
+            string runId,
+            string reason,
+            DateTimeOffset? now = null,
+            CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        string normalizedReason = reason.Trim();
+        DateTimeOffset cancelledAt = now ?? DateTimeOffset.UtcNow;
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteTransaction transaction =
+            connection.BeginTransaction(deferred: false);
+        try
+        {
+            string promotionState;
+            string runStatus;
+            string? journalState;
+            string? journalDescriptor;
+            DateTimeOffset? existingCancelledAt;
+            string? existingReason;
+            bool hasTrustedCandidate;
+            bool hasCanonicalReplacement;
+            await using (SqliteCommand state = connection.CreateCommand())
+            {
+                state.Transaction = transaction;
+                state.CommandText =
+                    """
+                    SELECT reconciliation.PromotionState,
+                           run.Status,
+                           journal.State,
+                           journal.SnapshotDescriptorJson,
+                           reconciliation.CancelledAt,
+                           reconciliation.CancellationReason,
+                           EXISTS(
+                               SELECT 1
+                               FROM prepared_ticket_publication_snapshot_descriptors
+                               WHERE RunId = reconciliation.RunId),
+                           EXISTS(
+                               SELECT 1
+                               FROM authoring_review_snapshots
+                               WHERE RunId = reconciliation.RunId)
+                           OR EXISTS(
+                               SELECT 1
+                               FROM prepared_ticket_authoring_state
+                               WHERE RunId = reconciliation.RunId)
+                    FROM prepared_ticket_publication_reconciliations
+                        reconciliation
+                    INNER JOIN authoring_runs run
+                      ON run.Id = reconciliation.RunId
+                    LEFT JOIN
+                        prepared_ticket_publication_reconciliation_journal
+                            journal
+                      ON journal.RunId = reconciliation.RunId
+                    WHERE reconciliation.RunId = @runId
+                    """;
+                state.Parameters.AddWithValue("@runId", runId);
+                await using SqliteDataReader reader =
+                    await state.ExecuteReaderAsync(ct);
+                if (!await reader.ReadAsync(ct))
+                {
+                    throw new KeyNotFoundException(
+                        $"Publication reconciliation '{runId}' was not found.");
+                }
+                promotionState = reader.GetString(0);
+                runStatus = reader.GetString(1);
+                journalState = reader.IsDBNull(2)
+                    ? null
+                    : reader.GetString(2);
+                journalDescriptor = reader.IsDBNull(3)
+                    ? null
+                    : reader.GetString(3);
+                existingCancelledAt = reader.IsDBNull(4)
+                    ? null
+                    : reader.GetDateTimeOffset(4);
+                existingReason = reader.IsDBNull(5)
+                    ? null
+                    : reader.GetString(5);
+                hasTrustedCandidate = reader.GetBoolean(6);
+                hasCanonicalReplacement = reader.GetBoolean(7);
+            }
+
+            if (promotionState ==
+                PreparedTicketPublicationReconciliationPromotionStateValues
+                    .Cancelled)
+            {
+                if (existingCancelledAt is null ||
+                    string.IsNullOrWhiteSpace(existingReason))
+                {
+                    throw new InvalidOperationException(
+                        $"Cancelled reconciliation '{runId}' has no cancellation audit.");
+                }
+                await transaction.CommitAsync(ct);
+                return (existingCancelledAt.Value, existingReason);
+            }
+
+            bool activeRun = runStatus is
+                AuthoringStatusValues.Runs.Queued or
+                AuthoringStatusValues.Runs.Running or
+                AuthoringStatusValues.Runs.Finalizing or
+                AuthoringStatusValues.Runs.Error;
+            if (promotionState !=
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .Staged ||
+                journalState is not null &&
+                journalState !=
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .Staged ||
+                hasTrustedCandidate ||
+                hasCanonicalReplacement ||
+                !activeRun)
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{runId}' can only be cancelled while staged, before trusted candidate or canonical promotion.");
+            }
+
+            int reconciliationUpdated = await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                UPDATE prepared_ticket_publication_reconciliations
+                SET PromotionState = @cancelled,
+                    CancelledAt = @cancelledAt,
+                    CancellationReason = @reason
+                WHERE RunId = @runId
+                  AND PromotionState = @staged
+                  AND NOT EXISTS(
+                      SELECT 1
+                      FROM prepared_ticket_publication_snapshot_descriptors
+                      WHERE RunId = @runId)
+                  AND NOT EXISTS(
+                      SELECT 1
+                      FROM authoring_review_snapshots
+                      WHERE RunId = @runId)
+                  AND NOT EXISTS(
+                      SELECT 1
+                      FROM prepared_ticket_authoring_state
+                      WHERE RunId = @runId)
+                """,
+                ct,
+                ("@cancelled",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .Cancelled),
+                ("@cancelledAt", Format(cancelledAt)),
+                ("@reason", normalizedReason),
+                ("@runId", runId),
+                ("@staged",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .Staged));
+            if (reconciliationUpdated != 1)
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{runId}' changed before cancellation.");
+            }
+            string? disposableTemporaryPath =
+                ReadDisposableReconciliationTemporaryPath(
+                    runId,
+                    journalDescriptor);
+
+            int journalUpdated = await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                INSERT INTO prepared_ticket_publication_reconciliation_journal(
+                    RunId, State, SnapshotDescriptorJson,
+                    LastRecoveryAttemptAt, FailureCode, FailureDetail,
+                    UpdatedAt)
+                VALUES(
+                    @runId, @cancelled, NULL, NULL, NULL, @reason,
+                    @cancelledAt)
+                ON CONFLICT(RunId) DO UPDATE SET
+                    State = excluded.State,
+                    SnapshotDescriptorJson = NULL,
+                    LastRecoveryAttemptAt = NULL,
+                    FailureCode = NULL,
+                    FailureDetail = excluded.FailureDetail,
+                    UpdatedAt = excluded.UpdatedAt
+                WHERE prepared_ticket_publication_reconciliation_journal.State
+                    = @staged
+                """,
+                ct,
+                ("@runId", runId),
+                ("@cancelled",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .Cancelled),
+                ("@reason", normalizedReason),
+                ("@cancelledAt", Format(cancelledAt)),
+                ("@staged",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .Staged));
+            if (journalUpdated != 1)
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{runId}' promotion journal changed before cancellation.");
+            }
+
+            string cancellationError =
+                $"cancelled: {normalizedReason}";
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                UPDATE authoring_run_attempts
+                SET Status = @superseded,
+                    CompletedAt = COALESCE(CompletedAt, @cancelledAt),
+                    Error = COALESCE(Error, @error)
+                WHERE RunId = @runId AND Status = @active
+                """,
+                ct,
+                ("@superseded", AuthoringStatusValues.Attempts.Superseded),
+                ("@cancelledAt", Format(cancelledAt)),
+                ("@error", cancellationError),
+                ("@runId", runId),
+                ("@active", AuthoringStatusValues.Attempts.Active));
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                UPDATE authoring_run_items
+                SET Status = @superseded,
+                    CompletedAt = COALESCE(CompletedAt, @cancelledAt),
+                    PostPersistenceLeaseId = NULL,
+                    PostPersistenceLeaseAcquiredAt = NULL,
+                    Error = CASE
+                        WHEN Status = @complete THEN Error
+                        ELSE @error
+                    END
+                WHERE RunId = @runId
+                """,
+                ct,
+                ("@complete", AuthoringStatusValues.Items.Complete),
+                ("@superseded", AuthoringStatusValues.Items.Superseded),
+                ("@cancelledAt", Format(cancelledAt)),
+                ("@error", cancellationError),
+                ("@runId", runId));
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                UPDATE authoring_run_stages
+                SET Status = @errorStatus,
+                    CompletedAt = COALESCE(CompletedAt, @cancelledAt),
+                    LeaseId = NULL,
+                    LeaseAcquiredAt = NULL,
+                    Error = @error
+                WHERE RunId = @runId AND Status <> @complete
+                """,
+                ct,
+                ("@errorStatus", AuthoringStatusValues.Stages.Error),
+                ("@cancelledAt", Format(cancelledAt)),
+                ("@error", cancellationError),
+                ("@runId", runId),
+                ("@complete", AuthoringStatusValues.Stages.Complete));
+
+            foreach (string table in new[]
+            {
+                "prepared_ticket_publication_staged_graphs",
+                "prepared_ticket_publication_staged_hydration",
+                "prepared_ticket_publication_staged_receipts",
+                "prepared_ticket_publication_grouping_impacts",
+                "prepared_ticket_publication_staged_grouping",
+                "prepared_ticket_publication_grouping_stage_receipts",
+                "prepared_ticket_publication_unaffected_fingerprints",
+                "prepared_ticket_publication_reconciliation_proofs",
+            })
+            {
+                await ExecuteInTransactionAsync(
+                    connection,
+                    transaction,
+                    $"DELETE FROM {table} WHERE RunId = @runId",
+                    ct,
+                    ("@runId", runId));
+            }
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                DELETE FROM prepared_ticket_publication_reconciliation_fences
+                WHERE RunId = @runId
+                """,
+                ct,
+                ("@runId", runId));
+            await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                DELETE FROM authoring_mutation_fences
+                WHERE ProcessorKind = @processorKind AND RunId = @runId
+                """,
+                ct,
+                ("@processorKind", AuthoringProcessorKind),
+                ("@runId", runId));
+
+            int runUpdated = await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                UPDATE authoring_runs
+                SET Status = @superseded,
+                    CompletedAt = @cancelledAt,
+                    Error = @error
+                WHERE Id = @runId AND Status = @expectedStatus
+                """,
+                ct,
+                ("@superseded", AuthoringStatusValues.Runs.Superseded),
+                ("@cancelledAt", Format(cancelledAt)),
+                ("@error", cancellationError),
+                ("@runId", runId),
+                ("@expectedStatus", runStatus));
+            if (runUpdated != 1)
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{runId}' authoring run changed before cancellation.");
+            }
+            if (disposableTemporaryPath is not null &&
+                File.Exists(disposableTemporaryPath))
+            {
+                try
+                {
+                    File.Delete(disposableTemporaryPath);
+                }
+                catch (Exception ex) when (
+                    ex is IOException or UnauthorizedAccessException)
+                {
+                    throw new InvalidOperationException(
+                        $"Reconciliation '{runId}' provisional candidate could not be deleted.",
+                        ex);
+                }
+            }
+
+            await transaction.CommitAsync(ct);
+            return (cancelledAt, normalizedReason);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
+    private static string? ReadDisposableReconciliationTemporaryPath(
+        string runId,
+        string? journalDescriptor)
+    {
+        if (journalDescriptor is null)
+        {
+            return null;
+        }
+        PublicationReconciliationSnapshotReservation reservation;
+        try
+        {
+            reservation = JsonSerializer.Deserialize<
+                PublicationReconciliationSnapshotReservation>(
+                    journalDescriptor)
+                ?? throw new InvalidOperationException(
+                    $"Reconciliation '{runId}' has an empty staged snapshot reservation.");
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException(
+                $"Reconciliation '{runId}' has an invalid staged snapshot reservation.",
+                ex);
+        }
+        if (!string.Equals(
+                reservation.ReservationKind,
+                PublicationReconciliationSnapshotReservationKind,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                reservation.RunId,
+                runId,
+                StringComparison.Ordinal) ||
+            reservation.Candidate is not null ||
+            !Path.IsPathFullyQualified(reservation.TemporaryPath) ||
+            !Path.IsPathFullyQualified(reservation.FinalPath) ||
+            !Path.GetFileName(reservation.TemporaryPath).EndsWith(
+                $"{runId}.reconciliation.tmp",
+                StringComparison.Ordinal) ||
+            PathsEqual(
+                reservation.TemporaryPath,
+                reservation.FinalPath))
+        {
+            throw new InvalidOperationException(
+                $"Reconciliation '{runId}' has conflicting staged snapshot reservation evidence.");
+        }
+        return Path.GetFullPath(reservation.TemporaryPath);
     }
 
     public async Task CleanupPublicationReconciliationWorkspaceAsync(
@@ -9108,7 +9754,10 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             if (!abandoned &&
                 promotionState !=
                     PreparedTicketPublicationReconciliationPromotionStateValues
-                        .Ready)
+                        .Ready &&
+                promotionState !=
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .Cancelled)
             {
                 throw new InvalidOperationException(
                     $"Reconciliation '{runId}' workspace is still required.");
@@ -9621,13 +10270,31 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             """
             INSERT INTO prepared_ticket_publication_unaffected_fingerprints(
                 RunId, FingerprintJson, CapturedAt)
-            VALUES(@runId, @json, @capturedAt)
+            SELECT @runId, @json, @capturedAt
+            WHERE EXISTS(
+                SELECT 1
+                FROM prepared_ticket_publication_reconciliations
+                    reconciliation
+                INNER JOIN authoring_runs run
+                  ON run.Id = reconciliation.RunId
+                INNER JOIN authoring_mutation_fences mutationFence
+                  ON mutationFence.ProcessorKind = run.ProcessorKind
+                 AND mutationFence.RunId = run.Id
+                INNER JOIN
+                    prepared_ticket_publication_reconciliation_fences
+                        reconciliationFence
+                  ON reconciliationFence.RunId = run.Id
+                WHERE reconciliation.RunId = @runId
+                  AND reconciliation.PromotionState = @staged)
             ON CONFLICT(RunId) DO NOTHING
             """,
             ct,
             ("@runId", fingerprint.RunId),
             ("@json", json),
-            ("@capturedAt", Format(fingerprint.CapturedAt)));
+            ("@capturedAt", Format(fingerprint.CapturedAt)),
+            ("@staged",
+                PreparedTicketPublicationReconciliationPromotionStateValues
+                    .Staged));
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText =
             """

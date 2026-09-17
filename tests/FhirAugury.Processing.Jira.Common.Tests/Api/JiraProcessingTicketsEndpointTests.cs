@@ -398,6 +398,87 @@ public class JiraProcessingTicketsEndpointTests
     }
 
     [Fact]
+    public async Task ReconciliationGenericSupersede_ReturnsStableDedicatedConflict()
+    {
+        using HttpClient client = CreateClientForMode(
+            new FakeDiscovery(CreateTicket("FHIR-1", "Triaged")),
+            AuthoringStatusValues.ProcessorModes.RunBacked,
+            out JiraProcessingSourceTicketStore sourceStore,
+            out AuthoringRunStore authoringStore,
+            out JiraAuthoringRunCoordinator coordinator,
+            out string dbPath);
+        await sourceStore.UpsertAsync(
+            CreateTicket("FHIR-1", "Triaged"),
+            "fhir",
+            false,
+            CancellationToken.None);
+        JiraAuthoringRunCreation creation =
+            Assert.IsType<JiraAuthoringRunCreation>(
+                await coordinator.CreateScheduledRunAsync());
+        Assert.True(await authoringStore.TryAcquireMutationFenceAsync(
+            coordinator.ProcessorKind,
+            creation.Run.Id));
+        AuthoringRunItemRecord item = Assert.Single(creation.Items);
+        AuthoringOperationClaim claim = Assert.IsType<AuthoringOperationClaim>(
+            await authoringStore.ClaimItemAsync(creation.Run.Id, item.Id));
+        await authoringStore.MarkClaimErrorAsync(
+            item.Id,
+            claim.OperationId,
+            "local source lag");
+        await using (SqliteConnection connection =
+                     new($"Data Source={dbPath};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                UPDATE authoring_runs
+                SET Purpose = @purpose
+                WHERE Id = @runId
+                """;
+            command.Parameters.AddWithValue(
+                "@purpose",
+                AuthoringRunPurposeValues.PublicationReconciliation);
+            command.Parameters.AddWithValue("@runId", creation.Run.Id);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        JiraAuthoringRunResponse before =
+            Assert.IsType<JiraAuthoringRunResponse>(
+                await client.GetFromJsonAsync<JiraAuthoringRunResponse>(
+                    $"/processing/authoring/runs/{creation.Run.Id}"));
+        Assert.False(
+            Assert.Single(before.Items).AllowedActions!.CanSupersede);
+
+        HttpResponseMessage blankReason = await client.PostAsJsonAsync(
+            $"/processing/authoring/runs/{creation.Run.Id}/items/{item.Id}/supersede",
+            new AuthoringItemSupersedeRequest(" "));
+        Assert.Equal(HttpStatusCode.Conflict, blankReason.StatusCode);
+        Assert.Equal(
+            "reconciliation-cancel-required",
+            Assert.IsType<AuthoringConflictResponse>(
+                await blankReason.Content
+                    .ReadFromJsonAsync<AuthoringConflictResponse>())
+            .Error);
+
+        HttpResponseMessage response = await client.PostAsJsonAsync(
+            $"/processing/authoring/runs/{creation.Run.Id}/items/{item.Id}/supersede",
+            new AuthoringItemSupersedeRequest("source changed"));
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        AuthoringConflictResponse failure =
+            Assert.IsType<AuthoringConflictResponse>(
+                await response.Content
+                    .ReadFromJsonAsync<AuthoringConflictResponse>());
+        Assert.Equal("reconciliation-cancel-required", failure.Error);
+        Assert.Equal(
+            AuthoringStatusValues.Items.Error,
+            Assert.Single(
+                await authoringStore.GetRunItemsAsync(
+                    creation.Run.Id)).Status);
+    }
+
+    [Fact]
     public async Task ReadySnapshotBytesAreStreamedFromProcessorOwnedRecord()
     {
         using HttpClient client = CreateClientForMode(

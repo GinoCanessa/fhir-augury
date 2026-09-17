@@ -196,7 +196,8 @@ public sealed record TicketPublicationReconciliationResult(
     string RunId,
     PublicationReconciliationStatusResult? Status = null,
     IReadOnlyList<string>? RelatedRunIds = null,
-    string? Message = null)
+    string? Message = null,
+    string? FailureCode = null)
 {
     public IReadOnlyList<string> ConflictingRunIds =>
         RelatedRunIds ?? [];

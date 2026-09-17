@@ -469,7 +469,38 @@ public sealed class TicketOperationsService : IDisposable
             string runId,
             CancellationToken ct = default) =>
         MutatePublicationReconciliationAsync(
-            workflow, runId, reason: null, abandon: false, ct);
+            workflow,
+            runId,
+            reason: null,
+            ReconciliationMutation.Retry,
+            ct);
+
+    public Task<TicketPublicationReconciliationResult>
+        CancelPublicationReconciliationAsync(
+            string workflow,
+            string runId,
+            string reason,
+            CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            TicketWorkflowDefinition definition = _catalog.Get(workflow);
+            return Task.FromResult(new TicketPublicationReconciliationResult(
+                TicketOperationDisposition.InvalidInput,
+                definition,
+                runId,
+                Message: "A cancellation reason is required.",
+                FailureCode:
+                    PreparedTicketPublicationReconciliationFailureCodes
+                        .CancellationNotAllowed));
+        }
+        return MutatePublicationReconciliationAsync(
+            workflow,
+            runId,
+            reason.Trim(),
+            ReconciliationMutation.Cancel,
+            ct);
+    }
 
     public Task<TicketPublicationReconciliationResult>
         AbandonPublicationReconciliationAsync(
@@ -488,7 +519,11 @@ public sealed class TicketOperationsService : IDisposable
                 Message: "An abandonment reason is required."));
         }
         return MutatePublicationReconciliationAsync(
-            workflow, runId, reason.Trim(), abandon: true, ct);
+            workflow,
+            runId,
+            reason.Trim(),
+            ReconciliationMutation.Abandon,
+            ct);
     }
 
     private async Task<TicketPublicationReconciliationResult>
@@ -496,7 +531,7 @@ public sealed class TicketOperationsService : IDisposable
             string workflow,
             string runId,
             string? reason,
-            bool abandon,
+            ReconciliationMutation mutation,
             CancellationToken ct)
     {
         ThrowIfDisposed();
@@ -522,11 +557,46 @@ public sealed class TicketOperationsService : IDisposable
 
         try
         {
+            if (mutation == ReconciliationMutation.Cancel)
+            {
+                PublicationReconciliationStatusResult current =
+                    await _authoringClient.GetPublicationReconciliationAsync(
+                        definition.ProcessingServiceName,
+                        runId,
+                        ct);
+                if (!string.Equals(
+                        current.Promotion.State,
+                        PreparedTicketPublicationReconciliationPromotionStateValues
+                            .Staged,
+                        StringComparison.Ordinal))
+                {
+                    return new(
+                        TicketOperationDisposition.NotAllowed,
+                        definition,
+                        runId,
+                        current,
+                        Message:
+                            "Cancellation is available only while reconciliation is staged before trusted or canonical promotion.",
+                        FailureCode:
+                            PreparedTicketPublicationReconciliationFailureCodes
+                                .CancellationNotAllowed);
+                }
+            }
+
             PublicationReconciliationStatusResult status;
-            if (abandon)
+            if (mutation == ReconciliationMutation.Abandon)
             {
                 status = (await _authoringClient
                     .AbandonPublicationReconciliationAsync(
+                        definition.ProcessingServiceName,
+                        runId,
+                        reason!,
+                        ct)).Status;
+            }
+            else if (mutation == ReconciliationMutation.Cancel)
+            {
+                status = (await _authoringClient
+                    .CancelPublicationReconciliationAsync(
                         definition.ProcessingServiceName,
                         runId,
                         reason!,
@@ -545,9 +615,14 @@ public sealed class TicketOperationsService : IDisposable
                 definition,
                 runId,
                 status,
-                Message: abandon
-                    ? "Reconciliation was abandoned without a replacement publication."
-                    : "Reconciliation recovery was retried.");
+                Message: mutation switch
+                {
+                    ReconciliationMutation.Cancel =>
+                        "Staged reconciliation was cancelled before promotion.",
+                    ReconciliationMutation.Abandon =>
+                        "Reconciliation was abandoned without a replacement publication.",
+                    _ => "Reconciliation recovery was retried.",
+                });
         }
         catch (AuthoringControlException ex)
             when (ex.StatusCode == HttpStatusCode.Conflict)
@@ -557,7 +632,8 @@ public sealed class TicketOperationsService : IDisposable
                 definition,
                 runId,
                 RelatedRunIds: ex.RelatedRunIds,
-                Message: ex.Detail ?? ex.Message);
+                Message: ex.Detail ?? ex.Message,
+                FailureCode: ex.ErrorCode);
         }
         catch (Exception ex) when (IsOperationFailure(ex))
         {
@@ -580,6 +656,13 @@ public sealed class TicketOperationsService : IDisposable
             definition.ProcessingServiceName,
             "Preparer",
             StringComparison.Ordinal);
+
+    private enum ReconciliationMutation
+    {
+        Retry,
+        Cancel,
+        Abandon,
+    }
 
     private static bool IsOperationFailure(Exception ex) =>
         ex is AuthoringControlException or
@@ -1083,7 +1166,11 @@ public sealed class TicketOperationsService : IDisposable
                         StringComparison.Ordinal));
             bool allowed = supersessionReason is null
                 ? item?.AllowedActions?.CanRetryNow == true
-                : item?.AllowedActions?.CanSupersede == true;
+                : !string.Equals(
+                    latest.Run.Purpose,
+                    PreparedTicketPublicationReconciliationContract.Purpose,
+                    StringComparison.Ordinal) &&
+                  item?.AllowedActions?.CanSupersede == true;
             if (!allowed)
             {
                 return new TicketItemMutationResult(
@@ -1094,6 +1181,13 @@ public sealed class TicketOperationsService : IDisposable
                     latest,
                     item is null
                         ? "The item is not present in the latest run status."
+                        : supersessionReason is not null &&
+                          string.Equals(
+                              latest.Run.Purpose,
+                              PreparedTicketPublicationReconciliationContract
+                                  .Purpose,
+                              StringComparison.Ordinal)
+                            ? "Publication reconciliation items cannot be superseded; cancel the staged reconciliation instead."
                         : "The processor does not currently allow this action.");
             }
 

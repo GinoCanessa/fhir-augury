@@ -346,6 +346,7 @@ The Orchestrator exposes configured processors under
 | `POST` | `/api/v1/processing-services/{name}/authoring/runs/{sourceRunId}/publication-reconciliation` | Start changed-ticket Discussion publication reconciliation (Preparer only) |
 | `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation` | Read the frozen comparison, grouping impact, invalidation, and promotion state (Preparer only) |
 | `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation/retry` | Retry a pending immutable snapshot publication (Preparer only) |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation/cancel` | Cancel staged reconciliation before trusted or canonical promotion, with an audited reason (Preparer only) |
 | `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation/abandon` | Audit post-promotion abandonment without publication (Preparer only) |
 | `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}` | Get run and item status |
 | `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible current error item |
@@ -366,6 +367,11 @@ Receipt lookup and authenticated worker result submission are direct
 processor endpoints; the Orchestrator does not proxy them.
 
 The supersede request body is `{"reason":"<non-empty operator reason>"}`.
+Publication-reconciliation items never advertise generic supersession.
+Attempting that item endpoint returns `409` with exact
+`error:"reconciliation-cancel-required"`, even before a receipt is accepted;
+use the dedicated run-level cancellation route while promotion is still
+`staged`.
 The Orchestrator forwards the request and preserves the processor's response
 body, content type, status code, and `Retry-After`; it does not interpret the
 reason, attempt count, receipt state, or processor-owned lifecycle.
@@ -410,8 +416,9 @@ Items retain the legacy `error` field and append `currentError`,
 `supersessionReason`, and processor-computed `allowedActions`.
 `allowedActions.canRetryNow` is true only for an eligible `error` in the
 currently fenced run with an accepted receipt to resume or authoring attempts
-remaining. `allowedActions.canSupersede` additionally requires no accepted
-receipt. These capabilities are display hints: retry and supersede recheck the
+remaining. `allowedActions.canSupersede` additionally requires no accepted receipt and is
+always false for a publication-reconciliation item. These capabilities are
+display hints: retry and supersede recheck the
 fence, receipt, state, and budget atomically and may still return `409`.
 
 For Preparer and Planner, create/retry/supersede conflicts preserve the stable
@@ -539,8 +546,9 @@ new-recipe runs before a binary downgrade. These contracts do not authorize
 live repair or establish recovery of a particular historical publication.
 
 Outer-control clients do not replay start, retry, supersede,
-publication-refresh, or publication-reconciliation mutations after transport
-loss because the processor may have committed the mutation. For an unknown
+publication-refresh, or publication-reconciliation start/retry/cancel/abandon
+mutations after transport loss because the processor may have committed the
+mutation. For an unknown
 refresh outcome, issue one bounded read-only
 `GET /api/v1/processing-services/Preparer/authoring/runs?limit=20` and inspect
 runs created since submission whose `purpose` is `publication-refresh` and
@@ -593,7 +601,7 @@ status endpoint for the new run:
     }
   ],
   "comparison": {
-    "contractVersion": 1,
+    "contractVersion": 2,
     "sourceRunId": "<sourceRunId>",
     "sourceSnapshotId": "<sourceSnapshotId>",
     "sourceSnapshotSha256": "<sha256>",
@@ -610,7 +618,9 @@ status endpoint for the new run:
         "baselineRunItemId": "<itemId>",
         "baselineContributingRunId": "<runId>",
         "baselineAuthoredFingerprint": "<sha256>",
-        "baselineGroupingFingerprint": "<sha256>"
+        "baselineGroupingFingerprint": "<sha256>",
+        "itemKind": "fhir",
+        "expectedSourceRevision": "<revision>"
       }
     ]
   },
@@ -643,9 +653,10 @@ returns `200 OK` with `run`, `items`, `comparison`, `counts`,
 `groupingImpacts`, `promotion`, `invalidatedTicketKeys`, nullable
 `publicationProof`, and nullable `failureCode`/`failureDetail`.
 `promotion` contains `state`, nullable `journalState`, `mutationFenceHeld`,
-`lastRecoveryAttemptAt`, recovery failure fields, and abandonment audit
-fields. The proof is present only for the verified replacement and has exact
-purpose `publication-reconciliation`.
+`lastRecoveryAttemptAt`, recovery failure fields, cancellation
+`cancelledAt`/`cancellationReason`, and abandonment audit fields. The proof is
+present only for the verified replacement and has exact purpose
+`publication-reconciliation`.
 
 Promotion uses database-first ordering. The temporary snapshot is
 materialized and verified while state is `staged`. One immediate SQLite
@@ -658,7 +669,7 @@ the filesystem.
 
 | Promotion/evidence state | Recovery behavior |
 |--------------------------|-------------------|
-| `staged` | Canonical output is unchanged. Missing graph/group staging is `staging-mismatch`/`grouping-impact-mismatch`; abandonment is refused. Normal finalization can rematerialize/resume. |
+| `staged` | Canonical output is unchanged. Every `re-author` item must be `complete` with matching graph, hydration, accepted receipt, run-item, operation, revision, and fingerprint coordinates. A `superseded` item never satisfies this check. Missing graph/group staging is `staging-mismatch`/`grouping-impact-mismatch`. Dedicated cancellation is available until trusted candidate persistence. |
 | Pending, final absent, temporary valid | Add/verify snapshot provenance, validate the candidate, and move it once to the immutable final path. |
 | Pending, final matching | Reuse and validate it; never reapply canonical replacement. This covers interruption immediately after the move. |
 | Pending, final conflicting/corrupt | Stop with `promotion-recovery-failure`, never overwrite the file, and keep the fence. |
@@ -668,6 +679,7 @@ the filesystem.
 | Run complete, journal still pending | Mark the reconciliation `ready`, release the fence, and clean staging. |
 | `ready` | Final snapshot, run, and journal agree; staging is no longer required. Recovery is idempotent. |
 | `canonical-unpublished` | Explicit terminal abandonment; it is not recoverable through the pending retry route and is not a successful publication. |
+| `cancelled` | Terminal pre-promotion cancellation. Canonical output and the prior publication are unchanged; both fences and disposable workspace are released. |
 
 Startup recovery automatically scans pending journals. The explicit equivalent
 is bodyless and returns `{ "status": { /* full reconciliation status */ },
@@ -680,6 +692,28 @@ POST /api/v1/processing-services/Preparer/authoring/runs/{runId}/publication-rec
 The direct route has the same suffix under
 `/processing/authoring/runs`. While pending, all competing Preparer mutations
 return `409` with `error:"recovery-in-progress"`.
+
+Only while both reconciliation and journal remain `staged`, before trusted
+candidate evidence or canonical replacement exists, may an operator cancel:
+
+```http
+POST /api/v1/processing-services/Preparer/authoring/runs/{runId}/publication-reconciliation/cancel
+Content-Type: application/json
+
+{"reason":"<non-blank audited reason>"}
+```
+
+The direct route has the same suffix under
+`/processing/authoring/runs`. Success returns the full terminal `status`,
+`cancelledAt`, and persisted `reason`. One transaction records the audit,
+ends active attempts and incomplete stages, projects every run item and the
+generic run to terminal `superseded` while retaining accepted receipts,
+releases both fences, and deletes only
+unpromoted disposable workspace. The frozen comparison, item decisions,
+generic receipts, and cancellation journal remain. Repeating cancellation
+returns the original audit. Cancellation is not offered and returns
+`cancellation-not-allowed` after `snapshot-publish-pending`,
+`canonical-unpublished`, or `ready`.
 
 Only after the database transaction has committed may an operator explicitly
 release the fence without a replacement publication:
@@ -712,15 +746,16 @@ Stable reconciliation failure codes are:
 | `grouping-impact-mismatch` | The affected closure or a complete partition replacement is missing/divergent |
 | `recovery-in-progress` | A pending promotion owns the mutation fence |
 | `promotion-recovery-failure` | Temporary/final file, snapshot row, checksum/provenance, or transition evidence conflicts |
+| `cancellation-not-allowed` | Cancellation was missing a reason or the reconciliation was no longer staged before trusted/canonical promotion |
 | `canonical-unpublished-restriction` | The live canonical epoch was explicitly abandoned without a verified replacement snapshot |
 
 Start returns `404` with `invalid-baseline` when the source coordinate is not
 found and `409` for typed admission/fence conflicts. Status returns `404`
-`invalid-baseline` for an unknown/non-reconciliation run. Retry and abandon
+`invalid-baseline` for an unknown/non-reconciliation run. Retry, cancel, and abandon
 return `409` with a typed failure when their state/evidence preconditions are
 not met. The Orchestrator preserves processor status, body, `Location`, and
 `Retry-After`; clients must branch on the stable code, not prose. Never replay
-a lost start/retry/abandon response. Use the bounded run list filtered by
+a lost start/retry/cancel/abandon response. Use the bounded run list filtered by
 `purpose` and `sourceRunId`, or status when `runId` is known.
 
 Snapshot bytes are streamed through the Orchestrator rather than buffered as a
@@ -1063,6 +1098,7 @@ unversioned publication-maintenance routes shown below:
 | `POST` | `/processing/authoring/runs/{sourceRunId}/publication-reconciliation` | Start Preparer changed-ticket publication reconciliation |
 | `GET` | `/processing/authoring/runs/{runId}/publication-reconciliation` | Get complete reconciliation and recovery status |
 | `POST` | `/processing/authoring/runs/{runId}/publication-reconciliation/retry` | Retry pending snapshot publication |
+| `POST` | `/processing/authoring/runs/{runId}/publication-reconciliation/cancel` | Cancel staged reconciliation with an audited reason |
 | `POST` | `/processing/authoring/runs/{runId}/publication-reconciliation/abandon` | Audit abandonment after canonical promotion |
 | `POST` | `/api/v1/processing/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible current error item |
 | `POST` | `/api/v1/processing/authoring/runs/{runId}/items/{itemId}/supersede` | Supersede one current error with an explicit reason |
@@ -1081,6 +1117,9 @@ cannot expand the total attempt limit. `supersede` requires
 accepted receipt in the currently fenced run. Missing or blank reasons return
 400, unknown or mismatched coordinates return 404, and invalid lifecycle,
 fence, attempt-limit, completed, or receipt-backed states return 409.
+Reconciliation items are excluded regardless of receipt state and return
+`reconciliation-cancel-required`; their only pre-promotion terminal operator
+action is the dedicated reason-bearing cancellation route.
 
 ### BallotNotes APIs
 

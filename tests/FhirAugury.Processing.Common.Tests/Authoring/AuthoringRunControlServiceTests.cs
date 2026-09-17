@@ -250,6 +250,55 @@ public sealed class AuthoringRunControlServiceTests
     }
 
     [Fact]
+    public async Task ReconciliationItems_NeverAdvertiseOrPermitGenericSupersede()
+    {
+        using AuthoringTestDatabase database = new();
+        (AuthoringRunRecord run, AuthoringRunItemRecord item) =
+            await database.CreateRunningRunAsync();
+        AuthoringOperationClaim claim = Assert.IsType<AuthoringOperationClaim>(
+            await database.Store.ClaimItemAsync(run.Id, item.Id));
+        await database.Store.MarkClaimErrorAsync(
+            item.Id,
+            claim.OperationId,
+            "local source store has not caught up");
+        database.Execute(
+            """
+            UPDATE authoring_runs
+            SET Purpose = @purpose
+            WHERE Id = @runId
+            """,
+            ("@purpose",
+                AuthoringRunPurposeValues.PublicationReconciliation),
+            ("@runId", run.Id));
+        AuthoringRunControlService service =
+            new(database.Store, database.RetryPolicy);
+
+        AuthoringRunControlStatus status =
+            await service.GetStatusAsync("test", run.Id);
+
+        AuthoringRunItemStatus itemStatus = Assert.Single(status.Items);
+        Assert.Null(itemStatus.AcceptedReceiptId);
+        Assert.True(itemStatus.AllowedActions!.CanRetryNow);
+        Assert.False(itemStatus.AllowedActions.CanSupersede);
+
+        AuthoringConflictException conflict =
+            await Assert.ThrowsAsync<AuthoringConflictException>(
+                () => service.SupersedeItemAsync(
+                    "test",
+                    run.Id,
+                    item.Id,
+                    new AuthoringItemSupersedeRequest(
+                        "source revision changed")));
+        Assert.Equal(
+            AuthoringConflictCode.ReconciliationCancelRequired,
+            conflict.Code);
+        Assert.Equal(
+            AuthoringStatusValues.Items.Error,
+            Assert.Single(
+                await database.Store.GetRunItemsAsync(run.Id)).Status);
+    }
+
+    [Fact]
     public async Task RetryItemAsync_RejectsCoordinatesFromAnotherRun()
     {
         using AuthoringTestDatabase database = new();

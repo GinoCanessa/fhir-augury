@@ -1192,6 +1192,13 @@ public sealed class TicketWorkspaceRenderingTests
             "Later Jira revisions invalidated staged work.",
             text);
         Assert.Contains(
+            "Staged reconciliation can be cancelled before promotion.",
+            text);
+        Assert.False(
+            markup.Button(
+                "Cancel staged reconciliation\u2026").Disabled);
+        Assert.DoesNotContain("Supersede\u2026", text);
+        Assert.Contains(
             "FHIR-1 carry-forward revision-1 revision-1",
             text);
         Assert.Contains(
@@ -1251,6 +1258,9 @@ public sealed class TicketWorkspaceRenderingTests
             pendingMarkup.Button("Retry snapshot publication").Disabled);
         Assert.False(
             pendingMarkup.Button("Abandon without publication\u2026").Disabled);
+        Assert.DoesNotContain(
+            "Cancel staged reconciliation",
+            pendingMarkup.Html);
 
         await fixture.Renderer.ClickAsync(
             page.Id,
@@ -1363,6 +1373,147 @@ public sealed class TicketWorkspaceRenderingTests
                 fixture.Authoring.ReconciliationAbandonRequests));
     }
 
+    [Fact]
+    public async Task StagedReconciliationOffersAuditedCancellationOnlyBeforePromotion()
+    {
+        await using Fixture fixture = new();
+        PublicationReconciliationStatusResult staged =
+            ReconciliationStatus(
+                "staged",
+                "staged",
+                ["FHIR-2"]);
+        PublicationReconciliationStatusResult cancelled =
+            ReconciliationStatus(
+                "cancelled",
+                "cancelled",
+                ["FHIR-2"]);
+        fixture.Authoring.GetHandler = (_, _, _) =>
+            Task.FromResult(
+                new AuthoringRunResponse(staged.Run, staged.Items));
+        fixture.Authoring.ReconciliationStatusHandler =
+            (_, _, _) => Task.FromResult(staged);
+        fixture.Authoring.ReconciliationCancelHandler =
+            (serviceName, runId, reason, _) =>
+            {
+                Assert.Equal("Preparer", serviceName);
+                Assert.Equal("reconciliation-run", runId);
+                Assert.Equal("frozen revision changed", reason);
+                return Task.FromResult(
+                    new PublicationReconciliationCancelResult(
+                        cancelled,
+                        ReadTime,
+                        reason));
+            };
+
+        Mounted<TicketRunDetail> page =
+            await fixture.Renderer.MountAsync<TicketRunDetail>(
+                Parameters(
+                    (nameof(TicketRunDetail.Workflow), "prepare"),
+                    (nameof(TicketRunDetail.RunId), "reconciliation-run")));
+        await page.Rendering.WaitAsync(HangGuard);
+        await fixture.Renderer.WaitForAsync(
+            page.Id,
+            value => value.Html.Contains(
+                "Cancel staged reconciliation",
+                StringComparison.Ordinal));
+
+        await fixture.Renderer.ClickAsync(
+            page.Id,
+            "Cancel staged reconciliation\u2026");
+        Markup confirmation =
+            await fixture.Renderer.MarkupAsync(page.Id);
+        Assert.Contains(
+            "No staged work will be promoted.",
+            confirmation.Html);
+        Assert.True(confirmation.Button("Confirm cancellation").Disabled);
+        await fixture.Renderer.ChangeAsync(
+            page.Id,
+            "cancellation-reason",
+            "  frozen revision changed  ");
+        Assert.False(
+            (await fixture.Renderer.MarkupAsync(page.Id))
+            .Button("Confirm cancellation").Disabled);
+
+        await fixture.Renderer.ClickAsync(
+            page.Id,
+            "Confirm cancellation");
+        Markup completed = await fixture.Renderer.WaitForAsync(
+            page.Id,
+            value => value.Html.Contains(
+                "Reconciliation was cancelled before promotion.",
+                StringComparison.Ordinal));
+        string completedText = Normalize(
+            Regex.Replace(completed.Html, "<[^>]*>", " "));
+
+        Assert.Contains(
+            "Audited reason: frozen revision changed",
+            completedText);
+        Assert.DoesNotContain(
+            "Cancel staged reconciliation",
+            completed.Html);
+        Assert.DoesNotContain("Supersede\u2026", completedText);
+        Assert.Equal(1, fixture.Authoring.ReconciliationCancelCalls);
+        Assert.Equal(
+            ("Preparer", "reconciliation-run", "frozen revision changed"),
+            Assert.Single(
+                fixture.Authoring.ReconciliationCancelRequests));
+    }
+
+    [Fact]
+    public async Task CancellationRaceConflictRendersStableTypedWarning()
+    {
+        await using Fixture fixture = new();
+        PublicationReconciliationStatusResult staged =
+            ReconciliationStatus("staged", "staged");
+        fixture.Authoring.GetHandler = (_, _, _) =>
+            Task.FromResult(
+                new AuthoringRunResponse(staged.Run, staged.Items));
+        fixture.Authoring.ReconciliationStatusHandler =
+            (_, _, _) => Task.FromResult(staged);
+        fixture.Authoring.ReconciliationCancelHandler =
+            (_, _, _, _) =>
+                Task.FromException<PublicationReconciliationCancelResult>(
+                    new AuthoringControlException(
+                        HttpStatusCode.Conflict,
+                        "cancellation-not-allowed",
+                        "Trusted candidate already exists."));
+
+        Mounted<TicketRunDetail> page =
+            await fixture.Renderer.MountAsync<TicketRunDetail>(
+                Parameters(
+                    (nameof(TicketRunDetail.Workflow), "prepare"),
+                    (nameof(TicketRunDetail.RunId), "reconciliation-run")));
+        await page.Rendering.WaitAsync(HangGuard);
+        await fixture.Renderer.WaitForAsync(
+            page.Id,
+            value => value.Html.Contains(
+                "Cancel staged reconciliation",
+                StringComparison.Ordinal));
+        await fixture.Renderer.ClickAsync(
+            page.Id,
+            "Cancel staged reconciliation\u2026");
+        await fixture.Renderer.ChangeAsync(
+            page.Id,
+            "cancellation-reason",
+            "source changed");
+        await fixture.Renderer.ClickAsync(
+            page.Id,
+            "Confirm cancellation");
+        Markup warning = await fixture.Renderer.WaitForAsync(
+            page.Id,
+            value => value.Html.Contains(
+                "cancellation-not-allowed",
+                StringComparison.Ordinal));
+        string text = Normalize(
+            Regex.Replace(warning.Html, "<[^>]*>", " "));
+
+        Assert.Contains(
+            "Reconciliation action was not applied.",
+            text);
+        Assert.Contains("cancellation-not-allowed", text);
+        Assert.Contains("Trusted candidate already exists.", text);
+    }
+
     private static PublicationReconciliationStatusResult
         ReconciliationStatus(
             string promotionState,
@@ -1382,7 +1533,12 @@ public sealed class TicketWorkspaceRenderingTests
         AuthoringRunReconciliationCounts counts =
             new(2, 1, 1, invalidated.Count);
         AuthoringRunStatus run =
-            Run("reconciliation-run", "completed", terminal: true) with
+            Run(
+                "reconciliation-run",
+                promotionState == "cancelled"
+                    ? "superseded"
+                    : "completed",
+                terminal: true) with
             {
                 Purpose = "publication-reconciliation",
                 SourceRunId = "source-run",
@@ -1452,10 +1608,42 @@ public sealed class TicketWorkspaceRenderingTests
                 "canonical-unpublished",
                 StringComparison.Ordinal)
                     ? "storage incident"
+                    : null,
+            CancelledAt: string.Equals(
+                promotionState,
+                "cancelled",
+                StringComparison.Ordinal)
+                    ? ReadTime
+                    : null,
+            CancellationReason: string.Equals(
+                promotionState,
+                "cancelled",
+                StringComparison.Ordinal)
+                    ? "frozen revision changed"
                     : null);
         return new PublicationReconciliationStatusResult(
             run,
-            [],
+            [
+                new AuthoringRunItemStatus(
+                    "reconciliation-item",
+                    run.RunId,
+                    "FHIR-2",
+                    "fhir",
+                    "revision-2",
+                    "error",
+                    null,
+                    null,
+                    1,
+                    ReadTime,
+                    ReadTime,
+                    ReadTime,
+                    "worker failed",
+                    AttemptsRemaining: 1,
+                    CurrentError: "worker failed",
+                    AllowedActions: new(
+                        CanRetryNow: true,
+                        CanSupersede: true)),
+            ],
             comparison,
             counts,
             [
@@ -1821,6 +2009,7 @@ public sealed class TicketWorkspaceRenderingTests
         private int _reconciliationStartCalls;
         private int _reconciliationStatusCalls;
         private int _reconciliationRetryCalls;
+        private int _reconciliationCancelCalls;
         private int _reconciliationAbandonCalls;
 
         public ReadQueue<AuthoringRunListResponse> Preparer { get; } = new(unexpected, "Preparer history");
@@ -1843,6 +2032,9 @@ public sealed class TicketWorkspaceRenderingTests
 
         public int ReconciliationRetryCalls =>
             Volatile.Read(ref _reconciliationRetryCalls);
+
+        public int ReconciliationCancelCalls =>
+            Volatile.Read(ref _reconciliationCancelCalls);
 
         public int ReconciliationAbandonCalls =>
             Volatile.Read(ref _reconciliationAbandonCalls);
@@ -1900,6 +2092,18 @@ public sealed class TicketWorkspaceRenderingTests
             string,
             string,
             CancellationToken,
+            Task<PublicationReconciliationCancelResult>>
+            ReconciliationCancelHandler { get; set; } =
+            (_, _, _, _) =>
+                Task.FromException<PublicationReconciliationCancelResult>(
+                    new InvalidOperationException(
+                        "Publication reconciliation cancel handler was not configured."));
+
+        public Func<
+            string,
+            string,
+            string,
+            CancellationToken,
             Task<PublicationReconciliationAbandonResult>>
             ReconciliationAbandonHandler { get; set; } =
             (_, _, _, _) =>
@@ -1918,6 +2122,9 @@ public sealed class TicketWorkspaceRenderingTests
 
         public ConcurrentQueue<(string Service, string RunId)>
             ReconciliationRetryRequests { get; } = new();
+
+        public ConcurrentQueue<(string Service, string RunId, string Reason)>
+            ReconciliationCancelRequests { get; } = new();
 
         public ConcurrentQueue<(string Service, string RunId, string Reason)>
             ReconciliationAbandonRequests { get; } = new();
@@ -1993,6 +2200,23 @@ public sealed class TicketWorkspaceRenderingTests
             return ReconciliationRetryHandler(
                 serviceName,
                 runId,
+                ct);
+        }
+
+        public Task<PublicationReconciliationCancelResult>
+            CancelPublicationReconciliationAsync(
+                string serviceName,
+                string runId,
+                string reason,
+                CancellationToken ct)
+        {
+            Interlocked.Increment(ref _reconciliationCancelCalls);
+            ReconciliationCancelRequests.Enqueue(
+                (serviceName, runId, reason));
+            return ReconciliationCancelHandler(
+                serviceName,
+                runId,
+                reason,
                 ct);
         }
 

@@ -222,6 +222,64 @@ public sealed class PreparedTicketPublicationMaintenanceController
         }
     }
 
+    [HttpPost("{runId}/publication-reconciliation/cancel")]
+    [ProducesResponseType(
+        typeof(PreparedTicketPublicationReconciliationCancelResult),
+        StatusCodes.Status200OK)]
+    [ProducesResponseType(
+        typeof(PreparedTicketPublicationReconciliationFailure),
+        StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(
+        typeof(PreparedTicketPublicationReconciliationFailure),
+        StatusCodes.Status404NotFound)]
+    [ProducesResponseType(
+        typeof(PreparedTicketPublicationReconciliationFailure),
+        StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> CancelReconciliation(
+        string runId,
+        PreparedTicketPublicationReconciliationCancelRequest request,
+        CancellationToken ct)
+    {
+        PreparedTicketPublicationReconciliationPlanner planner =
+            _reconciliationPlanner ??
+            throw new InvalidOperationException(
+                "Publication reconciliation is not configured.");
+        if (request is null || string.IsNullOrWhiteSpace(request.Reason))
+        {
+            return BadRequest(
+                new PreparedTicketPublicationReconciliationFailure(
+                    PreparedTicketPublicationReconciliationFailureCodes
+                        .CancellationNotAllowed,
+                    "A non-empty cancellation reason is required.",
+                    RunId: runId));
+        }
+
+        try
+        {
+            return Ok(await planner.CancelAsync(
+                runId,
+                request.Reason,
+                ct));
+        }
+        catch (KeyNotFoundException ex)
+        {
+            return NotFound(
+                new PreparedTicketPublicationReconciliationFailure(
+                    PreparedTicketPublicationReconciliationFailureCodes
+                        .CancellationNotAllowed,
+                    ex.Message,
+                    RunId: runId));
+        }
+        catch (PreparedTicketPublicationReconciliationException ex)
+        {
+            return Conflict(
+                new PreparedTicketPublicationReconciliationFailure(
+                    ex.FailureCode,
+                    ex.Message,
+                    RunId: runId));
+        }
+    }
+
     [HttpPost("{runId}/publication-reconciliation/abandon")]
     [ProducesResponseType(
         typeof(PreparedTicketPublicationReconciliationAbandonResult),

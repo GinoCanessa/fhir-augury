@@ -18,6 +18,7 @@ public enum AuthoringConflictCode
     RevalidationRequired,
     AttemptLimitReached,
     ActiveRunCapacityReached,
+    ReconciliationCancelRequired,
 }
 
 public sealed class AuthoringConflictException(

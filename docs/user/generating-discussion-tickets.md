@@ -355,7 +355,9 @@ sequence, files, and site. It never edits or removes the baseline pair.
    disposition. Carry-forward items keep their exact accepted receipt
    coordinates and do not launch an author. Each `re-author` item must produce
    a complete authored graph and hydration batch for its frozen current
-   revision. Those results are durable run-scoped staging only; the canonical
+   revision, with matching accepted receipt/run-item/operation coordinates.
+   Generic item supersession is never completion for this purpose and is not
+   offered. Those results are durable run-scoped staging only; the canonical
    graph still serves the prior publication at this point.
 4. Grouping derives the closure from each revised ticket's old and proposed
    partition membership. It replaces every affected shared
@@ -378,8 +380,10 @@ sequence, files, and site. It never edits or removes the baseline pair.
 Status can report later `invalidatedTicketKeys` with
 `failureCode:"revision-invalidation"` if a frozen changed ticket moves again.
 Do not submit output for the newer revision into the frozen run; retain the
-baseline publication, inspect the complete invalidation list, and start a new
-comparison only after the current run has terminated safely.
+baseline publication, inspect the complete invalidation list, and choose
+**Cancel staged reconciliation…** with an audited reason. Start a new
+comparison only after cancellation has terminally superseded the generic run
+and released its fences.
 
 ### Database-first promotion and recovery
 
@@ -402,9 +406,10 @@ The observable promotion states are:
 
 | State | Meaning and operator action |
 |-------|-----------------------------|
-| `staged` | Canonical output has not been promoted. Staging and the candidate remain restartable. Abandonment is refused here. Let normal finalization resume; the explicit snapshot-publication retry is not yet applicable. |
+| `staged` | Canonical output has not been promoted. Staging remains restartable. Before trusted candidate evidence exists, **Cancel staged reconciliation…** / `cancel-reconciliation` is the only terminal operator exit. The explicit snapshot-publication retry and post-promotion abandonment are not applicable. |
 | `snapshot-publish-pending` | The database transaction committed, so canonical output is already the replacement, but the immutable snapshot/run transitions are incomplete. All competing Preparer mutations remain blocked with `recovery-in-progress`. Startup recovery retries automatically; **Retry snapshot publication** / `retry-reconciliation` invokes the same idempotent recovery explicitly. |
 | `ready` | The final file and snapshot record are verified, the run is complete, staging is cleaned, and the fence is released. Repeating recovery does not reapply canonical replacement. |
+| `cancelled` | Pre-promotion cancellation is terminal. Canonical output and the prior publication are unchanged; disposable staging is removed, both fences are released, and the generic run is `superseded`. |
 | `canonical-unpublished` | An operator explicitly abandoned a pending promotion with an audited reason. Canonical replacement remains in the database, no replacement publication is claimed, and the prior verified pair is unchanged. This is terminal, not success. |
 
 Recovery evaluates each durable boundary rather than assuming which operation
@@ -428,6 +433,16 @@ ran last:
 - A restart after the snapshot is ready but before run completion completes
   the same run. A restart after run completion but before the journal/fence
   transition finishes marks the same reconciliation ready and cleans up.
+
+Use **Cancel staged reconciliation…** only while state is `staged` and before
+trusted candidate evidence exists. The required non-blank reason and time are
+retained with the frozen comparison. One transaction ends active attempts and
+incomplete stages, removes only disposable unpromoted workspace, releases the
+processor and reconciliation fences, and reports the generic run as terminal
+`superseded`. It does not call generic item/run supersede APIs and does not
+change canonical output. Repeating cancellation is idempotent. The action is
+hidden after `snapshot-publish-pending`, `canonical-unpublished`, or `ready`;
+direct attempts then return `cancellation-not-allowed`.
 
 Use **Abandon without publication…** only while
 `snapshot-publish-pending`, after retry and evidence repair cannot recover the
@@ -629,17 +644,22 @@ be closed with an explicit reason:
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"supersede","runId":"<runId>","itemId":"<itemId>","reason":"duplicate request"}'
 ```
 
+Publication-reconciliation items always report
+`allowedActions.canSupersede:false`. The generic endpoint returns
+`reconciliation-cancel-required`; use the run-level staged cancellation
+workflow instead.
+
 Normal success is `completed`. `completed-database-only` is valid only for a
 run that was explicitly started with `databaseOnly:true`. Either status is
 lifecycle success even when item-level `superseded` outcomes make the result
 partial. Continue snapshot and site publication from accepted results, and
 surface every superseded item and reason.
 
-Outer start, retry, supersede, publication-refresh, and
-publication-reconciliation mutations are not replayed after an ambiguous
-transport failure. Reconcile through run/list or reconciliation-status reads
-before deciding whether to act again; do not treat a missing response as
-permission to resubmit.
+Outer start, retry, supersede, publication-refresh, reconciliation start,
+retry, cancellation, and abandonment mutations are not replayed after an
+ambiguous transport failure. Reconcile through run/list or
+reconciliation-status reads before deciding whether to act again; do not
+treat a missing response as permission to resubmit.
 
 Topic grouping is part of fenced finalization. Do not run a separate direct
 database grouping pass. The grouping maintenance endpoint exists only for an
@@ -700,6 +720,17 @@ the generic run status to decide publication recovery. When promotion is
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"retry-reconciliation","runId":"<reconciliationRunId>"}'
 ```
 
+If authoritative Jira drift invalidates the frozen work while state is still
+`staged`, cancel before starting a replacement comparison:
+
+```powershell
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"cancel-reconciliation","runId":"<reconciliationRunId>","reason":"frozen Jira revision changed"}'
+```
+
+The result returns terminal status, `cancelledAt`, and the persisted `reason`.
+Do not use this action once promotion is pending or ready, and never substitute
+generic item supersession.
+
 If recovery cannot be repaired and the operator accepts an unpublished
 canonical epoch, provide an auditable reason:
 
@@ -718,7 +749,7 @@ The CLI keeps stable reconciliation failures as the top-level error code
 instead of collapsing them to `HTTP_ERROR`: `invalid-baseline`,
 `unstable-jira-generation`, `revision-invalidation`, `staging-mismatch`,
 `grouping-impact-mismatch`, `recovery-in-progress`,
-`promotion-recovery-failure`, and
+`promotion-recovery-failure`, `cancellation-not-allowed`, and
 `canonical-unpublished-restriction`. Human-readable detail is diagnostic;
 branch automation on the stable code and inspect returned run coordinates.
 

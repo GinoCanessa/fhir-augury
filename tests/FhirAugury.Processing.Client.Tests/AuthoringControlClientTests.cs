@@ -171,6 +171,35 @@ public sealed class AuthoringControlClientTests
                 return DelegateHttpHandler.Json(
                     new PublicationReconciliationRetryResult(status, true));
             }
+            if (path.EndsWith("/cancel", StringComparison.Ordinal))
+            {
+                JsonElement body = JsonDocument.Parse(
+                    await request.Content!.ReadAsStringAsync(ct))
+                    .RootElement;
+                Assert.Equal(
+                    "frozen revision changed",
+                    body.GetProperty("reason").GetString());
+                DateTimeOffset cancelledAt =
+                    new(2026, 9, 17, 18, 0, 0, TimeSpan.Zero);
+                PublicationReconciliationStatusResult cancelled =
+                    status with
+                    {
+                        Run = status.Run with { Status = "superseded" },
+                        Promotion = status.Promotion with
+                        {
+                            State = "cancelled",
+                            MutationFenceHeld = false,
+                            CancelledAt = cancelledAt,
+                            CancellationReason =
+                                "frozen revision changed",
+                        },
+                    };
+                return DelegateHttpHandler.Json(
+                    new PublicationReconciliationCancelResult(
+                        cancelled,
+                        cancelledAt,
+                        "frozen revision changed"));
+            }
             if (path.EndsWith("/abandon", StringComparison.Ordinal))
             {
                 JsonElement body = JsonDocument.Parse(
@@ -222,6 +251,12 @@ public sealed class AuthoringControlClientTests
                 "Preparer",
                 "reconciliation-run",
                 CancellationToken.None);
+        PublicationReconciliationCancelResult cancelled =
+            await client.CancelPublicationReconciliationAsync(
+                "Preparer",
+                "reconciliation-run",
+                "  frozen revision changed  ",
+                CancellationToken.None);
         PublicationReconciliationAbandonResult abandoned =
             await client.AbandonPublicationReconciliationAsync(
                 "Preparer",
@@ -232,15 +267,53 @@ public sealed class AuthoringControlClientTests
         Assert.Equal("jira-generation-9", started.Comparison.StableJiraGeneration);
         Assert.Equal(1, status.Counts.ReAuthorTicketCount);
         Assert.True(retried.RecoveryStarted);
+        Assert.Equal("cancelled", cancelled.Status.Promotion.State);
+        Assert.Equal(
+            "frozen revision changed",
+            cancelled.Status.Promotion.CancellationReason);
         Assert.Equal("canonical-unpublished", abandoned.Status.Promotion.State);
         Assert.Equal(
             [
                 "POST /api/v1/processing-services/Preparer/authoring/runs/source-run/publication-reconciliation",
                 "GET /api/v1/processing-services/Preparer/authoring/runs/reconciliation-run/publication-reconciliation",
                 "POST /api/v1/processing-services/Preparer/authoring/runs/reconciliation-run/publication-reconciliation/retry",
+                "POST /api/v1/processing-services/Preparer/authoring/runs/reconciliation-run/publication-reconciliation/cancel",
                 "POST /api/v1/processing-services/Preparer/authoring/runs/reconciliation-run/publication-reconciliation/abandon",
             ],
             targets);
+    }
+
+    [Fact]
+    public async Task PublicationReconciliationCancellationConflictRetainsTypedFailure()
+    {
+        DelegateHttpHandler handler = new((request, _, _) =>
+        {
+            Assert.EndsWith(
+                "/publication-reconciliation/cancel",
+                request.RequestUri!.AbsolutePath,
+                StringComparison.Ordinal);
+            return Task.FromResult(DelegateHttpHandler.Json(
+                new AuthoringConflictResponse(
+                    "cancellation-not-allowed",
+                    "Canonical promotion already started.",
+                    ["reconciliation-run"],
+                    "reconciliation-run"),
+                HttpStatusCode.Conflict));
+        });
+        AuthoringControlClient client =
+            AuthoringClientTestData.CreateClient(handler);
+
+        AuthoringControlException error =
+            await Assert.ThrowsAsync<AuthoringControlException>(
+                () => client.CancelPublicationReconciliationAsync(
+                    "Preparer",
+                    "reconciliation-run",
+                    "too late",
+                    CancellationToken.None));
+
+        Assert.Equal(HttpStatusCode.Conflict, error.StatusCode);
+        Assert.Equal("cancellation-not-allowed", error.ErrorCode);
+        Assert.Equal(["reconciliation-run"], error.RelatedRunIds);
     }
 
     [Fact]

@@ -192,6 +192,26 @@ public class ProcessingController(
                 ct));
     }
 
+    [HttpPost("{name}/authoring/runs/{runId}/publication-reconciliation/cancel")]
+    public async Task<IActionResult> CancelPublicationReconciliation(
+        string name,
+        string runId,
+        [FromBody] JsonElement request,
+        CancellationToken ct)
+    {
+        if (!processingHttpClient.IsProcessingServiceEnabled(name))
+        {
+            return NotFound(new { error = $"Processing service '{name}' is not configured or disabled." });
+        }
+
+        return ToActionResult(
+            await processingHttpClient.CancelPublicationReconciliationAsync(
+                name,
+                runId,
+                request,
+                ct));
+    }
+
     [HttpPost("{name}/authoring/runs/{runId}/publication-reconciliation/abandon")]
     public async Task<IActionResult> AbandonPublicationReconciliation(
         string name,

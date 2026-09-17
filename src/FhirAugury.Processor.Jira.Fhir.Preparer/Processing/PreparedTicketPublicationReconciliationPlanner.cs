@@ -100,7 +100,9 @@ public sealed class PreparedTicketPublicationReconciliationPlanner(
             ?? throw new KeyNotFoundException(
                 $"Publication reconciliation '{runId}' was not found.");
         IReadOnlyList<string> invalidated =
-            await FindInvalidatedTicketsAsync(comparison, ct);
+            await FindAuthoritativelyInvalidatedTicketsAsync(
+                comparison,
+                ct);
         (
             IReadOnlyList<PreparedTicketPublicationReconciliationGroupingImpact>
                 impacts,
@@ -127,6 +129,36 @@ public sealed class PreparedTicketPublicationReconciliationPlanner(
                     invalidated));
     }
 
+    public async Task<PreparedTicketPublicationReconciliationCancelResult>
+        CancelAsync(
+            string runId,
+            string reason,
+            CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        (DateTimeOffset CancelledAt, string Reason) cancellation;
+        try
+        {
+            cancellation =
+                await database.CancelPublicationReconciliationAsync(
+                    runId,
+                    reason,
+                    ct: ct);
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new PreparedTicketPublicationReconciliationException(
+                PreparedTicketPublicationReconciliationFailureCodes
+                    .CancellationNotAllowed,
+                ex.Message);
+        }
+        return new(
+            await GetStatusAsync(runId, ct),
+            cancellation.CancelledAt,
+            cancellation.Reason);
+    }
+
     public async Task EnsureFrozenCorpusCurrentAsync(
         string runId,
         CancellationToken ct = default)
@@ -144,7 +176,9 @@ public sealed class PreparedTicketPublicationReconciliationPlanner(
                 $"Reconciliation contract version {comparison.ContractVersion} cannot be revalidated.");
         }
         IReadOnlyList<string> invalidated =
-            await FindInvalidatedTicketsAsync(comparison, ct);
+            await FindAuthoritativelyInvalidatedTicketsAsync(
+                comparison,
+                ct);
         if (invalidated.Count != 0)
         {
             throw new PreparedTicketPublicationReconciliationException(
@@ -341,7 +375,8 @@ public sealed class PreparedTicketPublicationReconciliationPlanner(
         }
     }
 
-    private async Task<IReadOnlyList<string>> FindInvalidatedTicketsAsync(
+    private async Task<IReadOnlyList<string>>
+        FindAuthoritativelyInvalidatedTicketsAsync(
         PreparedTicketPublicationReconciliationComparison comparison,
         CancellationToken ct)
     {
@@ -383,7 +418,7 @@ public sealed class PreparedTicketPublicationReconciliationPlanner(
     private static string CreateRevisionInvalidationDetail(
         PreparedTicketPublicationReconciliationComparison comparison,
         IReadOnlyList<string> invalidated)
-        => $"Frozen Jira revisions changed or could not be observed at generation '{comparison.StableJiraGeneration}': {string.Join(", ", invalidated)}";
+        => $"Authoritative frozen Jira revisions changed or could not be observed at generation '{comparison.StableJiraGeneration}': {string.Join(", ", invalidated)}";
 
     private async Task<(
         IReadOnlyList<PreparedTicketPublicationReconciliationGroupingImpact>,
@@ -421,6 +456,8 @@ public sealed class PreparedTicketPublicationReconciliationPlanner(
         string? failureDetail;
         DateTimeOffset? abandonedAt;
         string? abandonmentReason;
+        DateTimeOffset? cancelledAt;
+        string? cancellationReason;
         await using (SqliteCommand command = connection.CreateCommand())
         {
             command.CommandText =
@@ -428,7 +465,9 @@ public sealed class PreparedTicketPublicationReconciliationPlanner(
                 SELECT reconciliation.PromotionState, journal.State,
                        journal.LastRecoveryAttemptAt, journal.FailureCode,
                        journal.FailureDetail, reconciliation.AbandonedAt,
-                       reconciliation.AbandonmentReason
+                       reconciliation.AbandonmentReason,
+                       reconciliation.CancelledAt,
+                       reconciliation.CancellationReason
                 FROM prepared_ticket_publication_reconciliations reconciliation
                 LEFT JOIN prepared_ticket_publication_reconciliation_journal journal
                   ON journal.RunId = reconciliation.RunId
@@ -452,6 +491,10 @@ public sealed class PreparedTicketPublicationReconciliationPlanner(
                 ? null : reader.GetDateTimeOffset(5);
             abandonmentReason =
                 reader.IsDBNull(6) ? null : reader.GetString(6);
+            cancelledAt = reader.IsDBNull(7)
+                ? null : reader.GetDateTimeOffset(7);
+            cancellationReason =
+                reader.IsDBNull(8) ? null : reader.GetString(8);
         }
         bool fenceHeld;
         await using (SqliteCommand command = connection.CreateCommand())
@@ -495,7 +538,9 @@ public sealed class PreparedTicketPublicationReconciliationPlanner(
                 failureCode,
                 failureDetail,
                 abandonedAt,
-                abandonmentReason),
+                abandonmentReason,
+                cancelledAt,
+                cancellationReason),
             proof);
     }
 

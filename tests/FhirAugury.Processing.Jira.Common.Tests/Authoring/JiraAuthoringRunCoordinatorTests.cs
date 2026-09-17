@@ -436,6 +436,52 @@ public sealed class JiraAuthoringRunCoordinatorTests
     }
 
     [Fact]
+    public async Task StalePublicationReconciliationItemsAreLeftUntouched()
+    {
+        using JiraAuthoringTestFixture fixture = new();
+        await fixture.ActivateAsync();
+        DateTimeOffset frozenRevision =
+            new(2026, 9, 1, 0, 0, 0, TimeSpan.Zero);
+        await fixture.SeedAsync("FHIR-1", frozenRevision);
+        JiraAuthoringRunCreation run =
+            Assert.IsType<JiraAuthoringRunCreation>(
+                await fixture.Coordinator.CreateScheduledRunAsync());
+        await using (Microsoft.Data.Sqlite.SqliteConnection connection =
+                     fixture.SourceStoreConnection())
+        {
+            await using Microsoft.Data.Sqlite.SqliteCommand command =
+                connection.CreateCommand();
+            command.CommandText =
+                """
+                UPDATE authoring_runs
+                SET Purpose = @purpose
+                WHERE Id = @runId
+                """;
+            command.Parameters.AddWithValue(
+                "@purpose",
+                AuthoringRunPurposeValues.PublicationReconciliation);
+            command.Parameters.AddWithValue("@runId", run.Run.Id);
+            await command.ExecuteNonQueryAsync();
+        }
+        await fixture.SeedAsync(
+            "FHIR-1",
+            frozenRevision.AddDays(1),
+            title: "Newer local source row");
+
+        Assert.False(
+            await fixture.Coordinator.SupersedeStaleItemsAsync(run.Run.Id));
+
+        AuthoringRunItemRecord item = Assert.Single(
+            await fixture.AuthoringStore.GetRunItemsAsync(run.Run.Id));
+        Assert.Equal(AuthoringStatusValues.Items.Pending, item.Status);
+        Assert.Null(item.Error);
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Queued,
+            Assert.IsType<AuthoringRunRecord>(
+                await fixture.AuthoringStore.GetRunAsync(run.Run.Id)).Status);
+    }
+
+    [Fact]
     public async Task StaleInitialRevalidationIsReplacedWithCurrentRevision()
     {
         using JiraAuthoringTestFixture fixture = new();

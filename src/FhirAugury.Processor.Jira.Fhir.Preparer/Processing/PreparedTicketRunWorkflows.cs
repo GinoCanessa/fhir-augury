@@ -66,12 +66,15 @@ public sealed class PreparedTicketRunWorkflowRegistry(
             return await recoveryService.RecoverAsync(run.Id, ct);
         }
 
-        if (!await authoringStore.AllItemsCompleteAsync(run.Id, ct))
+        if (!await authoringStore.AllItemsStrictlyCompleteAsync(run.Id, ct) ||
+            !await database.IsPublicationReconciliationStagingCompleteAsync(
+                run.Id,
+                ct))
         {
             throw new PreparedTicketPublicationReconciliationException(
                 PreparedTicketPublicationReconciliationFailureCodes
                     .StagingMismatch,
-                "All revised reconciliation items must be complete before promotion.");
+                "Every revised reconciliation item must be complete with matching staged graph, hydration, and receipt data before promotion.");
         }
         PreparedTicketPublicationGroupingDelta delta =
             await groupingDeltaDispatcher.PrepareAsync(run.Id, ct);

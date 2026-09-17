@@ -2573,6 +2573,17 @@ public sealed class AuthoringRunStore
         await BeginImmediateAsync(connection, ct);
         try
         {
+            AuthoringRunRecord run = await ReadRunAsync(
+                connection,
+                runId,
+                ct)
+                ?? throw new KeyNotFoundException(
+                    $"Authoring run '{runId}' was not found.");
+            await EnsureFenceOwnedAsync(
+                connection,
+                run.ProcessorKind,
+                runId,
+                ct);
             AuthoringRunStageRecord? existing = await ReadStageAsync(
                 connection,
                 runId,
@@ -2656,6 +2667,13 @@ public sealed class AuthoringRunStore
                       AND (LeaseAcquiredAt IS NULL OR LeaseAcquiredAt <= @orphanedBefore)
                   )
               )
+              AND EXISTS(
+                  SELECT 1
+                  FROM authoring_mutation_fences fence
+                  INNER JOIN authoring_runs run
+                    ON run.Id = authoring_run_stages.RunId
+                  WHERE fence.ProcessorKind = run.ProcessorKind
+                    AND fence.RunId = run.Id)
             RETURNING AttemptCount
             """;
         command.Parameters.AddWithValue("@status", AuthoringStatusValues.Stages.InProgress);
@@ -2783,6 +2801,28 @@ public sealed class AuthoringRunStore
         command.Parameters.AddWithValue("@complete", AuthoringStatusValues.Items.Complete);
         command.Parameters.AddWithValue("@superseded", AuthoringStatusValues.Items.Superseded);
         return Convert.ToInt32(await command.ExecuteScalarAsync(ct), CultureInfo.InvariantCulture) == 0;
+    }
+
+    public async Task<bool> AllItemsStrictlyCompleteAsync(
+        string runId,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        await using SqliteConnection connection = _openConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT COUNT(*)
+            FROM authoring_run_items
+            WHERE RunId = @runId AND Status <> @complete
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue(
+            "@complete",
+            AuthoringStatusValues.Items.Complete);
+        return Convert.ToInt32(
+            await command.ExecuteScalarAsync(ct),
+            CultureInfo.InvariantCulture) == 0;
     }
 
     public async Task MarkRunFinalizingAsync(

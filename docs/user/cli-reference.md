@@ -276,7 +276,7 @@ Three typed command families control processor-owned authoring runs:
 | `ballot-note-authoring` | BallotNotes | [Generating Ballot Notes](generating-ballot-notes.md) |
 
 All three families register six shared actions. The Preparer additionally
-registers five publication-maintenance actions, for eleven exact action
+registers six publication-maintenance actions, for twelve exact action
 values:
 
 | Action | Required coordinates and fields | Purpose and boundaries |
@@ -284,20 +284,21 @@ values:
 | `start` | Prepared/planned: optional `ticketKeys`. BallotNotes: `hydrationExecutionId` and optional `noteIds`. All: optional `databaseOnly`. | Freeze a run over the selected items. Omitted or empty Jira `ticketKeys` use processor discovery. Ballot-note selection stays within the named hydration execution. `databaseOnly: true` is the explicit mode that completes without producing a review snapshot. The Preparer returns HTTP `409` with `active-run-capacity-reached` while another Preparer run is live. |
 | `status` | `runId` | Inspect the frozen run and its items, including durable receipt evidence, retry timing, remaining attempts, and superseded outcomes. |
 | `retry` | `runId`, `itemId` | Request an immediate retry only when the latest status advertises `allowedActions.canRetryNow`. This may bypass the automatic delay but cannot expand the processor's total attempt budget. |
-| `supersede` | `runId`, `itemId`, non-blank `reason` | Explicitly mark one current error terminal and non-authored only when status advertises `allowedActions.canSupersede`. Never infer the reason or use this for a receipt-backed item. |
+| `supersede` | `runId`, `itemId`, non-blank `reason` | Explicitly mark one current error terminal and non-authored only when status advertises `allowedActions.canSupersede`. Never infer the reason or use this for a receipt-backed or publication-reconciliation item. Reconciliation returns `reconciliation-cancel-required`. |
 | `submit` | Prepared/planned: `payload` and `observedSourceRevision`. BallotNotes: `prose` and `observedSourceRevision`. | Worker callback only. It is valid inside a processor-launched worker with the complete `FHIR_AUGURY_AUTHORING_*` callback environment; outer operators and automation must not manufacture callback context or tokens. |
 | `snapshot` | `runId`, `snapshotPath`; optional `descriptorPath` | Download and verify the immutable snapshot and trusted descriptor. The descriptor's filename and the returned `snapshotPath` / `descriptorPath` pair are authoritative. |
 | `refresh-publication` (Preparer only) | `runId` | Start one metadata-only repair from the completed snapshot-producing source run named by `runId`. Returns a new run with `purpose:"publication-refresh"` and `sourceRunId` equal to the request coordinate. It reuses accepted receipts, does not replay authoring or grouping, and produces a separate snapshot. |
 | `reconcile-publication` (Preparer only) | `sourceRunId` | Start changed-ticket reconciliation from a completed immutable publication baseline. Discovers every revised accepted ticket in one stable Jira generation, carries unchanged receipt coordinates, stages revised graphs and affected grouping, and produces a new immutable replacement. |
 | `reconciliation-status` (Preparer only) | `runId` | Read the reconciliation run, frozen per-ticket comparison/dispositions, counts, grouping impacts, later invalidations, promotion/journal state, mutation fence, failure detail, and publication proof. |
 | `retry-reconciliation` (Preparer only) | `runId` | Explicitly resume a database-promoted `snapshot-publish-pending` publication. Recovery is idempotent and does not reapply canonical replacement or overwrite a conflicting final file. |
+| `cancel-reconciliation` (Preparer only) | `runId`, non-blank `reason` | Terminally cancel only a `staged` reconciliation before trusted candidate or canonical promotion. It retains the frozen comparison and cancellation audit, deletes disposable workspace, releases both fences, and reports the generic run as `superseded`. |
 | `abandon-reconciliation` (Preparer only) | `runId`, non-blank `reason` | After database promotion only, audit explicit abandonment as terminal `canonical-unpublished`. It does not roll back canonical data or create a publication and it restricts later snapshot-producing runs. |
 
 The exact Preparer action set is `start`, `status`, `retry`, `supersede`,
 `submit`, `snapshot`, `refresh-publication`, `reconcile-publication`,
-`reconciliation-status`, `retry-reconciliation`, and
-`abandon-reconciliation`. Planner and BallotNotes do not accept any of the
-five publication-maintenance actions.
+`reconciliation-status`, `retry-reconciliation`, `cancel-reconciliation`,
+and `abandon-reconciliation`. Planner and BallotNotes do not accept any of
+the six publication-maintenance actions.
 
 Start selectors are not interchangeable:
 
@@ -311,7 +312,8 @@ Authoring responses use several identifiers for distinct purposes:
 
 - `runId` is the frozen run coordinate used by `status`, `retry`,
   `supersede`, `snapshot`, `reconciliation-status`,
-  `retry-reconciliation`, and `abandon-reconciliation`. For Preparer
+  `retry-reconciliation`, `cancel-reconciliation`, and
+  `abandon-reconciliation`. For Preparer
   `refresh-publication`, it instead selects the completed source run; the
   response supplies a different run ID for subsequent status and snapshot
   actions.
@@ -357,6 +359,9 @@ Minimal outer-control examples:
 { "command": "prepared-ticket-authoring", "action": "reconciliation-status", "runId": "<reconciliationRunId>" }
 { "command": "prepared-ticket-authoring", "action": "retry-reconciliation", "runId": "<reconciliationRunId>" }
 
+// Cancel staged work before trusted/canonical promotion
+{ "command": "prepared-ticket-authoring", "action": "cancel-reconciliation", "runId": "<reconciliationRunId>", "reason": "<reviewed reason>" }
+
 // Explicitly accept a canonical database epoch with no replacement publication
 { "command": "prepared-ticket-authoring", "action": "abandon-reconciliation", "runId": "<reconciliationRunId>", "reason": "<reviewed reason>" }
 ```
@@ -364,8 +369,9 @@ Minimal outer-control examples:
 Automatic retry is processor-owned. Outer automation should normally keep
 polling instead of issuing `retry`; use immediate retry only as an explicit
 operator choice. Never replay `start`, `retry`, `supersede`,
-`refresh-publication`, `reconcile-publication`, `retry-reconciliation`, or
-`abandon-reconciliation` after an ambiguous transport failure.
+`refresh-publication`, `reconcile-publication`, `retry-reconciliation`,
+`cancel-reconciliation`, or `abandon-reconciliation` after an ambiguous
+transport failure.
 
 Run status `error` is recoverable and non-terminal. Continue polling whenever
 `state.isTerminal` is false (`queued`, `running`, `finalizing`, or `error`).
@@ -524,8 +530,8 @@ the old publication remains intact. `reconciliation-status` adds:
   `lastRecoveryAttemptAt`, and recovery failure/audit fields;
 - `publicationProof` only for the verified immutable replacement.
 
-Promotion states are `staged`, `snapshot-publish-pending`, `ready`, and
-terminal `canonical-unpublished`. Database promotion occurs before immutable
+Promotion states are `staged`, `snapshot-publish-pending`, `ready`,
+terminal `cancelled`, and terminal `canonical-unpublished`. Database promotion occurs before immutable
 file publication, so `snapshot-publish-pending` means canonical rows have
 already changed and all competing mutations remain fenced. Startup recovery
 and `retry-reconciliation` validate and reuse matching temporary/final file
@@ -533,6 +539,15 @@ and snapshot-record evidence, advance an already promoted or ready record,
 and finish an already-ready run without a second canonical apply. Missing,
 corrupt, checksum-divergent, or conflicting evidence returns
 `promotion-recovery-failure`; a conflicting final file is never overwritten.
+
+`cancel-reconciliation` is accepted only while state remains `staged`, before
+trusted candidate evidence or canonical replacement exists, and requires the
+non-blank `reason` returned with `cancelledAt`. A cancelled run projects to
+generic terminal `superseded`, releases capacity and both fences, preserves
+the frozen comparison/audit, and never treats an item-level `superseded`
+result as staged output. Repeating the action returns the original audit.
+After pending, canonical-unpublished, or ready, the stable conflict is
+`cancellation-not-allowed`.
 
 `abandon-reconciliation` is accepted only in that pending post-database state
 and requires the exact non-blank `reason` returned with `abandonedAt`. It

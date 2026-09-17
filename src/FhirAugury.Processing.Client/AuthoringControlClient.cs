@@ -60,7 +60,9 @@ public sealed record PublicationReconciliationPromotionStatus(
     string? FailureCode = null,
     string? FailureDetail = null,
     DateTimeOffset? AbandonedAt = null,
-    string? AbandonmentReason = null);
+    string? AbandonmentReason = null,
+    DateTimeOffset? CancelledAt = null,
+    string? CancellationReason = null);
 
 public sealed record PublicationReconciliationProof(
     int ContractVersion,
@@ -96,6 +98,11 @@ public sealed record PublicationReconciliationStatusResult(
 public sealed record PublicationReconciliationRetryResult(
     PublicationReconciliationStatusResult Status,
     bool RecoveryStarted);
+
+public sealed record PublicationReconciliationCancelResult(
+    PublicationReconciliationStatusResult Status,
+    DateTimeOffset CancelledAt,
+    string Reason);
 
 public sealed record PublicationReconciliationAbandonResult(
     PublicationReconciliationStatusResult Status,
@@ -140,6 +147,16 @@ public interface IAuthoringControlClient
         Task.FromException<PublicationReconciliationRetryResult>(
             new NotSupportedException(
                 "Publication reconciliation recovery is not supported by this authoring client."));
+
+    Task<PublicationReconciliationCancelResult>
+        CancelPublicationReconciliationAsync(
+            string serviceName,
+            string runId,
+            string reason,
+            CancellationToken ct) =>
+        Task.FromException<PublicationReconciliationCancelResult>(
+            new NotSupportedException(
+                "Publication reconciliation cancellation is not supported by this authoring client."));
 
     Task<PublicationReconciliationAbandonResult>
         AbandonPublicationReconciliationAsync(
@@ -395,6 +412,54 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
                 raw.Content,
                 path);
         ValidateReconciliationStatus(response.Status, service, runId);
+        return response;
+    }
+
+    public async Task<PublicationReconciliationCancelResult>
+        CancelPublicationReconciliationAsync(
+            string serviceName,
+            string runId,
+            string reason,
+            CancellationToken ct)
+    {
+        string service = AuthoringServiceBinding.Normalize(serviceName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        string normalizedReason = reason.Trim();
+        string path =
+            $"{ControlPath(service)}/{Uri.EscapeDataString(runId)}/publication-reconciliation/cancel";
+        MutationResponse raw = await SendMutationAsync(
+            "publication-reconciliation-cancel",
+            service,
+            runId,
+            itemId: null,
+            path,
+            new { reason = normalizedReason },
+            ct);
+        PublicationReconciliationCancelResult response =
+            Deserialize<PublicationReconciliationCancelResult>(
+                raw.Content,
+                path);
+        ValidateReconciliationStatus(response.Status, service, runId);
+        if (response.CancelledAt == default ||
+            string.IsNullOrWhiteSpace(response.Reason) ||
+            !string.Equals(
+                response.Status.Promotion.State,
+                "cancelled",
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                response.Status.Run.Status,
+                "superseded",
+                StringComparison.Ordinal) ||
+            response.Status.Promotion.CancelledAt != response.CancelledAt ||
+            !string.Equals(
+                response.Status.Promotion.CancellationReason,
+                response.Reason,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Publication reconciliation cancellation response contains inconsistent audit data.");
+        }
         return response;
     }
 
@@ -1127,10 +1192,30 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
             !string.Equals(
                 response.Promotion.State,
                 "canonical-unpublished",
+                StringComparison.Ordinal) &&
+            !string.Equals(
+                response.Promotion.State,
+                "cancelled",
                 StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
                 $"Publication reconciliation response has unknown promotion state '{response.Promotion.State}'.");
+        }
+        if (string.Equals(
+                response.Promotion.State,
+                "cancelled",
+                StringComparison.Ordinal) &&
+            (response.Promotion.CancelledAt is null ||
+             string.IsNullOrWhiteSpace(
+                 response.Promotion.CancellationReason) ||
+             !string.Equals(
+                 response.Run.Status,
+                 "superseded",
+                 StringComparison.Ordinal) ||
+             response.Promotion.MutationFenceHeld))
+        {
+            throw new InvalidOperationException(
+                "Cancelled publication reconciliation response has inconsistent audit or fence state.");
         }
     }
 

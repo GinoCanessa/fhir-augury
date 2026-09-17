@@ -152,13 +152,17 @@ Detail appends these item fields while preserving legacy `error`:
 - `allowedActions.canRetryNow` only for an error in the currently fenced run
   with either an accepted receipt to resume or remaining authoring attempts;
 - `allowedActions.canSupersede` only for an error in the currently fenced run
-  without an accepted receipt.
+  without an accepted receipt, and never for a
+  `publication-reconciliation` item.
 
 Automatic retry remains the default. UI or headless automation must use these
 capabilities to decide what to present, but the mutation endpoint is the final
 authority: retry and supersede recheck status, fence, receipt, and attempt
 budget in an immediate transaction and can return `409` after a status read.
-Supersession always requires a non-empty operator reason.
+Supersession always requires a non-empty operator reason. The server rejects
+every reconciliation-item supersede with
+`reconciliation-cancel-required`, including an unaccepted error; only the
+dedicated pre-promotion run cancellation may terminate that work.
 
 Create/retry/supersede conflict JSON uses `AuthoringConflictResponse`. It keeps
 the existing `error` and optional `detail`, adds `conflictingRunIds`, and also
@@ -318,7 +322,7 @@ accepts a live processor database or performs an in-place renderer migration.
   revalidation run is atomically replaced. The gate is not cleared by stale
   work.
 - **Ambiguous outer mutation:** start, immediate retry, supersede, publication
-  refresh, reconciliation start/retry, and reconciliation abandonment are
+  refresh, reconciliation start/retry/cancel, and reconciliation abandonment are
   single-attempt. If transport is lost after the server may have received the
   request, report **outcome unknown**, never replay, and reconcile only through
   list/detail/status reads. Repeating the mutation requires explicit operator
@@ -369,6 +373,15 @@ and operation token. Receipt acceptance, complete payload/hydration staging,
 and the item transition share the caller-owned SQLite transaction. The result
 does not write canonical authored or hydration tables. A later Jira change is
 reported as `revision-invalidation` and blocks finalization.
+
+Local Preparer Jira-store lag is not authoritative drift: generic stale-item
+reconciliation leaves every publication-reconciliation item untouched, so an
+ordinary pre-receipt source mismatch remains an eligible retry while the
+processor cache catches up. Full-corpus Orchestrator observation is the
+authoritative invalidation guard. Before promotion, every `re-author` decision
+must have a generic item in exact `complete` state plus matching staged graph,
+hydration, receipt, run-item, operation, source-revision, and fingerprint
+coordinates. Generic `superseded` never satisfies reconciliation readiness.
 
 #### Overlay and grouping closure
 
@@ -503,6 +516,7 @@ Recovery handles each evidence combination explicitly:
 | Recovery is cancelled while pending | Record `promotion-recovery-failure` with the journal still pending and retain the fence. |
 | Recovery attempts compete | Serialize attempts per run; a filesystem-race winner is accepted only after exact final-byte validation, and later attempts return the same ready descriptor. |
 | Reconciliation `ready` | No canonical replay; the verified replacement is terminal success and cleanup is idempotent. |
+| Reconciliation `cancelled` | No recovery or canonical replay; the frozen comparison and cancellation audit are terminal while both fences and disposable workspace remain released. |
 
 Missing staging after the database promotion commit is not a reason to replay
 the overlay: pending recovery is driven by the journal, snapshot record, and
@@ -512,6 +526,28 @@ file. Recovery never creates, replaces, or repairs
 `authoring_snapshot_provenance`, and it never adopts a checksum calculated
 from unjournaled bytes; every promoted checksum is the one frozen before
 canonical promotion.
+
+#### Audited pre-promotion cancellation
+
+The dedicated cancellation transition is valid only from `staged`, with a
+non-blank reason, before trusted candidate evidence, an
+`authoring_review_snapshots` row, or canonical replacement exists. One
+immediate transaction records `cancelled`, time, and reason; ends active
+attempts and incomplete stages; marks all generic run items superseded while
+retaining accepted receipts;
+removes graph/hydration/receipt, grouping, unaffected-fingerprint, and proof
+workspace; releases both the reconciliation and processor mutation fences;
+and finally projects `authoring_runs` to terminal `superseded`. It does not
+invoke generic item/run supersede APIs.
+
+The comparison, item decisions, accepted receipts, run history, and cancelled
+journal remain audit evidence. Repeating cancellation returns that original
+audit without rewriting it. Concurrent item retry, stage work, finalization,
+and cancellation serialize on SQLite: a cancellation winner makes later
+workspace writes/fence checks fail; a trusted-candidate or promotion winner
+makes cancellation fail with `cancellation-not-allowed`. Cancellation is not
+available from `snapshot-publish-pending`, `canonical-unpublished`, or
+`ready`.
 
 #### Audited unpublished canonical state
 
@@ -533,7 +569,7 @@ endpoint and abandonment itself do not clear it.
 Stable lifecycle failures are `invalid-baseline`,
 `unstable-jira-generation`, `revision-invalidation`, `staging-mismatch`,
 `grouping-impact-mismatch`, `recovery-in-progress`,
-`promotion-recovery-failure`, and
+`promotion-recovery-failure`, `cancellation-not-allowed`, and
 `canonical-unpublished-restriction`. Status exposes counts, decisions,
 grouping impacts, invalidated keys, promotion/journal/fence state, recovery
 failure details, audit fields, and the nullable replacement proof so callers
@@ -716,6 +752,7 @@ fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"snapsho
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"reconcile-publication","sourceRunId":"<sourceRunId>"}'
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"reconciliation-status","runId":"<reconciliationRunId>"}'
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"retry-reconciliation","runId":"<reconciliationRunId>"}'
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"cancel-reconciliation","runId":"<reconciliationRunId>","reason":"<reviewed reason>"}'
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"abandon-reconciliation","runId":"<reconciliationRunId>","reason":"<reviewed reason>"}'
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"refresh-publication","runId":"<sourceRunId>"}'
 ```
@@ -724,8 +761,10 @@ Use `reconcile-publication` when accepted Jira revisions changed; it selects
 the baseline with `sourceRunId`. Use `refresh-publication` only for
 metadata-only repair with unchanged revisions; it selects the completed
 source run in `runId`. Both return a different new run ID. Follow a
-reconciliation with `reconciliation-status` (and pending recovery controls);
-follow a refresh with ordinary `status`. After successful completion, use the
+reconciliation with `reconciliation-status`; use reason-bearing cancellation
+only while it remains staged, and retry/abandon only at the documented
+post-promotion boundary. Follow a refresh with ordinary `status`. After
+successful completion, use the
 new run ID for `snapshot` and site publication. Do not use either maintenance
 run as the source of another maintenance operation.
 

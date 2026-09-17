@@ -70,6 +70,12 @@ public static class PreparedTicketAuthoringHandler
                     "Preparer",
                     Required(request.RunId, "runId"),
                     ct),
+            "cancel-reconciliation" =>
+                await client.CancelPublicationReconciliationAsync(
+                    "Preparer",
+                    Required(request.RunId, "runId"),
+                    Required(request.Reason, "reason"),
+                    ct),
             "abandon-reconciliation" =>
                 await client.AbandonPublicationReconciliationAsync(
                     "Preparer",
@@ -77,7 +83,7 @@ public static class PreparedTicketAuthoringHandler
                     Required(request.Reason, "reason"),
                     ct),
             _ => throw new ArgumentException(
-                "Action must be start, status, retry, supersede, submit, snapshot, refresh-publication, reconcile-publication, reconciliation-status, retry-reconciliation, or abandon-reconciliation."),
+                "Action must be start, status, retry, supersede, submit, snapshot, refresh-publication, reconcile-publication, reconciliation-status, retry-reconciliation, cancel-reconciliation, or abandon-reconciliation."),
         };
     }
 

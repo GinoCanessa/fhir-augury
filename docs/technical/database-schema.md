@@ -936,8 +936,10 @@ public boundary is the sanitized snapshot plus its descriptor proof.
 | `StableJiraGeneration` | TEXT | One generation shared by the complete Jira observation |
 | `CorpusFingerprint` | TEXT | Frozen accepted baseline corpus |
 | `ComparisonJson` | TEXT | Contract-v2 complete per-ticket decisions and coordinates |
-| `PromotionState` | TEXT | `staged`, `snapshot-publish-pending`, `ready`, or `canonical-unpublished` |
+| `PromotionState` | TEXT | `staged`, `snapshot-publish-pending`, `ready`, `cancelled`, or `canonical-unpublished` |
 | `CapturedAt` | TEXT | UTC comparison capture time |
+| `CancelledAt` | TEXT? | Immutable audited pre-promotion cancellation time |
+| `CancellationReason` | TEXT? | Required operator reason for `cancelled` |
 | `AbandonedAt` | TEXT? | Audited explicit abandonment time |
 | `AbandonmentReason` | TEXT? | Required operator reason for `canonical-unpublished` |
 
@@ -976,6 +978,13 @@ SHA-256 of canonical JSON produced by
 `ExpectedSourceRevision`, sorted by the shared contract. The same value flows
 through grouping stages, the candidate descriptor, the private proof, and the
 promoted public proof.
+
+Promotion readiness is stricter than the generic run completion predicate.
+Every `re-author` decision must join to an `authoring_run_items` row in exact
+`complete` state and matching graph, hydration, staged receipt, immutable
+receipt, run-item, operation, source revision, and authored fingerprint.
+`superseded` never counts as reconciliation-complete, even though ordinary
+authoring finalization can treat it as terminal.
 
 #### Grouping impact and unaffected fingerprints
 
@@ -1062,7 +1071,7 @@ Pending recovery uses the journal plus the snapshot row:
   replacement;
 - missing staging after canonical commit: rely only on authenticated
   journal/descriptor/record/file evidence; never reconstruct the overlay;
-- cancellation: retain pending state and fences with
+- cancellation of pending recovery execution: retain pending state and fences with
   `promotion-recovery-failure`;
 - competing attempts: serialize per run and accept a race winner only when
   the immutable final bytes match the same journaled evidence.
@@ -1081,6 +1090,27 @@ Contract-v1 comparison and proof rows remain deserializable for these audit
 views, including null v2-only item coordinates. They are execution-inert:
 grouping dispatch, candidate materialization, pending recovery, and promotion
 require contract v2 and refuse rather than reinterpret a v1 corpus.
+
+Dedicated operator cancellation is valid only while both state rows are
+`staged` and before a trusted row exists in
+`prepared_ticket_publication_snapshot_descriptors`, a snapshot row exists, or
+canonical authored state points at the reconciliation. A single immediate
+transaction writes `PromotionState = 'cancelled'`, `CancelledAt`, and
+`CancellationReason`; updates or recreates the journal as terminal
+`cancelled`; closes active attempts and incomplete stages; marks all run
+items superseded while retaining accepted receipts; releases
+`prepared_ticket_publication_reconciliation_fences` and the matching
+`authoring_mutation_fences` row; and finally marks `authoring_runs`
+`superseded`.
+
+That transaction deletes only disposable unpromoted rows from staged
+graph/hydration/receipt, grouping impact/replacement/stage receipt,
+unaffected-fingerprint, and reconciliation-proof tables. It retains the
+reconciliation row and `ComparisonJson`, relational item decisions, generic
+run/item/attempt/stage/receipt history, and cancellation journal. A repeated
+cancel returns the first timestamp and reason without rewriting them.
+Workspace writers and stage leases require the still-staged state and both
+fences, preventing a retry race from recreating rows after cancellation.
 
 Explicit abandonment is valid only from `snapshot-publish-pending`. It writes
 `canonical-unpublished`, `AbandonedAt`, and `AbandonmentReason`, records the

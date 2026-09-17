@@ -695,6 +695,7 @@ public static class SchemaGenerator
                 "reconcile-publication",
                 "reconciliation-status",
                 "retry-reconciliation",
+                "cancel-reconciliation",
                 "abandon-reconciliation",
             ]
             : [
@@ -706,7 +707,7 @@ public static class SchemaGenerator
                 "snapshot",
             ];
         string runIdDescription = supportsPublicationRefresh
-            ? "Run identifier for status, retry, supersede, snapshot, reconciliation-status, retry-reconciliation, or abandon-reconciliation; source run identifier for metadata-only refresh-publication"
+            ? "Run identifier for status, retry, supersede, snapshot, reconciliation-status, retry-reconciliation, cancel-reconciliation, or abandon-reconciliation; source run identifier for metadata-only refresh-publication"
             : "Run identifier for status, retry, supersede, or snapshot";
         object outputSchema = supportsPublicationRefresh
             ? new
@@ -752,7 +753,7 @@ public static class SchemaGenerator
                     {
                         type = new[] { "string", "null" },
                         description =
-                            "Stable reconciliation failure code, including revision-invalidation, recovery-in-progress, promotion-recovery-failure, and canonical-unpublished-restriction",
+                            "Stable reconciliation failure code, including revision-invalidation, cancellation-not-allowed, recovery-in-progress, promotion-recovery-failure, and canonical-unpublished-restriction",
                     },
                     ["failureDetail"] = new
                     {
@@ -769,9 +770,12 @@ public static class SchemaGenerator
                     ["abandonedAt"] = Prop(
                         "string",
                         "Timestamp when reconciliation entered canonical-unpublished"),
+                    ["cancelledAt"] = Prop(
+                        "string",
+                        "Timestamp when staged reconciliation was cancelled before promotion"),
                     ["reason"] = Prop(
                         "string",
-                        "Audited abandonment reason"),
+                        "Audited cancellation or abandonment reason"),
                     ["reconciliation"] = Prop(
                         "string",
                         "succeeded or failed for the single bounded read-only reconciliation"),
@@ -828,7 +832,7 @@ public static class SchemaGenerator
                     "Run item identifier for retry or supersede"),
                 ["reason"] = Prop(
                     "string",
-                    "Required non-blank reason when action is supersede or abandon-reconciliation"),
+                    "Required non-blank reason when action is supersede, cancel-reconciliation, or abandon-reconciliation"),
                 ["payload"] = Prop(
                     "object",
                     $"{submissionType} used by prepared/planned worker submit"),

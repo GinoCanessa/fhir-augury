@@ -34,13 +34,15 @@ public static class PreparedTicketPublicationReconciliationPromotionStateValues
     public const string SnapshotPublishPending = "snapshot-publish-pending";
     public const string Ready = "ready";
     public const string CanonicalUnpublished = "canonical-unpublished";
+    public const string Cancelled = "cancelled";
 
     public static bool IsValid(string? state)
         => state is
             Staged or
             SnapshotPublishPending or
             Ready or
-            CanonicalUnpublished;
+            CanonicalUnpublished or
+            Cancelled;
 }
 
 /// <summary>
@@ -60,6 +62,8 @@ public static class PreparedTicketPublicationReconciliationFailureCodes
         "promotion-recovery-failure";
     public const string CanonicalUnpublishedRestriction =
         "canonical-unpublished-restriction";
+    public const string CancellationNotAllowed =
+        "cancellation-not-allowed";
 
     public static bool IsKnown(string? code)
         => code is
@@ -70,7 +74,8 @@ public static class PreparedTicketPublicationReconciliationFailureCodes
             GroupingImpactMismatch or
             RecoveryInProgress or
             PromotionRecoveryFailure or
-            CanonicalUnpublishedRestriction;
+            CanonicalUnpublishedRestriction or
+            CancellationNotAllowed;
 }
 
 public sealed record PreparedTicketPublicationReconciliationStartRequest(
@@ -118,7 +123,9 @@ public sealed record PreparedTicketPublicationReconciliationPromotionStatus(
     string? FailureCode = null,
     string? FailureDetail = null,
     DateTimeOffset? AbandonedAt = null,
-    string? AbandonmentReason = null);
+    string? AbandonmentReason = null,
+    DateTimeOffset? CancelledAt = null,
+    string? CancellationReason = null);
 
 public sealed record PreparedTicketPublicationReconciliationProof(
     int ContractVersion,
@@ -154,6 +161,14 @@ public sealed record PreparedTicketPublicationReconciliationStatusResult(
 public sealed record PreparedTicketPublicationReconciliationRetryResult(
     PreparedTicketPublicationReconciliationStatusResult Status,
     bool RecoveryStarted);
+
+public sealed record PreparedTicketPublicationReconciliationCancelRequest(
+    string Reason);
+
+public sealed record PreparedTicketPublicationReconciliationCancelResult(
+    PreparedTicketPublicationReconciliationStatusResult Status,
+    DateTimeOffset CancelledAt,
+    string Reason);
 
 public sealed record PreparedTicketPublicationReconciliationAbandonRequest(
     string Reason);

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Text;
 using FhirAugury.Processing.Common.Authoring;
@@ -228,6 +229,268 @@ public sealed class PreparerDatabaseTests
             Count(
                 database,
                 "prepared_ticket_publication_staged_receipts"));
+    }
+
+    [Fact]
+    public async Task ReconciliationCancellation_IsAtomicIdempotentAndReleasesCapacity()
+    {
+        using TestDatabase database = CreateDatabase();
+        AuthoringRunStore store = new(database.Database);
+        await store.EnsureProcessorModeAsync("jira-fhir");
+        await store.TransitionProcessorModeAsync(
+            "jira-fhir",
+            AuthoringStatusValues.ProcessorModes.Legacy,
+            AuthoringStatusValues.ProcessorModes.CuttingOver);
+        await store.TransitionProcessorModeAsync(
+            "jira-fhir",
+            AuthoringStatusValues.ProcessorModes.CuttingOver,
+            AuthoringStatusValues.ProcessorModes.RunBacked);
+        DateTimeOffset capturedAt =
+            new(2026, 9, 17, 12, 0, 0, TimeSpan.Zero);
+        PreparedTicketPublicationReconciliationComparison comparison = new(
+            PreparedTicketPublicationReconciliationContract.CurrentVersion,
+            "source-run",
+            "snapshot-1",
+            new string('a', 64),
+            "42",
+            capturedAt,
+            new string('b', 64),
+            [
+                new(
+                    "FHIR-1",
+                    PreparedTicketPublicationReconciliationDispositionValues
+                        .ReAuthor,
+                    "revision-0",
+                    "revision-1",
+                    "old-receipt",
+                    "old-item",
+                    "old-run",
+                    new string('c', 64),
+                    new string('d', 64),
+                    "fhir",
+                    "revision-1"),
+            ]);
+        AuthoringRunRecord run =
+            await database.Database.CreatePublicationReconciliationAsync(
+                comparison,
+                capturedAt);
+        AuthoringRunItemRecord item = Assert.Single(
+            await store.GetRunItemsAsync(run.Id));
+        AuthoringOperationClaim claim =
+            Assert.IsType<AuthoringOperationClaim>(
+                await store.ClaimItemAsync(
+                    run.Id,
+                    item.Id,
+                    capturedAt.AddMinutes(1)));
+        await database.Database.StagePublicationReconciliationTicketAsync(
+            run.Id,
+            item.Id,
+            claim.OperationId,
+            "new-receipt",
+            item.ExpectedSourceRevision,
+            new string('e', 64),
+            SamplePayload("FHIR-1"),
+            SampleBatch("FHIR-1"),
+            capturedAt.AddMinutes(1));
+        AuthoringRunStageRecord stage = await store.EnsureRunStageAsync(
+            run.Id,
+            PreparerDatabase.PublicationReconciliationGroupingStageName,
+            "FHIR\u001fFHIR\u001fChange Request",
+            new string('f', 64),
+            capturedAt.AddMinutes(1));
+        Assert.NotNull(await store.TryStartRunStageAsync(
+            stage.Id,
+            now: capturedAt.AddMinutes(1)));
+        string temporaryCandidate = Path.Combine(
+            database.Directory,
+            $"jira-fhir-{run.Id}.reconciliation.tmp");
+        string finalCandidate = Path.Combine(
+            database.Directory,
+            "cancelled-candidate.db");
+        await File.WriteAllTextAsync(
+            temporaryCandidate,
+            "disposable provisional candidate");
+        string reservation = JsonSerializer.Serialize(new
+        {
+            ReservationKind = "snapshot-reservation-v1",
+            RunId = run.Id,
+            SnapshotId = "cancelled-snapshot",
+            ProcessorKind = "jira-fhir",
+            TemporaryPath = temporaryCandidate,
+            FinalPath = finalCandidate,
+            SchemaVersion = PreparedTicketSnapshotSchemaV3.Version,
+            Sequence = 1,
+            AuthoringEpoch = run.AuthoringEpoch,
+            ItemCount = 1,
+            ReceiptCount = 1,
+            CreatedAt = capturedAt,
+            Candidate = (object?)null,
+        });
+        await using (SqliteConnection connection =
+                     database.Database.OpenConnection())
+        {
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                UPDATE prepared_ticket_publication_reconciliation_journal
+                SET SnapshotDescriptorJson = @descriptor
+                WHERE RunId = @runId
+                """;
+            command.Parameters.AddWithValue("@descriptor", reservation);
+            command.Parameters.AddWithValue("@runId", run.Id);
+            await command.ExecuteNonQueryAsync();
+        }
+        DateTimeOffset cancelledAt = capturedAt.AddMinutes(2);
+
+        (DateTimeOffset firstCancelledAt, string firstReason) =
+            await database.Database.CancelPublicationReconciliationAsync(
+                run.Id,
+                "  authoritative revision changed  ",
+                cancelledAt);
+        (DateTimeOffset replayCancelledAt, string replayReason) =
+            await database.Database.CancelPublicationReconciliationAsync(
+                run.Id,
+                "a later replay must not rewrite the audit",
+                cancelledAt.AddHours(1));
+
+        Assert.Equal(cancelledAt, firstCancelledAt);
+        Assert.Equal("authoritative revision changed", firstReason);
+        Assert.Equal(firstCancelledAt, replayCancelledAt);
+        Assert.Equal(firstReason, replayReason);
+        Assert.False(File.Exists(temporaryCandidate));
+        Assert.False(File.Exists(finalCandidate));
+        AuthoringRunRecord cancelledRun =
+            Assert.IsType<AuthoringRunRecord>(
+                await store.GetRunAsync(run.Id));
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Superseded,
+            cancelledRun.Status);
+        Assert.Equal(cancelledAt, cancelledRun.CompletedAt);
+        Assert.Equal(
+            AuthoringStatusValues.Items.Superseded,
+            Assert.Single(await store.GetRunItemsAsync(run.Id)).Status);
+        AuthoringRunStageRecord cancelledStage =
+            Assert.Single(await store.GetRunStagesAsync(run.Id));
+        Assert.Equal(
+            AuthoringStatusValues.Stages.Error,
+            cancelledStage.Status);
+        Assert.Null(cancelledStage.LeaseId);
+        Assert.Null(await store.GetFencedRunAsync("jira-fhir"));
+
+        await using (SqliteConnection connection =
+                     database.Database.OpenConnection())
+        {
+            Assert.Equal(
+                PreparedTicketPublicationReconciliationPromotionStateValues
+                    .Cancelled,
+                ScalarString(
+                    connection,
+                    "SELECT PromotionState FROM prepared_ticket_publication_reconciliations WHERE RunId = @runId",
+                    run.Id));
+            Assert.Equal(
+                firstReason,
+                ScalarString(
+                    connection,
+                    "SELECT CancellationReason FROM prepared_ticket_publication_reconciliations WHERE RunId = @runId",
+                    run.Id));
+            Assert.Equal(
+                PreparedTicketPublicationReconciliationPromotionStateValues
+                    .Cancelled,
+                ScalarString(
+                    connection,
+                    "SELECT State FROM prepared_ticket_publication_reconciliation_journal WHERE RunId = @runId",
+                    run.Id));
+            foreach (string table in new[]
+            {
+                "prepared_ticket_publication_staged_graphs",
+                "prepared_ticket_publication_staged_hydration",
+                "prepared_ticket_publication_staged_receipts",
+                "prepared_ticket_publication_grouping_impacts",
+                "prepared_ticket_publication_staged_grouping",
+                "prepared_ticket_publication_grouping_stage_receipts",
+                "prepared_ticket_publication_unaffected_fingerprints",
+                "prepared_ticket_publication_reconciliation_proofs",
+                "prepared_ticket_publication_reconciliation_fences",
+                "authoring_mutation_fences",
+            })
+            {
+                Assert.Equal(
+                    0,
+                    ScalarInt(
+                        connection,
+                        $"SELECT COUNT(*) FROM {table} WHERE RunId = '{run.Id}'"));
+            }
+            Assert.Equal(
+                1,
+                ScalarInt(
+                    connection,
+                    $"SELECT COUNT(*) FROM prepared_ticket_publication_reconciliations WHERE RunId = '{run.Id}'"));
+            Assert.Equal(
+                1,
+                ScalarInt(
+                    connection,
+                    $"SELECT COUNT(*) FROM prepared_ticket_publication_reconciliation_items WHERE RunId = '{run.Id}'"));
+        }
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => database.Database
+                .StagePublicationReconciliationTicketAsync(
+                    run.Id,
+                    item.Id,
+                    claim.OperationId,
+                    "late-receipt",
+                    item.ExpectedSourceRevision,
+                    new string('e', 64),
+                    SamplePayload("FHIR-1"),
+                    SampleBatch("FHIR-1"),
+                    cancelledAt.AddMinutes(1)));
+        await Assert.ThrowsAsync<AuthoringConflictException>(
+            () => store.EnsureRunStageAsync(
+                run.Id,
+                PreparerDatabase.PublicationReconciliationGroupingStageName,
+                "late-partition",
+                new string('f', 64)));
+
+        AuthoringRunRecord next =
+            await database.Database.CreatePublicationReconciliationAsync(
+                comparison,
+                cancelledAt.AddHours(2));
+        Assert.NotEqual(run.Id, next.Id);
+        Assert.Equal(
+            next.Id,
+            Assert.IsType<AuthoringRunRecord>(
+                await store.GetFencedRunAsync("jira-fhir")).Id);
+        await using (SqliteConnection connection =
+                     database.Database.OpenConnection())
+        {
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                INSERT INTO prepared_ticket_publication_snapshot_descriptors(
+                    RunId, DescriptorJson, Sha256, PersistedAt)
+                VALUES(@runId, '{}', @sha256, @persistedAt)
+                """;
+            command.Parameters.AddWithValue("@runId", next.Id);
+            command.Parameters.AddWithValue(
+                "@sha256",
+                new string('f', 64));
+            command.Parameters.AddWithValue(
+                "@persistedAt",
+                cancelledAt.AddHours(2).ToString("O"));
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => database.Database.CancelPublicationReconciliationAsync(
+                next.Id,
+                "trusted candidate cannot be cancelled"));
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .Staged,
+            ScalarReconciliationState(database, next.Id));
+        Assert.Equal(
+            next.Id,
+            Assert.IsType<AuthoringRunRecord>(
+                await store.GetFencedRunAsync("jira-fhir")).Id);
     }
 
     [Fact]
@@ -2431,6 +2694,29 @@ public sealed class PreparerDatabaseTests
         using SqliteCommand command = connection.CreateCommand();
         command.CommandText = sql;
         return Convert.ToInt32(command.ExecuteScalar());
+    }
+
+    private static string ScalarString(
+        SqliteConnection connection,
+        string sql,
+        string runId)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("@runId", runId);
+        return Assert.IsType<string>(command.ExecuteScalar());
+    }
+
+    private static string ScalarReconciliationState(
+        TestDatabase database,
+        string runId)
+    {
+        using SqliteConnection connection =
+            database.Database.OpenConnection();
+        return ScalarString(
+            connection,
+            "SELECT PromotionState FROM prepared_ticket_publication_reconciliations WHERE RunId = @runId",
+            runId);
     }
 
     private static async Task SeedHydrationRowAsyncShimToAvoidNameClash(

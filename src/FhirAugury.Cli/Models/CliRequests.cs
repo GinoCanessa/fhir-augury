@@ -526,7 +526,8 @@ public abstract class AuthoringCommandRequest : CliRequest
     /// The selected run. For prepared-ticket-authoring
     /// refresh-publication, this is the source run to repair. Reconciliation
     /// actions use <see cref="PreparedTicketAuthoringRequest.SourceRunId"/>
-    /// for the baseline and this property for the reconciliation run.
+    /// for the baseline and this property for status, retry, cancellation,
+    /// or abandonment of the reconciliation run.
     /// </summary>
     [JsonPropertyName("runId")]
     public string? RunId { get; set; }

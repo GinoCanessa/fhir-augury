@@ -160,6 +160,9 @@ public class ProcessingHttpClientTests
         JsonElement abandon = JsonDocument.Parse(
             """{"reason":"operator accepted risk"}""")
             .RootElement.Clone();
+        JsonElement cancel = JsonDocument.Parse(
+            """{"reason":"frozen revision changed"}""")
+            .RootElement.Clone();
 
         ProcessingProxyResponse started =
             await client.StartPublicationReconciliationAsync(
@@ -176,6 +179,12 @@ public class ProcessingHttpClientTests
                 "Preparer",
                 "reconciliation-run",
                 CancellationToken.None);
+        ProcessingProxyResponse cancelled =
+            await client.CancelPublicationReconciliationAsync(
+                "Preparer",
+                "reconciliation-run",
+                cancel,
+                CancellationToken.None);
         ProcessingProxyResponse abandoned =
             await client.AbandonPublicationReconciliationAsync(
                 "Preparer",
@@ -191,12 +200,17 @@ public class ProcessingHttpClientTests
         Assert.Equal(HttpStatusCode.Conflict, retried.StatusCode);
         Assert.Equal("17", retried.RetryAfter);
         Assert.Contains("recovery-in-progress", Encoding.UTF8.GetString(retried.Content));
+        Assert.Equal(HttpStatusCode.OK, cancelled.StatusCode);
+        Assert.Contains(
+            "\"state\":\"cancelled\"",
+            Encoding.UTF8.GetString(cancelled.Content));
         Assert.Equal(HttpStatusCode.OK, abandoned.StatusCode);
         Assert.Equal(
             [
                 "POST /processing/authoring/runs/source-run/publication-reconciliation",
                 "GET /processing/authoring/runs/reconciliation-run/publication-reconciliation",
                 "POST /processing/authoring/runs/reconciliation-run/publication-reconciliation/retry",
+                "POST /processing/authoring/runs/reconciliation-run/publication-reconciliation/cancel",
                 "POST /processing/authoring/runs/reconciliation-run/publication-reconciliation/abandon",
             ],
             handler.Requests);
@@ -205,6 +219,11 @@ public class ProcessingHttpClientTests
             body => JsonDocument.Parse(body).RootElement
                 .GetProperty("reason").GetString() ==
                 "operator accepted risk");
+        Assert.Contains(
+            handler.Bodies,
+            body => JsonDocument.Parse(body).RootElement
+                .GetProperty("reason").GetString() ==
+                "frozen revision changed");
     }
 
     [Fact]
@@ -382,6 +401,8 @@ public class ProcessingHttpClientTests
                     ReconciliationStatusEnvelope,
                 "/processing/authoring/runs/reconciliation-run/publication-reconciliation/retry" =>
                     """{"error":"recovery-in-progress","detail":"Snapshot publication is still pending.","conflictingRunIds":["reconciliation-run"],"runId":"reconciliation-run"}""",
+                "/processing/authoring/runs/reconciliation-run/publication-reconciliation/cancel" =>
+                    ReconciliationCancelEnvelope,
                 "/processing/authoring/runs/reconciliation-run/publication-reconciliation/abandon" =>
                     ReconciliationAbandonEnvelope,
                 "/processing/authoring/runs/run-1/items/item-1/retry" =>
@@ -510,6 +531,9 @@ public class ProcessingHttpClientTests
 
         private const string ReconciliationAbandonEnvelope =
             """{"status":{"run":{"runId":"reconciliation-run","processorKind":"jira-fhir","authoringEpoch":1,"status":"failed","databaseOnly":false,"totalItems":1,"completedItems":1,"failedItems":0,"createdAt":"2026-09-16T00:00:00Z","startedAt":null,"completedAt":null,"error":null,"purpose":"publication-reconciliation","sourceRunId":"source-run"},"items":[],"comparison":{"contractVersion":1,"sourceRunId":"source-run","sourceSnapshotId":"snapshot-1","sourceSnapshotSha256":"abc","stableJiraGeneration":"generation-1","capturedAt":"2026-09-16T00:00:00Z","corpusFingerprint":"def","items":[]},"counts":{"acceptedTicketCount":1,"carryForwardTicketCount":0,"reAuthorTicketCount":1,"invalidatedTicketCount":0},"groupingImpacts":[],"promotion":{"state":"canonical-unpublished","journalState":"abandoned","mutationFenceHeld":false},"invalidatedTicketKeys":[]},"abandonedAt":"2026-09-16T18:00:00Z","reason":"operator accepted risk"}""";
+
+        private const string ReconciliationCancelEnvelope =
+            """{"status":{"run":{"runId":"reconciliation-run","processorKind":"jira-fhir","authoringEpoch":1,"status":"superseded","databaseOnly":false,"totalItems":1,"completedItems":0,"failedItems":1,"createdAt":"2026-09-16T00:00:00Z","startedAt":null,"completedAt":"2026-09-17T18:00:00Z","error":"cancelled","purpose":"publication-reconciliation","sourceRunId":"source-run"},"items":[],"comparison":{"contractVersion":1,"sourceRunId":"source-run","sourceSnapshotId":"snapshot-1","sourceSnapshotSha256":"abc","stableJiraGeneration":"generation-1","capturedAt":"2026-09-16T00:00:00Z","corpusFingerprint":"def","items":[]},"counts":{"acceptedTicketCount":1,"carryForwardTicketCount":0,"reAuthorTicketCount":1,"invalidatedTicketCount":0},"groupingImpacts":[],"promotion":{"state":"cancelled","journalState":"cancelled","mutationFenceHeld":false,"cancelledAt":"2026-09-17T18:00:00Z","cancellationReason":"frozen revision changed"},"invalidatedTicketKeys":[]},"cancelledAt":"2026-09-17T18:00:00Z","reason":"frozen revision changed"}""";
     }
 
     private sealed class TrackingStream(byte[] buffer) : MemoryStream(buffer)

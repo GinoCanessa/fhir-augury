@@ -42,6 +42,7 @@ public sealed class AuthoringSchemaTests
         Assert.Contains("\"reconcile-publication\"", authoringSchema);
         Assert.Contains("\"reconciliation-status\"", authoringSchema);
         Assert.Contains("\"retry-reconciliation\"", authoringSchema);
+        Assert.Contains("\"cancel-reconciliation\"", authoringSchema);
         Assert.Contains("\"abandon-reconciliation\"", authoringSchema);
         Assert.Contains("\"sourceRunId\"", authoringSchema);
         Assert.Contains("\"comparison\"", authoringSchema);
@@ -51,6 +52,8 @@ public sealed class AuthoringSchemaTests
         Assert.Contains("\"invalidatedTicketKeys\"", authoringSchema);
         Assert.Contains("\"publicationProof\"", authoringSchema);
         Assert.Contains("\"failureCode\"", authoringSchema);
+        Assert.Contains("cancellation-not-allowed", authoringSchema);
+        Assert.Contains("\"cancelledAt\"", authoringSchema);
         Assert.Contains("canonical-unpublished", authoringSchema);
         Assert.Contains("metadata-only", authoringSchema);
         Assert.Contains("source run identifier", authoringSchema);
@@ -68,6 +71,11 @@ public sealed class AuthoringSchemaTests
                     "ballot-note-authoring")));
         Assert.DoesNotContain(
             "\"reconcile-publication\"",
+            System.Text.Json.JsonSerializer.Serialize(
+                SchemaGenerator.GenerateForCommand(
+                    "planned-ticket-authoring")));
+        Assert.DoesNotContain(
+            "\"cancel-reconciliation\"",
             System.Text.Json.JsonSerializer.Serialize(
                 SchemaGenerator.GenerateForCommand(
                     "planned-ticket-authoring")));

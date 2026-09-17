@@ -168,6 +168,21 @@ internal sealed class AuthoringHttpClient : IDisposable
             ct);
     }
 
+    public Task<PublicationReconciliationCancelResult>
+        CancelPublicationReconciliationAsync(
+            string serviceName,
+            string runId,
+            string reason,
+            CancellationToken ct)
+    {
+        EnsureOuterMode();
+        return _controlClient.CancelPublicationReconciliationAsync(
+            serviceName,
+            runId,
+            reason,
+            ct);
+    }
+
     public Task<AuthoringRunListResponse> ListAsync(
         string serviceName,
         int? limit,

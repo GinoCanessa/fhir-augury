@@ -246,6 +246,65 @@ public sealed class PreparedTicketAuthoringHandlerTests
     }
 
     [Fact]
+    public async Task CancelReconciliationSendsAuditedReasonAndReturnsTypedState()
+    {
+        AuthoringHttpClient.EnsureOuterMode();
+        DateTimeOffset cancelledAt =
+            DateTimeOffset.Parse("2026-09-17T12:00:00Z");
+        DelegateHttpHandler handler = new(async (request, _, ct) =>
+        {
+            Assert.Equal(HttpMethod.Post, request.Method);
+            Assert.Equal(
+                "/api/v1/processing-services/Preparer/authoring/runs/reconciliation-run/publication-reconciliation/cancel",
+                request.RequestUri!.AbsolutePath);
+            JsonElement body = JsonDocument.Parse(
+                await request.Content!.ReadAsStringAsync(ct)).RootElement;
+            Assert.Equal(
+                "frozen revision changed",
+                body.GetProperty("reason").GetString());
+            PublicationReconciliationStatusResult status =
+                ReconciliationStatusResult("cancelled") with
+                {
+                    Run = ReconciliationRunStatus() with
+                    {
+                        Status = "superseded",
+                    },
+                    Promotion = new(
+                        "cancelled",
+                        "cancelled",
+                        false,
+                        CancelledAt: cancelledAt,
+                        CancellationReason:
+                            "frozen revision changed"),
+                };
+            return DelegateHttpHandler.Json(
+                new PublicationReconciliationCancelResult(
+                    status,
+                    cancelledAt,
+                    "frozen revision changed"));
+        });
+
+        object result = await PreparedTicketAuthoringHandler.HandleAsync(
+            new PreparedTicketAuthoringRequest
+            {
+                Action = "cancel-reconciliation",
+                RunId = "reconciliation-run",
+                Reason = "frozen revision changed",
+            },
+            "http://orchestrator",
+            CancellationToken.None,
+            handler);
+
+        PublicationReconciliationCancelResult cancelled =
+            Assert.IsType<PublicationReconciliationCancelResult>(result);
+        Assert.Equal("cancelled", cancelled.Status.Promotion.State);
+        Assert.Equal(cancelledAt, cancelled.CancelledAt);
+        Assert.Equal(
+            "frozen revision changed",
+            cancelled.Reason);
+    }
+
+    [Fact]
     public async Task ReconciliationConflictPreservesMachineReadableFailureCode()
     {
         AuthoringHttpClient.EnsureOuterMode();
@@ -273,6 +332,42 @@ public sealed class PreparedTicketAuthoringHandlerTests
         Assert.Equal("recovery-in-progress", error.ErrorCode);
         Assert.Equal(["pending-run"], error.RelatedRunIds);
         Assert.Equal(HttpStatusCode.Conflict, error.StatusCode);
+    }
+
+    [Fact]
+    public async Task CancellationConflictPreservesMachineReadableFailureCode()
+    {
+        AuthoringHttpClient.EnsureOuterMode();
+        DelegateHttpHandler handler = new((request, _, _) =>
+        {
+            Assert.EndsWith(
+                "/publication-reconciliation/cancel",
+                request.RequestUri!.AbsolutePath,
+                StringComparison.Ordinal);
+            return Task.FromResult(
+                DelegateHttpHandler.Json(
+                    new PreparedTicketPublicationReconciliationFailure(
+                        "cancellation-not-allowed",
+                        "Trusted candidate already exists.",
+                        RunId: "reconciliation-run"),
+                    HttpStatusCode.Conflict));
+        });
+
+        AuthoringControlException error =
+            await Assert.ThrowsAsync<AuthoringControlException>(() =>
+                PreparedTicketAuthoringHandler.HandleAsync(
+                    new PreparedTicketAuthoringRequest
+                    {
+                        Action = "cancel-reconciliation",
+                        RunId = "reconciliation-run",
+                        Reason = "source changed",
+                    },
+                    "http://orchestrator",
+                    CancellationToken.None,
+                    handler));
+
+        Assert.Equal("cancellation-not-allowed", error.ErrorCode);
+        Assert.Equal(["reconciliation-run"], error.RelatedRunIds);
     }
 
     [Fact]

@@ -339,6 +339,21 @@ else if (_details is not null)
                 </div>
                 <StatusIndicator Status="@reconciliation.Promotion.State" />
             </div>
+            @if (_lastReconciliation is
+                    TicketPublicationReconciliationResult operationResult &&
+                operationResult.Disposition !=
+                    TicketOperationDisposition.Succeeded)
+            {
+                <div class="alert alert-warning" role="alert">
+                    <strong>Reconciliation action was not applied.</strong>
+                    @if (!string.IsNullOrWhiteSpace(
+                        operationResult.FailureCode))
+                    {
+                        <code>@operationResult.FailureCode</code>
+                    }
+                    @operationResult.Message
+                </div>
+            }
             <dl class="row">
                 <dt class="col-sm-6">Stable Jira generation</dt>
                 <dd class="col-sm-6"><code>@reconciliation.Comparison.StableJiraGeneration</code></dd>
@@ -368,6 +383,50 @@ else if (_details is not null)
                         }
                     </ul>
                 </div>
+            }
+            @if (string.Equals(
+                reconciliation.Promotion.State,
+                "staged",
+                StringComparison.Ordinal))
+            {
+                <div class="callout callout--warning">
+                    <i class="bi bi-x-octagon-fill" aria-hidden="true"></i>
+                    <div>
+                        <strong>Staged reconciliation can be cancelled before promotion.</strong>
+                        Cancellation is terminal, releases mutation fences, and
+                        retains the frozen comparison and audited reason without
+                        replacing canonical data.
+                    </div>
+                </div>
+                <button class="btn btn-outline-danger"
+                        type="button"
+                        disabled="@_refreshingPublication"
+                        @onclick="ToggleCancellationConfirmation">
+                    Cancel staged reconciliation…
+                </button>
+                @if (_confirmingCancellation)
+                {
+                    <div class="alert alert-warning mt-3" role="group">
+                        <strong>No staged work will be promoted.</strong>
+                        <p>
+                            Completed and pending reconciliation workspace will
+                            be closed and only the immutable cancellation audit
+                            will remain.
+                        </p>
+                        <label for="cancellation-reason" class="form-label">
+                            Audited reason
+                        </label>
+                        <input id="cancellation-reason"
+                               class="form-control"
+                               @bind="_cancellationReason" />
+                        <button class="btn btn-danger mt-2"
+                                type="button"
+                                disabled="@string.IsNullOrWhiteSpace(_cancellationReason)"
+                                @onclick="CancelReconciliationAsync">
+                            Confirm cancellation
+                        </button>
+                    </div>
+                }
             }
             <div class="table-responsive">
                 <table class="table table-sm align-middle">
@@ -456,10 +515,27 @@ else if (_details is not null)
                     workflows remain restricted for this canonical epoch.
                 </div>
             }
+            else if (string.Equals(
+                reconciliation.Promotion.State,
+                "cancelled",
+                StringComparison.Ordinal))
+            {
+                <div class="alert alert-secondary" role="status">
+                    <strong>Reconciliation was cancelled before promotion.</strong>
+                    @if (!string.IsNullOrWhiteSpace(
+                        reconciliation.Promotion.CancellationReason))
+                    {
+                        <span>
+                            Audited reason:
+                            @reconciliation.Promotion.CancellationReason
+                        </span>
+                    }
+                </div>
+            }
         </section>
     }
 
-    <RunItemsTable Items="@_details.Response.Items"
+    <RunItemsTable Items="@VisibleRunItems"
                    BusyItemId="@_busyItemId"
                    BusyAction="@_busyAction"
                    Disabled="@(_publishing || _refreshingPublication)"
@@ -509,10 +585,24 @@ else if (_details is not null)
     private bool _manualRefreshing;
     private bool _publishing;
     private bool _refreshingPublication;
+    private bool _confirmingCancellation;
+    private string _cancellationReason = "";
     private bool _confirmingAbandonment;
     private string _abandonmentReason = "";
     private bool _sessionStarted;
     private bool _disposed;
+
+    private IReadOnlyList<AuthoringRunItemStatus> VisibleRunItems =>
+        _details?.Reconciliation is null
+            ? _details?.Response.Items ?? []
+            : (_details?.Response.Items ?? [])
+                .Select(item => item with
+                {
+                    AllowedActions = new AuthoringAllowedActions(
+                        item.AllowedActions?.CanRetryNow == true,
+                        CanSupersede: false),
+                })
+                .ToArray();
 
     private string MutationAlertClass =>
         _mutationException is not null
@@ -685,6 +775,8 @@ else if (_details is not null)
         _manualRefreshing = false;
         _publishing = false;
         _refreshingPublication = false;
+        _confirmingCancellation = false;
+        _cancellationReason = "";
         _confirmingAbandonment = false;
         _abandonmentReason = "";
         _sessionStarted = false;
@@ -1091,15 +1183,22 @@ else if (_details is not null)
     }
 
     private Task RetryReconciliationAsync() =>
-        MutateReconciliationAsync(abandon: false);
+        MutateReconciliationAsync(ReconciliationMutation.Retry);
+
+    private Task CancelReconciliationAsync() =>
+        MutateReconciliationAsync(ReconciliationMutation.Cancel);
 
     private Task AbandonReconciliationAsync() =>
-        MutateReconciliationAsync(abandon: true);
+        MutateReconciliationAsync(ReconciliationMutation.Abandon);
+
+    private void ToggleCancellationConfirmation() =>
+        _confirmingCancellation = !_confirmingCancellation;
 
     private void ToggleAbandonConfirmation() =>
         _confirmingAbandonment = !_confirmingAbandonment;
 
-    private async Task MutateReconciliationAsync(bool abandon)
+    private async Task MutateReconciliationAsync(
+        ReconciliationMutation mutation)
     {
         if (_definition is null || _refreshingPublication)
         {
@@ -1110,16 +1209,29 @@ else if (_details is not null)
         StateHasChanged();
         try
         {
-            TicketPublicationReconciliationResult result = abandon
-                ? await Operations.AbandonPublicationReconciliationAsync(
-                    _definition.RouteKey,
-                    RunId,
-                    _abandonmentReason,
-                    _routeLifetime?.Token ?? default)
-                : await Operations.RetryPublicationReconciliationAsync(
-                    _definition.RouteKey,
-                    RunId,
-                    _routeLifetime?.Token ?? default);
+            TicketPublicationReconciliationResult result =
+                mutation switch
+                {
+                    ReconciliationMutation.Cancel =>
+                        await Operations
+                            .CancelPublicationReconciliationAsync(
+                                _definition.RouteKey,
+                                RunId,
+                                _cancellationReason,
+                                _routeLifetime?.Token ?? default),
+                    ReconciliationMutation.Abandon =>
+                        await Operations
+                            .AbandonPublicationReconciliationAsync(
+                                _definition.RouteKey,
+                                RunId,
+                                _abandonmentReason,
+                                _routeLifetime?.Token ?? default),
+                    _ => await Operations
+                        .RetryPublicationReconciliationAsync(
+                            _definition.RouteKey,
+                            RunId,
+                            _routeLifetime?.Token ?? default),
+                };
             _lastReconciliation = result;
             if (result.Status is
                 PublicationReconciliationStatusResult status &&
@@ -1131,6 +1243,7 @@ else if (_details is not null)
                     Reconciliation = status,
                 };
             }
+            _confirmingCancellation = false;
             _confirmingAbandonment = false;
         }
         catch (OperationCanceledException)
@@ -1147,6 +1260,13 @@ else if (_details is not null)
             _refreshingPublication = false;
             StateHasChanged();
         }
+    }
+
+    private enum ReconciliationMutation
+    {
+        Retry,
+        Cancel,
+        Abandon,
     }
 
     private void AcknowledgeUnknownPublicationRefresh()

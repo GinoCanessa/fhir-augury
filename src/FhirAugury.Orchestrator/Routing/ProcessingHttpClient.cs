@@ -146,6 +146,18 @@ public class ProcessingHttpClient
             body: null,
             ct);
 
+    public Task<ProcessingProxyResponse> CancelPublicationReconciliationAsync(
+        string name,
+        string runId,
+        JsonElement request,
+        CancellationToken ct) =>
+        ForwardAsync(
+            name,
+            HttpMethod.Post,
+            $"{GetAuthoringPath(name)}/{Uri.EscapeDataString(runId)}/publication-reconciliation/cancel",
+            request,
+            ct);
+
     public Task<ProcessingProxyResponse> AbandonPublicationReconciliationAsync(
         string name,
         string runId,

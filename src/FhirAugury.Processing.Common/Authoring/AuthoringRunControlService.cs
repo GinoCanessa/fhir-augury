@@ -60,7 +60,7 @@ public sealed class AuthoringRunControlService(
                 AuthoringStatusValues.Items.Superseded,
                 StringComparison.Ordinal));
         AuthoringRunItemStatus[] itemStatuses = items
-            .Select(item => ToStatus(item, isFenced))
+            .Select(item => ToStatus(item, run.Purpose, isFenced))
             .ToArray();
 
         return new AuthoringRunControlStatus(
@@ -98,9 +98,20 @@ public sealed class AuthoringRunControlService(
         AuthoringItemSupersedeRequest request,
         CancellationToken ct = default)
     {
+        AuthoringRunRecord run =
+            await GetOwnedRunAsync(processorKind, runId, ct);
+        _ = await GetOwnedItemAsync(processorKind, runId, itemId, ct);
+        if (string.Equals(
+                run.Purpose,
+                AuthoringRunPurposeValues.PublicationReconciliation,
+                StringComparison.Ordinal))
+        {
+            throw new AuthoringConflictException(
+                AuthoringConflictCode.ReconciliationCancelRequired,
+                $"Publication reconciliation item '{itemId}' cannot be superseded. Cancel reconciliation '{runId}' instead.");
+        }
         ArgumentNullException.ThrowIfNull(request);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Reason);
-        await GetOwnedItemAsync(processorKind, runId, itemId, ct);
         return await store.SupersedeErroredItemAsync(
             runId,
             itemId,
@@ -157,6 +168,7 @@ public sealed class AuthoringRunControlService(
 
     private AuthoringRunItemStatus ToStatus(
         AuthoringRunItemRecord item,
+        string runPurpose,
         bool isFenced)
     {
         bool isError = string.Equals(
@@ -182,7 +194,11 @@ public sealed class AuthoringRunControlService(
             (hasAcceptedReceipt || hasAttemptsRemaining);
         bool canSupersede = isFenced &&
             isError &&
-            !hasAcceptedReceipt;
+            !hasAcceptedReceipt &&
+            !string.Equals(
+                runPurpose,
+                AuthoringRunPurposeValues.PublicationReconciliation,
+                StringComparison.Ordinal);
         DateTimeOffset? nextAutomaticRetryAt =
             canRetryNow && item.CompletedAt is not null
             ? retryPolicy.GetNextAutomaticRetryAt(item.CompletedAt.Value)

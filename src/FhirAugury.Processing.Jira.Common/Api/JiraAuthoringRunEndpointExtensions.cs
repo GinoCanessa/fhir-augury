@@ -198,7 +198,9 @@ public static class JiraAuthoringRunEndpointExtensions
         }
         catch (AuthoringConflictException ex)
         {
-            return Results.Conflict(ToConflictResponse(ex.Code.ToString(), ex));
+            return Results.Conflict(ToConflictResponse(
+                ToConflictCode(ex.Code),
+                ex));
         }
     }
 
@@ -210,19 +212,19 @@ public static class JiraAuthoringRunEndpointExtensions
         AuthoringRunControlService controlService,
         CancellationToken ct)
     {
-        if (request is null || string.IsNullOrWhiteSpace(request.Reason))
-        {
-            return Results.BadRequest(new { error = "A non-empty supersede reason is required." });
-        }
-
         try
         {
             return Results.Ok(await controlService.SupersedeItemAsync(
                 coordinator.ProcessorKind,
                 runId,
                 itemId,
-                request,
+                request ?? new AuthoringItemSupersedeRequest(string.Empty),
                 ct));
+        }
+        catch (ArgumentException)
+        {
+            return Results.BadRequest(
+                new { error = "A non-empty supersede reason is required." });
         }
         catch (KeyNotFoundException ex)
         {
@@ -230,7 +232,9 @@ public static class JiraAuthoringRunEndpointExtensions
         }
         catch (AuthoringConflictException ex)
         {
-            return Results.Conflict(ToConflictResponse(ex.Code.ToString(), ex));
+            return Results.Conflict(ToConflictResponse(
+                ToConflictCode(ex.Code),
+                ex));
         }
     }
 
@@ -348,6 +352,11 @@ public static class JiraAuthoringRunEndpointExtensions
                 ? conflictingRunIds[0]
                 : null));
     }
+
+    private static string ToConflictCode(AuthoringConflictCode code)
+        => code == AuthoringConflictCode.ReconciliationCancelRequired
+            ? "reconciliation-cancel-required"
+            : code.ToString();
 }
 
 public sealed record JiraAuthoringRunResponse(

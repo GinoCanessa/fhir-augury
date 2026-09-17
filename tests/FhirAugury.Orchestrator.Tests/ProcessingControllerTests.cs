@@ -183,6 +183,14 @@ public class ProcessingControllerTests
                 "Planner",
                 "reconciliation-run",
                 CancellationToken.None));
+        ContentResult cancel = Assert.IsType<ContentResult>(
+            await controller.CancelPublicationReconciliation(
+                "Planner",
+                "reconciliation-run",
+                JsonDocument.Parse(
+                    """{"reason":"frozen revision changed"}""")
+                    .RootElement.Clone(),
+                CancellationToken.None));
         ContentResult abandon = Assert.IsType<ContentResult>(
             await controller.AbandonPublicationReconciliation(
                 "Planner",
@@ -200,6 +208,8 @@ public class ProcessingControllerTests
         Assert.Equal(StatusCodes.Status409Conflict, retry.StatusCode);
         Assert.Equal("17", controller.Response.Headers.RetryAfter.ToString());
         Assert.Contains("recovery-in-progress", retry.Content);
+        Assert.Equal(StatusCodes.Status409Conflict, cancel.StatusCode);
+        Assert.Contains("cancellation-not-allowed", cancel.Content);
         Assert.Equal(StatusCodes.Status200OK, abandon.StatusCode);
         Assert.Contains("canonical-unpublished", abandon.Content);
     }
@@ -324,6 +334,8 @@ public class ProcessingControllerTests
                     ReconciliationStatusEnvelope,
                 "/processing/authoring/runs/reconciliation-run/publication-reconciliation/retry" =>
                     """{"error":"recovery-in-progress","detail":"Snapshot publication is still pending.","conflictingRunIds":["reconciliation-run"],"runId":"reconciliation-run"}""",
+                "/processing/authoring/runs/reconciliation-run/publication-reconciliation/cancel" =>
+                    """{"error":"cancellation-not-allowed","detail":"Canonical promotion already started.","conflictingRunIds":[],"runId":"reconciliation-run"}""",
                 "/processing/authoring/runs/reconciliation-run/publication-reconciliation/abandon" =>
                     ReconciliationAbandonEnvelope,
                 "/processing/authoring/runs/run-1/items/item-1/retry" =>
@@ -345,6 +357,10 @@ public class ProcessingControllerTests
                     ? HttpStatusCode.Accepted
                 : path.EndsWith(
                     "/publication-reconciliation/retry",
+                    StringComparison.Ordinal)
+                    ? HttpStatusCode.Conflict
+                : path.EndsWith(
+                    "/publication-reconciliation/cancel",
                     StringComparison.Ordinal)
                     ? HttpStatusCode.Conflict
                 : path.EndsWith("/supersede", StringComparison.Ordinal)

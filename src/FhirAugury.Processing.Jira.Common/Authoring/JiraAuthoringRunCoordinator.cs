@@ -217,6 +217,15 @@ public sealed class JiraAuthoringRunCoordinator(
         string runId,
         CancellationToken ct = default)
     {
+        AuthoringRunRecord? run = await authoringStore.GetRunAsync(runId, ct);
+        if (string.Equals(
+                run?.Purpose,
+                AuthoringRunPurposeValues.PublicationReconciliation,
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
         AuthoringProcessorModeRecord mode =
             await authoringStore.GetProcessorModeAsync(ProcessorKind, ct);
         bool initialRevalidation = mode.RevalidationRequired &&
