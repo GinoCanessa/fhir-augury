@@ -75,7 +75,9 @@ public sealed record PublicationReconciliationProof(
     int ReAuthorTicketCount,
     string CorpusFingerprint,
     string GroupingImpactFingerprint,
-    DateTimeOffset CapturedAt);
+    DateTimeOffset CapturedAt,
+    // Nullable only for audit-only v1/v2 JSON and constructor compatibility.
+    string? GroupingFingerprint = null);
 
 public sealed record PublicationReconciliationStartResult(
     AuthoringRunStatus Run,
@@ -293,6 +295,7 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
         "publication-refresh";
     private const string PublicationReconciliationPurpose =
         "publication-reconciliation";
+    private const int PublicationReconciliationContractVersion = 3;
     private const string CanonicalEpochRecoveryPurpose =
         "canonical-epoch-recovery";
 
@@ -458,6 +461,7 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
             response.Comparison,
             response.Counts,
             sourceRunId);
+        EnsureCurrentReconciliationComparison(response.Comparison);
         return response;
     }
 
@@ -501,7 +505,11 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
             Deserialize<PublicationReconciliationRetryResult>(
                 raw.Content,
                 path);
-        ValidateReconciliationStatus(response.Status, service, runId);
+        ValidateReconciliationStatus(
+            response.Status,
+            service,
+            runId,
+            requireCurrentEvidence: true);
         return response;
     }
 
@@ -1340,7 +1348,8 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
     private static void ValidateReconciliationStatus(
         PublicationReconciliationStatusResult response,
         string serviceName,
-        string runId)
+        string runId,
+        bool requireCurrentEvidence = false)
     {
         ValidateReconciliationRun(
             response.Run,
@@ -1352,6 +1361,10 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
             response.Comparison,
             response.Counts,
             response.Run.SourceRunId);
+        if (requireCurrentEvidence)
+        {
+            EnsureCurrentReconciliationComparison(response.Comparison);
+        }
         if (response.GroupingImpacts is null ||
             response.InvalidatedTicketKeys is null ||
             response.Promotion is null ||
@@ -1388,6 +1401,7 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
             throw new InvalidOperationException(
                 $"Publication reconciliation response has unknown promotion state '{response.Promotion.State}'.");
         }
+        ValidateReconciliationProof(response, requireCurrentEvidence);
         if (string.Equals(
                 response.Promotion.State,
                 "cancelled",
@@ -1437,6 +1451,57 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
         {
             throw new InvalidOperationException(
                 "Publication reconciliation response has an inconsistent canonical-epoch recovery link.");
+        }
+    }
+
+    private static void EnsureCurrentReconciliationComparison(
+        PublicationReconciliationComparison comparison)
+    {
+        if (comparison.ContractVersion !=
+            PublicationReconciliationContractVersion)
+        {
+            throw new InvalidOperationException(
+                $"Publication reconciliation contract version {comparison.ContractVersion} is readable for status and audit only.");
+        }
+    }
+
+    private static void ValidateReconciliationProof(
+        PublicationReconciliationStatusResult response,
+        bool requireCurrentEvidence)
+    {
+        PublicationReconciliationProof? proof = response.PublicationProof;
+        if (proof is null)
+        {
+            if (requireCurrentEvidence &&
+                response.Promotion.State is "snapshot-publish-pending" or "ready")
+            {
+                throw new InvalidOperationException(
+                    "Publication reconciliation recovery requires a current publication proof.");
+            }
+            return;
+        }
+        if (!requireCurrentEvidence && proof.ContractVersion is 1 or 2)
+        {
+            return;
+        }
+        if (proof.ContractVersion != PublicationReconciliationContractVersion ||
+            response.Comparison.ContractVersion !=
+                PublicationReconciliationContractVersion ||
+            proof.Purpose != PublicationReconciliationPurpose ||
+            proof.SourceRunId != response.Comparison.SourceRunId ||
+            proof.SourceSnapshotId != response.Comparison.SourceSnapshotId ||
+            proof.StableJiraGeneration != response.Comparison.StableJiraGeneration ||
+            proof.AcceptedTicketCount != response.Counts.AcceptedTicketCount ||
+            proof.CarryForwardTicketCount != response.Counts.CarryForwardTicketCount ||
+            proof.ReAuthorTicketCount != response.Counts.ReAuthorTicketCount ||
+            !IsCanonicalSha256(proof.CorpusFingerprint) ||
+            !IsCanonicalSha256(proof.GroupingFingerprint) ||
+            !IsCanonicalSha256(proof.GroupingImpactFingerprint) ||
+            proof.CapturedAt == default ||
+            proof.CapturedAt.Offset != TimeSpan.Zero)
+        {
+            throw new InvalidOperationException(
+                "Publication reconciliation response has legacy, incomplete, or inconsistent publication proof.");
         }
     }
 

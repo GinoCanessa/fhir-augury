@@ -1133,7 +1133,8 @@ public sealed class PreparedTicketPublicationReconciliationTests
             1,
             Hash('d'),
             Hash('e'),
-            capturedAt);
+            capturedAt,
+            Hash('f'));
 
         string json = JsonSerializer.Serialize(
             new { comparison, counts, promotion, proof },
@@ -1172,6 +1173,15 @@ public sealed class PreparedTicketPublicationReconciliationTests
         Assert.Equal(
             "publication-reconciliation",
             root.GetProperty("proof").GetProperty("purpose").GetString());
+        Assert.Equal(
+            3,
+            root.GetProperty("proof").GetProperty("contractVersion").GetInt32());
+        Assert.Equal(
+            Hash('f'),
+            root.GetProperty("proof").GetProperty("groupingFingerprint").GetString());
+        Assert.Equal(
+            Hash('e'),
+            root.GetProperty("proof").GetProperty("groupingImpactFingerprint").GetString());
         Assert.Equal(
             "publication-refresh",
             PreparedTicketPublicationContract.PublicationRefreshPurpose);
@@ -1232,13 +1242,16 @@ public sealed class PreparedTicketPublicationReconciliationTests
             PreparedTicketPublicationContract.SerializeCorpus(
                 corpus.Reverse()));
         Assert.Equal(
-            2,
+            3,
             PreparedTicketPublicationReconciliationContract.CurrentVersion);
         Assert.Equal(1, PreparedTicketPublicationContract.CurrentVersion);
     }
 
-    [Fact]
-    public async Task VersionOneComparison_RemainsReadableButCannotResumeExecution()
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task LegacyReconciliation_RemainsReadableButCannotResumeExecution(
+        int contractVersion)
     {
         using Fixture fixture = new();
         string runId = $"legacy-reconciliation-{Guid.NewGuid():N}";
@@ -1246,7 +1259,7 @@ public sealed class PreparedTicketPublicationReconciliationTests
             new(2026, 9, 16, 12, 0, 0, TimeSpan.Zero);
         string comparisonJson = JsonSerializer.Serialize(new
         {
-            ContractVersion = 1,
+            ContractVersion = contractVersion,
             SourceRunId = "source-run",
             SourceSnapshotId = "source-snapshot",
             SourceSnapshotSha256 = Hash('a'),
@@ -1268,8 +1281,15 @@ public sealed class PreparedTicketPublicationReconciliationTests
                     BaselineContributingRunId = "run-1",
                     BaselineAuthoredFingerprint = Hash('c'),
                     BaselineGroupingFingerprint = Hash('d'),
+                    ItemKind = contractVersion == 2 ? "fhir" : null,
+                    ExpectedSourceRevision =
+                        contractVersion == 2 ? "revision-1" : null,
                 },
             },
+        }, new JsonSerializerOptions
+        {
+            DefaultIgnoreCondition =
+                System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
         });
         fixture.Execute(
             """
@@ -1296,11 +1316,13 @@ public sealed class PreparedTicketPublicationReconciliationTests
             Assert.IsType<PreparedTicketPublicationReconciliationComparison>(
                 await fixture.Database
                     .GetPublicationReconciliationComparisonAsync(runId));
-        Assert.Equal(1, readable.ContractVersion);
+        Assert.Equal(contractVersion, readable.ContractVersion);
         PreparedTicketPublicationReconciliationItemDecision legacy =
             Assert.Single(readable.Items);
-        Assert.Null(legacy.ItemKind);
-        Assert.Null(legacy.ExpectedSourceRevision);
+        Assert.Equal(contractVersion == 2 ? "fhir" : null, legacy.ItemKind);
+        Assert.Equal(
+            contractVersion == 2 ? "revision-1" : null,
+            legacy.ExpectedSourceRevision);
 
         await Assert.ThrowsAsync<NotSupportedException>(
             () => fixture.Database
@@ -1309,8 +1331,17 @@ public sealed class PreparedTicketPublicationReconciliationTests
             () => new PreparedTicketGroupingDeltaDispatcher(fixture.Database)
                 .PrepareAsync(runId));
         await Assert.ThrowsAsync<NotSupportedException>(
+            () => new PreparedTicketGroupingDeltaDispatcher(fixture.Database)
+                .CreateProofAsync(runId));
+        await Assert.ThrowsAsync<NotSupportedException>(
             () => fixture.Database
                 .GetPendingPublicationReconciliationAsync(runId));
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => fixture.Database
+                .GetRecoverablePublicationReconciliationAsync(runId));
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => fixture.Database
+                .MarkPublicationReconciliationReadyAsync(runId));
         await Assert.ThrowsAsync<NotSupportedException>(
             () => fixture.Database.PromotePublicationReconciliationAsync(
                 runId,
@@ -1336,8 +1367,57 @@ public sealed class PreparedTicketPublicationReconciliationTests
             SourceRunId = "source-run",
             CreatedAt = capturedAt,
         };
+        string proofJson = JsonSerializer.Serialize(new
+        {
+            ContractVersion = contractVersion,
+            Purpose = PreparedTicketPublicationReconciliationContract.Purpose,
+            SourceRunId = "source-run",
+            SourceSnapshotId = "source-snapshot",
+            StableJiraGeneration = "42",
+            AcceptedTicketCount = 1,
+            CarryForwardTicketCount = 1,
+            ReAuthorTicketCount = 0,
+            CorpusFingerprint = Hash('b'),
+            GroupingImpactFingerprint = Hash('e'),
+            CapturedAt = capturedAt,
+        });
+        PreparedTicketPublicationReconciliationProof proof =
+            Assert.IsType<PreparedTicketPublicationReconciliationProof>(
+                JsonSerializer.Deserialize<
+                    PreparedTicketPublicationReconciliationProof>(proofJson));
+        Assert.Equal(contractVersion, proof.ContractVersion);
+        Assert.Null(proof.GroupingFingerprint);
+        Assert.Equal(Hash('e'), proof.GroupingImpactFingerprint);
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => fixture.Database.SavePublicationReconciliationProofAsync(
+                runId,
+                proof));
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => materializer.MaterializeReconciliationCandidateAsync(
+                run,
+                proof));
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => materializer.MaterializeReconciliationCandidateAsync(
+                run,
+                proof with
+                {
+                    ContractVersion =
+                        PreparedTicketPublicationReconciliationContract.CurrentVersion,
+                    GroupingFingerprint = Hash('f'),
+                }));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("not-a-sha256")]
+    public async Task CurrentReconciliationProof_RequiresCompleteGroupingFingerprint(
+        string? groupingFingerprint)
+    {
+        using Fixture fixture = new();
         PreparedTicketPublicationReconciliationProof proof = new(
-            1,
+            PreparedTicketPublicationReconciliationContract.CurrentVersion,
             PreparedTicketPublicationReconciliationContract.Purpose,
             "source-run",
             "source-snapshot",
@@ -1345,13 +1425,39 @@ public sealed class PreparedTicketPublicationReconciliationTests
             1,
             1,
             0,
+            Hash('a'),
             Hash('b'),
-            Hash('e'),
-            capturedAt);
-        await Assert.ThrowsAsync<NotSupportedException>(
+            DateTimeOffset.UtcNow,
+            groupingFingerprint);
+        PreparedTicketSnapshotMaterializer materializer = new(
+            fixture.Database,
+            fixture.Store,
+            new SqliteReviewSnapshotReconciler(fixture.Store),
+            Options.Create(new PreparerServiceOptions
+            {
+                SnapshotDirectory = fixture.SnapshotDirectory,
+                SnapshotSchemaVersion = PreparedTicketSnapshotSchemaV3.Version,
+            }));
+        AuthoringRunRecord run = new()
+        {
+            Id = "reconciliation-run",
+            ProcessorKind = "jira-fhir",
+            Status = AuthoringStatusValues.Runs.Finalizing,
+            Purpose = PreparedTicketPublicationReconciliationContract.Purpose,
+            SourceRunId = proof.SourceRunId,
+            CreatedAt = proof.CapturedAt,
+        };
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => fixture.Database.SavePublicationReconciliationProofAsync(
+                run.Id,
+                proof));
+        await Assert.ThrowsAsync<ArgumentException>(
             () => materializer.MaterializeReconciliationCandidateAsync(
                 run,
                 proof));
+        Assert.Equal(0, fixture.CountLive("prepared_ticket_publication_reconciliation_proofs"));
+        Assert.Equal(0, fixture.CountLive("prepared_ticket_publication_snapshot_descriptors"));
     }
 
     [Theory]

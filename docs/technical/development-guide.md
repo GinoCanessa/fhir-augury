@@ -334,6 +334,25 @@ boundaries when changing it:
   `authoring_runs` lifecycle row is excluded from the authored-output
   fingerprint; no canonical ticket, receipt coordinate, or unaffected
   grouping row is excluded.
+- **Complete publication grouping proof:** reconciliation contract v3 binds
+  both the canonical corpus and the full resulting grouping. Use
+  `ComputeReconciliationGroupingFingerprint` with unaffected canonical
+  partition outputs and complete staged replacements, then compare it with
+  the grouping read back from the sanitized candidate. Empty, zero-member
+  replacements remove partitions from that output but remain in the impact
+  audit. Promote `candidate.GroupingFingerprint` into the public descriptor;
+  keep `GroupingImpactFingerprint` only in reconciliation-specific audit
+  proof/status. The publisher must recompute and compare both complete
+  fingerprints from a real immutable producer pair, not accept hash shape or
+  discard a computed grouping hash.
+- **Reconciliation evidence migration:** private and public reconciliation
+  proofs require version 3. Versions 1/2 remain readable for status/audit
+  only and cannot group, materialize, recover, promote, or establish
+  readiness. Nullable constructor/JSON fields exist for genuine legacy
+  diagnostics, not to make the v3 full fingerprint optional. Never infer a
+  missing hash, reuse the impact digest, or relabel old evidence. The shared
+  canonical serialization remains v1, as do refresh and dedicated
+  canonical-epoch recovery proof contracts.
 - **Immutable output:** while reconciliation is still staged, reserve the
   snapshot ID, processor/run, sequence, authoring epoch, schema, item/receipt
   counts, temporary/final paths, and creation time. Build and sanitize the
@@ -398,7 +417,7 @@ boundaries when changing it:
   selection, fence, receipt-backed corpus, grouping, and exact canonical
   values before materialization and final CAS. Keep canonical output and
   the old publication unchanged. Recovery's dedicated v1 proof and full
-  grouping serialization are independent of reconciliation contract v2;
+  grouping serialization are independent of reconciliation contract v3;
   never reinterpret an impact digest as full grouping output.
 - **Provenance-before-hash recovery:** reserve snapshot coordinates, then
   copy/sanitize schema v3, write exactly one provenance row, checkpoint,

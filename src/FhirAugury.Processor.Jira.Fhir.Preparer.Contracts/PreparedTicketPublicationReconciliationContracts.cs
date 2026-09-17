@@ -4,8 +4,23 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 
 public static class PreparedTicketPublicationReconciliationContract
 {
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
     public const string Purpose = "publication-reconciliation";
+
+    public static void EnsureCurrentProof(
+        PreparedTicketPublicationReconciliationProof proof)
+    {
+        ArgumentNullException.ThrowIfNull(proof);
+        if (proof.ContractVersion != CurrentVersion ||
+            proof.Purpose != Purpose)
+        {
+            throw new NotSupportedException(
+                $"Reconciliation proof contract version {proof.ContractVersion} and purpose '{proof.Purpose}' are readable for status and audit only.");
+        }
+        PreparedTicketPublicationContract.RequireSha256(
+            proof.GroupingFingerprint,
+            nameof(proof.GroupingFingerprint));
+    }
 }
 
 public static class PreparedTicketPublicationReconciliationDispositionValues
@@ -138,7 +153,9 @@ public sealed record PreparedTicketPublicationReconciliationProof(
     int ReAuthorTicketCount,
     string CorpusFingerprint,
     string GroupingImpactFingerprint,
-    DateTimeOffset CapturedAt);
+    DateTimeOffset CapturedAt,
+    // Nullable only for audit-only v1/v2 JSON and constructor compatibility.
+    string? GroupingFingerprint = null);
 
 public sealed record PreparedTicketPublicationReconciliationStartResult(
     AuthoringRunStatus Run,

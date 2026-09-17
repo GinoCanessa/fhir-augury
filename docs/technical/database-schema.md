@@ -856,7 +856,7 @@ The immutable JSON snapshot descriptor exposes the optional
 
 | Field | Meaning |
 |-------|---------|
-| `contractVersion` | Canonical Preparer publication-proof contract version |
+| `contractVersion` | Purpose-specific proof version: reconciliation `3`; refresh and canonical-epoch recovery `1` |
 | `purpose` | Exact value `publication-refresh`, `publication-reconciliation`, or `canonical-epoch-recovery` |
 | `sourceRunId` | Refresh/reconciliation: operator-selected completed source run; recovery: terminal abandoned reconciliation |
 | `sourceName` | Exact source value `jira` |
@@ -864,7 +864,7 @@ The immutable JSON snapshot descriptor exposes the optional
 | `sourceContentRevision` | Refresh/reconciliation: stable Jira content generation; recovery: authoring epoch, not a Jira freshness claim |
 | `publicDisplayNamePolicyVersion` | Refresh: current public people-policy version; reconciliation/recovery: `0` for the dedicated purpose-specific proof |
 | `corpusFingerprint` | Refresh/recovery: complete accepted receipt/item/source-revision membership; reconciliation: carried-plus-staged overlay corpus |
-| `groupingFingerprint` | Refresh/recovery: complete canonical grouping output; reconciliation v2: complete grouping-impact fingerprint |
+| `groupingFingerprint` | Complete canonical grouping output for every current purpose, including the verified reconciliation candidate's full grouping in v3; never an impact digest |
 | `capturedAt` | Canonical UTC time after all proof-bearing stages completed |
 
 `PublicationProofJson` lets snapshot promotion/reconciliation restore the same
@@ -875,11 +875,15 @@ public snapshot's `authoring_snapshot_provenance` table. Likewise, the live
 boundary, so schema v3 remains an additive people-policy revision of the v2
 snapshot catalog rather than a copy of every live maintenance table.
 
-The descriptor's `contractVersion` is the independent generic
-`PreparedTicketPublicationContract` version (currently 1), including for a
-reconciliation publication. Private reconciliation comparison/proof JSON is
-contract v2; promotion does not copy that private version number into the
-generic descriptor contract.
+Reconciliation comparison/proof JSON and its public descriptor now carry
+contract v3. The shared canonical corpus and grouping hash serialization
+(`PreparedTicketPublicationContract.CurrentVersion`) remains v1; it is not the
+reconciliation evidence-version gate. Refresh and dedicated canonical-epoch
+recovery still use v1 descriptors and unchanged hashing. Historical
+reconciliation v1/v2 evidence, including older v1 generic descriptors that
+stored an impact digest, is diagnostic only and cannot establish readiness.
+No snapshot-schema or table-column migration is required: the proof and
+candidate fields are persisted in their existing JSON columns.
 
 ### Preparer public snapshot schemas v2 and v3
 
@@ -935,7 +939,7 @@ public boundary is the sanitized snapshot plus its descriptor proof.
 | `SourceSnapshotSha256` | TEXT | Baseline database digest |
 | `StableJiraGeneration` | TEXT | One generation shared by the complete Jira observation |
 | `CorpusFingerprint` | TEXT | Frozen accepted baseline corpus |
-| `ComparisonJson` | TEXT | Contract-v2 complete per-ticket decisions and coordinates |
+| `ComparisonJson` | TEXT | Contract-v3 complete per-ticket decisions and coordinates |
 | `PromotionState` | TEXT | `staged`, `snapshot-publish-pending`, `ready`, `cancelled`, or `canonical-unpublished` |
 | `CapturedAt` | TEXT | UTC comparison capture time |
 | `CancelledAt` | TEXT? | Immutable audited pre-promotion cancellation time |
@@ -1026,13 +1030,16 @@ and remain exact.
 | Table | Key | Durable contents |
 |-------|-----|------------------|
 | `prepared_ticket_publication_snapshot_descriptors` | `RunId` | Immutable candidate descriptor JSON containing reserved snapshot/provenance coordinates plus the exact post-provenance SHA-256, size, table counts, and persistence time |
-| `prepared_ticket_publication_reconciliation_proofs` | `RunId` | Contract-v2 proof JSON and capture time |
+| `prepared_ticket_publication_reconciliation_proofs` | `RunId` | Contract-v3 proof JSON with mandatory full `GroupingFingerprint`, separate audit-only `GroupingImpactFingerprint`, and capture time |
 | `prepared_ticket_publication_reconciliation_fences` | `RunId` | Reconciliation lease ID and acquisition time, paired with the processor-wide `authoring_mutation_fences` row |
 | `prepared_ticket_publication_reconciliation_journal` | `RunId` UNIQUE | State, typed staged reservation/candidate or pending promotion descriptor JSON, last recovery attempt, stable failure code/detail, and update time |
 
 The proof JSON binds source run/snapshot, stable Jira generation,
 accepted/carried/re-authored counts, overlay corpus fingerprint,
-grouping-impact fingerprint, and capture time. The candidate descriptor binds
+complete grouping fingerprint, separate grouping-impact audit fingerprint,
+and capture time. Full grouping is the shared canonical hash of unaffected
+partition outputs plus the complete staged replacements; removed zero-member
+partitions remain represented only in the impact audit. The candidate descriptor binds
 snapshot ID, processor/run, temporary and final paths, schema, sequence,
 authoring epoch, item/receipt counts, creation time, checksum, size, public
 table counts, and the same overlay/grouping evidence. Before materialization,
@@ -1042,7 +1049,9 @@ one matching
 `authoring_snapshot_provenance` row, checkpoints and validates SQLite, then
 hashes the resulting bytes. Candidate persistence writes the exact
 post-provenance descriptor and proof, replacing only its matching reservation
-in the staged journal. A restarted finalizer may reuse that already
+in the staged journal. Its full grouping is read back from the sanitized
+candidate and compared with the proof before persistence.
+A restarted finalizer may reuse that already
 authenticated candidate but cannot replace it with different bytes.
 
 The journal starts at `staged`. The database-first promotion transaction
@@ -1053,6 +1062,10 @@ creates the `authoring_review_snapshots` row from the already reserved
 identity, and stores a promotion descriptor while moving both state rows to
 `snapshot-publish-pending`. It does not generate a new snapshot ID or sequence
 after hashing, and it does not claim to atomically move a filesystem file.
+`authoring_review_snapshots.PublicationProofJson` receives the candidate's
+full grouping fingerprint, not its impact fingerprint. Pending and ready
+recovery require current private/public proof versions and matching full
+fingerprints; the impact digest remains in reconciliation-specific audit JSON.
 
 Pending recovery uses the journal plus the snapshot row:
 
@@ -1086,10 +1099,15 @@ the previously journaled digest rather than a checksum discovered during
 recovery. Startup and the explicit retry endpoint use the same
 pending-journal protocol.
 
-Contract-v1 comparison and proof rows remain deserializable for these audit
-views, including null v2-only item coordinates. They are execution-inert:
+Contract-v1/v2 comparison and proof rows remain deserializable for these audit
+views, including missing v2-only item coordinates and the absent v3 full
+grouping field. They are execution-inert:
 grouping dispatch, candidate materialization, pending recovery, and promotion
-require contract v2 and refuse rather than reinterpret a v1 corpus.
+require contract v3. Publisher readiness likewise requires v3 reconciliation
+evidence and recomputes the entire immutable grouping. Legacy digests are
+never reinterpreted, missing fields are never default-hashed, and changing a
+stored version number is not a migration. New supported evidence must be
+generated without altering historical publications.
 
 Dedicated operator cancellation is valid only while both state rows are
 `staged` and before a trusted row exists in
@@ -1164,7 +1182,8 @@ abandonment time/reason, epoch, and capture time. Its
 values, including hydration and grouping IDs/order, against drift between
 admission and final CAS. The public corpus fingerprint remains the canonical
 six-field receipt-coordinate serialization. Grouping uses the shared full
-partition-output serialization, not reconciliation's impact-only digest.
+partition-output serialization shared with reconciliation v3, not the
+separate reconciliation impact-audit digest.
 
 The journal starts at `materialization-pending`. Its reservation freezes the
 snapshot ID, sequence, processor/run, epoch, schema, item/receipt counts,

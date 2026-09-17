@@ -438,6 +438,14 @@ public sealed class PreparedTicketPublicationEndToEndTests
                 WHERE Specification = 'FHIR'
                   AND Type = 'Change Request'
                 """));
+        AuthoringSnapshotPublicationProof proof =
+            Assert.IsType<AuthoringSnapshotPublicationProof>(descriptor.PublicationProof);
+        Assert.Equal(3, proof.ContractVersion);
+        PreparedTicketPublicationFingerprints fingerprints =
+            await PreparedTicketPublicationFingerprintReader.ReadReconciliationAsync(
+                Path.Combine(fixture.SnapshotDirectory, descriptor.FileName));
+        Assert.Equal(proof.CorpusFingerprint, fingerprints.Corpus);
+        Assert.Equal(proof.GroupingFingerprint, fingerprints.Grouping);
     }
 
     [Fact]
@@ -762,7 +770,7 @@ public sealed class PreparedTicketPublicationEndToEndTests
             PreparedTicketPublicationContract.PublicationReconciliationPurpose,
             replacementDescriptor.PublicationProof?.Purpose);
         Assert.Equal(
-            PreparedTicketPublicationContract.CurrentVersion,
+            PreparedTicketPublicationReconciliationContract.CurrentVersion,
             replacementDescriptor.PublicationProof?.ContractVersion);
         Assert.Equal(
             staged.CorpusFingerprint,
@@ -818,6 +826,12 @@ public sealed class PreparedTicketPublicationEndToEndTests
         Assert.Equal(
             staged.CorpusFingerprint,
             status.PublicationProof?.CorpusFingerprint);
+        Assert.Equal(
+            replacementDescriptor.PublicationProof?.GroupingFingerprint,
+            status.PublicationProof?.GroupingFingerprint);
+        Assert.NotEqual(
+            status.PublicationProof?.GroupingImpactFingerprint,
+            status.PublicationProof?.GroupingFingerprint);
 
         VerifiedAuthoringSnapshotPair replacement =
             await client.DownloadSnapshotPairAsync(
@@ -836,6 +850,15 @@ public sealed class PreparedTicketPublicationEndToEndTests
         Assert.True(
             replacement.Descriptor.Sequence >
             original.Pair.Descriptor.Sequence);
+        PreparedTicketPublicationFingerprints fingerprints =
+            await PreparedTicketPublicationFingerprintReader.ReadReconciliationAsync(
+                replacement.DatabasePath);
+        Assert.Equal(
+            replacementDescriptor.PublicationProof?.CorpusFingerprint,
+            fingerprints.Corpus);
+        Assert.Equal(
+            replacementDescriptor.PublicationProof?.GroupingFingerprint,
+            fingerprints.Grouping);
 
         using (SqliteConnection snapshot =
                await SqliteReviewSnapshotValidator.OpenReadOnlyAsync(
@@ -880,6 +903,124 @@ public sealed class PreparedTicketPublicationEndToEndTests
         Assert.Equal(
             originalHashes,
             await ArtifactHashesAsync(fixture, original));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReconciliationCandidate_ReadBackGroupingMustMatchProof(
+        bool changeGroupingRows)
+    {
+        using Fixture fixture = new(richGraph: true);
+        Corpus corpus = await CreateCorpusAsync(fixture);
+        PublicationHttpHandler handler = new(fixture, corpus.Updates);
+        using HttpClient http = handler.CreateClient();
+        StagedReconciliation staged =
+            await StageChangedTicketReconciliationAsync(fixture, corpus, handler, http);
+        string originalDescriptor = fixture.Scalar<string>(
+            $"""
+            SELECT DescriptorJson
+            FROM prepared_ticket_publication_snapshot_descriptors
+            WHERE RunId = '{staged.RunId}'
+            """);
+        PreparedTicketPublicationCandidateSnapshot candidate =
+            Assert.IsType<PreparedTicketPublicationCandidateSnapshot>(
+                JsonSerializer.Deserialize<PreparedTicketPublicationCandidateSnapshot>(
+                    originalDescriptor));
+        PreparedTicketPublicationReconciliationProof proof =
+            Assert.IsType<PreparedTicketPublicationReconciliationProof>(
+                (await staged.Planner.GetStatusAsync(staged.RunId)).PublicationProof);
+        PreparedTicketSnapshotMaterializer materializer = new(
+            fixture.Database,
+            fixture.Store,
+            new SqliteReviewSnapshotReconciler(fixture.Store),
+            Options.Create(new PreparerServiceOptions
+            {
+                SnapshotDirectory = fixture.SnapshotDirectory,
+                SnapshotSchemaVersion = PreparedTicketSnapshotSchemaV3.Version,
+            }));
+        if (changeGroupingRows)
+        {
+            await MutateSnapshotAsync(candidate.TemporaryPath,
+                "UPDATE prepared_ticket_topics SET ShortDescription = 'Changed candidate topic'");
+            candidate = candidate with
+            {
+                Sha256 = await SqliteReviewSnapshotWriter.ComputeSha256Async(candidate.TemporaryPath),
+                SizeBytes = new FileInfo(candidate.TemporaryPath).Length,
+            };
+        }
+        else
+        {
+            candidate = candidate with { GroupingFingerprint = new string('0', 64) };
+            proof = proof with { GroupingFingerprint = candidate.GroupingFingerprint };
+            AuthoringRunRecord run = Assert.IsType<AuthoringRunRecord>(
+                await fixture.Store.GetRunAsync(staged.RunId));
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => materializer.MaterializeReconciliationCandidateAsync(run, proof));
+        }
+
+        InvalidOperationException error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => materializer.PersistTrustedReconciliationCandidateAsync(candidate, proof));
+        Assert.Contains("complete grouping proof", error.Message, StringComparison.Ordinal);
+        Assert.Equal(originalDescriptor, fixture.Scalar<string>(
+            $"""
+            SELECT DescriptorJson
+            FROM prepared_ticket_publication_snapshot_descriptors
+            WHERE RunId = '{staged.RunId}'
+            """));
+        Assert.Equal(0, fixture.Scalar<long>(
+            $"SELECT COUNT(*) FROM authoring_review_snapshots WHERE RunId = '{staged.RunId}'"));
+        Assert.NotNull(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+    }
+
+    [Theory]
+    [InlineData("reconciliation", 1)]
+    [InlineData("reconciliation", 2)]
+    [InlineData("reconciliation", 3)]
+    [InlineData("snapshot", 1)]
+    [InlineData("snapshot", 2)]
+    [InlineData("snapshot", 3)]
+    public async Task ReconciliationRecovery_RejectsLegacyOrMissingGroupingProof(
+        string evidence,
+        int contractVersion)
+    {
+        using Fixture fixture = new(richGraph: true);
+        PendingReconciliation pending = await CreatePendingReconciliationAsync(fixture);
+        await ExecuteDatabaseAsync(fixture, evidence == "reconciliation"
+            ? """
+              UPDATE prepared_ticket_publication_reconciliation_proofs
+              SET ProofJson = json_remove(
+                  json_set(ProofJson, '$.ContractVersion', @version),
+                  '$.GroupingFingerprint')
+              WHERE RunId = @runId
+              """
+            : """
+              UPDATE authoring_review_snapshots
+              SET PublicationProofJson = CASE WHEN @version = 3
+                  THEN json_remove(PublicationProofJson, '$.groupingFingerprint')
+                  ELSE json_set(PublicationProofJson, '$.contractVersion', @version)
+                  END
+              WHERE RunId = @runId
+              """,
+            ("@version", contractVersion),
+            ("@runId", pending.RunId));
+        Type expectedException = evidence == "snapshot"
+            ? typeof(InvalidOperationException)
+            : contractVersion < 3 ? typeof(NotSupportedException) : typeof(ArgumentException);
+        Exception? promotionError = await Record.ExceptionAsync(
+            () => fixture.Database.PromotePublicationReconciliationAsync(
+                pending.RunId, pending.Promotion.FinalPath));
+        Assert.IsType(expectedException, promotionError);
+
+        PreparedTicketPublicationReconciliationException recoveryError =
+            await Assert.ThrowsAsync<PreparedTicketPublicationReconciliationException>(
+                () => CreateRecoveryService(fixture).RecoverAsync(pending.RunId));
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationFailureCodes.PromotionRecoveryFailure,
+            recoveryError.FailureCode);
+        await AssertRecoveryFailureRetainsFenceAsync(fixture, pending.RunId);
+        Assert.True(File.Exists(pending.Promotion.TemporaryPath));
+        Assert.False(File.Exists(pending.Promotion.FinalPath));
     }
 
     [Fact]
@@ -2525,6 +2666,17 @@ public sealed class PreparedTicketPublicationEndToEndTests
             PreparedTicketPublicationReconciliationContract.CurrentVersion,
             proof.ContractVersion);
         Assert.Equal(delta.OverlayCorpusFingerprint, proof.CorpusFingerprint);
+        Assert.NotEmpty(finalizingDelta.UnaffectedGroupingPartitions);
+        Assert.Equal(
+            PreparedTicketPublicationContract.ComputeReconciliationGroupingFingerprint(
+                finalizingDelta.UnaffectedGroupingPartitions,
+                finalizingDelta.Impacts),
+            proof.GroupingFingerprint);
+        Assert.Equal(
+            PreparedTicketPublicationContract.ComputeGroupingImpactFingerprint(
+                finalizingDelta.Impacts),
+            proof.GroupingImpactFingerprint);
+        Assert.NotEqual(proof.GroupingImpactFingerprint, proof.GroupingFingerprint);
         PreparedTicketSnapshotMaterializer materializer = new(
             fixture.Database,
             fixture.Store,
@@ -2548,6 +2700,25 @@ public sealed class PreparedTicketPublicationEndToEndTests
         Assert.Equal(
             delta.OverlayCorpusFingerprint,
             candidate.OverlayCorpusFingerprint);
+        Assert.Equal(proof.GroupingFingerprint, candidate.GroupingFingerprint);
+        Assert.Equal(proof.GroupingImpactFingerprint, candidate.GroupingImpactFingerprint);
+        await using (SqliteConnection snapshot =
+                     await SqliteReviewSnapshotValidator.OpenReadOnlyAsync(
+                         candidate.TemporaryPath))
+        {
+            PreparedTicketPublicationProtectedInventory inventory =
+                await PreparedTicketPublicationProtectionReader.ReadSnapshotAsync(
+                    snapshot,
+                    candidate.SchemaVersion);
+            Assert.Equal(proof.CorpusFingerprint, inventory.CorpusFingerprint);
+            Assert.Equal(
+                proof.GroupingFingerprint,
+                PreparedTicketPublicationContract.ComputeGroupingFingerprint(
+                    inventory.Grouping.Select(partition =>
+                        new PreparedTicketPublicationGroupingPartition(
+                            partition.PartitionKey,
+                            partition.Fingerprint.OutputFingerprint))));
+        }
         Assert.Equal(
             JsonSerializer.Serialize(candidate),
             fixture.Scalar<string>(

@@ -34,13 +34,23 @@ public static class PreparedTicketPublicationFingerprintReader
             ct);
 
     public static Task<PreparedTicketPublicationFingerprints>
+        ReadReconciliationAsync(
+            string sourceDatabasePath,
+            CancellationToken ct = default)
+        => DiscussionSiteDatabaseBuilder
+            .ComputeCurrentPublicationFingerprintsAsync(
+                sourceDatabasePath,
+                PreparedTicketPublicationContract.CurrentVersion,
+                ct);
+
+    public static Task<PreparedTicketPublicationFingerprints>
         ReadCanonicalEpochRecoveryAsync(
             string sourceDatabasePath,
             int contractVersion =
                 PreparedTicketPublicationContract.CurrentVersion,
             CancellationToken ct = default)
         => DiscussionSiteDatabaseBuilder
-            .ComputeCanonicalEpochRecoveryFingerprintsAsync(
+            .ComputeCurrentPublicationFingerprintsAsync(
                 sourceDatabasePath,
                 contractVersion,
                 ct);
@@ -864,9 +874,10 @@ internal static class DiscussionSiteDatabaseBuilder
     {
         try
         {
-            PreparedTicketPublicationContract.EnsureSupportedVersion(
-                proof.ContractVersion);
-            if (descriptor.SchemaVersion !=
+            if (proof.ContractVersion !=
+                    PreparedTicketPublicationReconciliationContract
+                        .CurrentVersion ||
+                descriptor.SchemaVersion !=
                     PreparedTicketSnapshotSchemaV3.Version ||
                 !string.Equals(
                     descriptor.ProcessorKind,
@@ -918,25 +929,19 @@ internal static class DiscussionSiteDatabaseBuilder
                 return false;
             }
 
-            IReadOnlyList<PreparedTicketPublicationCorpusItem> corpus =
-                await ReadPublicationCorpusAsync(source, ct)
-                    .ConfigureAwait(false);
-            if (!string.Equals(
-                    proof.CorpusFingerprint,
-                    PreparedTicketPublicationContract
-                        .ComputeCorpusFingerprint(
-                            corpus,
-                            proof.ContractVersion),
-                    StringComparison.Ordinal))
-            {
-                return false;
-            }
-
-            _ = await ReadCurrentGroupingFingerprintsAsync(
-                source,
-                proof.ContractVersion,
-                ct).ConfigureAwait(false);
-            return true;
+            PreparedTicketPublicationFingerprints fingerprints =
+                await ComputeCurrentPublicationFingerprintsAsync(
+                    source,
+                    PreparedTicketPublicationContract.CurrentVersion,
+                    ct).ConfigureAwait(false);
+            return string.Equals(
+                       proof.CorpusFingerprint,
+                       fingerprints.Corpus,
+                       StringComparison.Ordinal) &&
+                   string.Equals(
+                       proof.GroupingFingerprint,
+                       fingerprints.Grouping,
+                       StringComparison.Ordinal);
         }
         catch (Exception exception) when (
             exception is ArgumentException or InvalidOperationException or
@@ -1030,7 +1035,7 @@ internal static class DiscussionSiteDatabaseBuilder
             }
 
             PreparedTicketPublicationFingerprints fingerprints =
-                await ComputeCanonicalEpochRecoveryFingerprintsAsync(
+                await ComputeCurrentPublicationFingerprintsAsync(
                     source,
                     proof.ContractVersion,
                     ct).ConfigureAwait(false);
@@ -1312,7 +1317,7 @@ internal static class DiscussionSiteDatabaseBuilder
     }
 
     internal static async Task<PreparedTicketPublicationFingerprints>
-        ComputeCanonicalEpochRecoveryFingerprintsAsync(
+        ComputeCurrentPublicationFingerprintsAsync(
             string sourceDatabasePath,
             int contractVersion =
                 PreparedTicketPublicationContract.CurrentVersion,
@@ -1321,14 +1326,14 @@ internal static class DiscussionSiteDatabaseBuilder
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceDatabasePath);
         await using SqliteConnection source = OpenReadOnly(sourceDatabasePath);
         await source.OpenAsync(ct).ConfigureAwait(false);
-        return await ComputeCanonicalEpochRecoveryFingerprintsAsync(
+        return await ComputeCurrentPublicationFingerprintsAsync(
             source,
             contractVersion,
             ct).ConfigureAwait(false);
     }
 
     private static async Task<PreparedTicketPublicationFingerprints>
-        ComputeCanonicalEpochRecoveryFingerprintsAsync(
+        ComputeCurrentPublicationFingerprintsAsync(
             SqliteConnection source,
             int contractVersion,
             CancellationToken ct)

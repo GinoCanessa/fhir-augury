@@ -55,12 +55,8 @@ public sealed class PreparedTicketSnapshotMaterializer(
         await database.EnsureSnapshotWorkflowAllowedAsync(
             ToSnapshotWorkflowIntent(run),
             ct);
-        if (proof.ContractVersion !=
-            PreparedTicketPublicationReconciliationContract.CurrentVersion)
-        {
-            throw new NotSupportedException(
-                $"Reconciliation proof contract version {proof.ContractVersion} cannot be materialized.");
-        }
+        PreparedTicketPublicationReconciliationContract.EnsureCurrentProof(
+            proof);
         snapshotSchema ??= PreparedTicketSnapshotSchemaResolver.Resolve(
             _options.SnapshotSchemaVersion);
         if (!string.Equals(
@@ -110,6 +106,10 @@ public sealed class PreparedTicketSnapshotMaterializer(
             ct);
         string impactFingerprint = PreparedTicketPublicationContract
             .ComputeGroupingImpactFingerprint(delta.Impacts);
+        string groupingFingerprint = PreparedTicketPublicationContract
+            .ComputeReconciliationGroupingFingerprint(
+                delta.UnaffectedGroupingPartitions,
+                delta.Impacts);
         if (!string.Equals(
                 proof.SourceSnapshotId,
                 comparison.SourceSnapshotId,
@@ -134,21 +134,16 @@ public sealed class PreparedTicketSnapshotMaterializer(
             !string.Equals(
                 proof.GroupingImpactFingerprint,
                 impactFingerprint,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                proof.GroupingFingerprint,
+                groupingFingerprint,
                 StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
                 "The reconciliation proof does not match the verified overlay.");
         }
 
-        string groupingFingerprint = AuthoringResultHasher.HashNormalizedUtf8(
-            string.Join(
-                "\n",
-                delta.Unaffected.GroupingRowsFingerprint,
-                delta.Impacts.OrderBy(
-                        impact => impact.PartitionKey,
-                        StringComparer.Ordinal)
-                    .Select(impact =>
-                        $"{impact.PartitionKey}:{impact.StagedOutputFingerprint}")));
         string directory = Path.GetFullPath(_options.SnapshotDirectory);
         Directory.CreateDirectory(directory);
         string safeProcessor = string.Concat(
@@ -269,9 +264,15 @@ public sealed class PreparedTicketSnapshotMaterializer(
     {
         ArgumentNullException.ThrowIfNull(candidate);
         ArgumentNullException.ThrowIfNull(proof);
+        PreparedTicketPublicationReconciliationContract.EnsureCurrentProof(
+            proof);
         if (!string.Equals(
                 candidate.OverlayCorpusFingerprint,
                 proof.CorpusFingerprint,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                candidate.GroupingFingerprint,
+                proof.GroupingFingerprint,
                 StringComparison.Ordinal) ||
             !string.Equals(
                 candidate.GroupingImpactFingerprint,
@@ -1218,6 +1219,29 @@ public sealed class PreparedTicketSnapshotMaterializer(
         {
             throw new InvalidOperationException(
                 $"Reconciliation candidate validation failed: {validation.Error ?? "digest or size mismatch"}");
+        }
+
+        await using SqliteConnection snapshot =
+            await SqliteReviewSnapshotValidator.OpenReadOnlyAsync(
+                candidate.TemporaryPath,
+                ct);
+        PreparedTicketPublicationProtectedInventory inventory =
+            await PreparedTicketPublicationProtectionReader.ReadSnapshotAsync(
+                snapshot,
+                candidate.SchemaVersion,
+                ct);
+        string groupingFingerprint = PreparedTicketPublicationContract
+            .ComputeGroupingFingerprint(inventory.Grouping.Select(partition =>
+                new PreparedTicketPublicationGroupingPartition(
+                    partition.PartitionKey,
+                    partition.Fingerprint.OutputFingerprint)));
+        if (!string.Equals(
+                groupingFingerprint,
+                candidate.GroupingFingerprint,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The reconciliation candidate does not match its complete grouping proof.");
         }
     }
 

@@ -49,7 +49,9 @@ public sealed record PreparedTicketPublicationGroupingDelta(
     string OverlayCorpusFingerprint,
     IReadOnlyList<PreparedTicketPublicationReconciliationGroupingImpact>
         Impacts,
-    PreparedTicketPublicationUnaffectedFingerprint Unaffected);
+    PreparedTicketPublicationUnaffectedFingerprint Unaffected,
+    IReadOnlyList<PreparedTicketPublicationGroupingPartition>
+        UnaffectedGroupingPartitions);
 
 public sealed record PreparedTicketPublicationCandidateSnapshot(
     string RunId,
@@ -223,6 +225,33 @@ public static class PreparedTicketPublicationContract
         int contractVersion = CurrentVersion)
     {
         EnsureSupportedVersion(contractVersion);
+        PreparedTicketPublicationReconciliationGroupingImpact[] ordered =
+            ValidateGroupingImpacts(impacts);
+        return ComputeSha256(JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            contractVersion,
+            purpose = PublicationReconciliationPurpose,
+            impacts = ordered.Select(impact => new
+            {
+                impact.PartitionKey,
+                revisedTicketKeys = impact.RevisedTicketKeys
+                    .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(value => value, StringComparer.Ordinal),
+                impact.BaselineCorpusFingerprint,
+                impact.BaselineOutputFingerprint,
+                impact.BaselineProtectedRowsFingerprint,
+                impact.StagedCorpusFingerprint,
+                impact.StagedOutputFingerprint,
+                impact.StagedProtectedRowsFingerprint,
+            }),
+        }));
+    }
+
+    private static PreparedTicketPublicationReconciliationGroupingImpact[]
+        ValidateGroupingImpacts(
+            IEnumerable<PreparedTicketPublicationReconciliationGroupingImpact>
+                impacts)
+    {
         ArgumentNullException.ThrowIfNull(impacts);
         PreparedTicketPublicationReconciliationGroupingImpact[] ordered =
             impacts.OrderBy(impact => impact.PartitionKey, StringComparer.Ordinal)
@@ -271,24 +300,7 @@ public static class PreparedTicketPublicationContract
                     nameof(impacts));
             }
         }
-        return ComputeSha256(JsonSerializer.SerializeToUtf8Bytes(new
-        {
-            contractVersion,
-            purpose = PublicationReconciliationPurpose,
-            impacts = ordered.Select(impact => new
-            {
-                impact.PartitionKey,
-                revisedTicketKeys = impact.RevisedTicketKeys
-                    .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
-                    .ThenBy(value => value, StringComparer.Ordinal),
-                impact.BaselineCorpusFingerprint,
-                impact.BaselineOutputFingerprint,
-                impact.BaselineProtectedRowsFingerprint,
-                impact.StagedCorpusFingerprint,
-                impact.StagedOutputFingerprint,
-                impact.StagedProtectedRowsFingerprint,
-            }),
-        }));
+        return ordered;
     }
 
     public static string ComputeReconciliationGroupingFingerprint(
@@ -297,9 +309,17 @@ public static class PreparedTicketPublicationContract
             impacts,
         int contractVersion = CurrentVersion)
     {
+        EnsureSupportedVersion(contractVersion);
         ArgumentNullException.ThrowIfNull(unaffected);
-        ArgumentNullException.ThrowIfNull(impacts);
-        PreparedTicketPublicationGroupingPartition[] replacements = impacts
+        PreparedTicketPublicationReconciliationGroupingImpact[] complete =
+            ValidateGroupingImpacts(impacts);
+        // Zero-member replacements remove partitions, but remain in the impact audit.
+        string emptyCorpusFingerprint = ComputeSha256([]);
+        PreparedTicketPublicationGroupingPartition[] replacements = complete
+            .Where(impact => !string.Equals(
+                impact.StagedCorpusFingerprint,
+                emptyCorpusFingerprint,
+                StringComparison.Ordinal))
             .Select(impact => new PreparedTicketPublicationGroupingPartition(
                 impact.PartitionKey,
                 impact.StagedOutputFingerprint
@@ -686,7 +706,7 @@ public static class PreparedTicketPublicationContract
         }
     }
 
-    private static void RequireSha256(string? value, string parameterName)
+    internal static void RequireSha256(string? value, string parameterName)
     {
         RequireValue(value, parameterName);
         if (value!.Length != 64 ||

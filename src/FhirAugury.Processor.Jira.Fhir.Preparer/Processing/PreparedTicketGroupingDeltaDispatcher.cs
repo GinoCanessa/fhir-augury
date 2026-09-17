@@ -61,7 +61,11 @@ public sealed class PreparedTicketGroupingDeltaDispatcher(
             delta.OverlayCorpusFingerprint,
             PreparedTicketPublicationContract
                 .ComputeGroupingImpactFingerprint(delta.Impacts),
-            (capturedAt ?? DateTimeOffset.UtcNow).ToUniversalTime());
+            (capturedAt ?? DateTimeOffset.UtcNow).ToUniversalTime(),
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    delta.UnaffectedGroupingPartitions,
+                    delta.Impacts));
     }
 
     public async Task<PreparedTicketPublicationGroupingDelta> DispatchAsync(

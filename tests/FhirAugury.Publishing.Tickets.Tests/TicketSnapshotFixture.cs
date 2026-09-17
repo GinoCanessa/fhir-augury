@@ -71,6 +71,11 @@ internal sealed class TicketSnapshotFixture
     public string DatabasePath { get; }
     public string DescriptorPath { get; }
     public AuthoringSnapshotDescriptor Descriptor { get; private set; }
+    public PreparedTicketPublicationReconciliationProof? ReconciliationProof
+    {
+        get;
+        private init;
+    }
 
     public async Task<VerifiedAuthoringSnapshotPair> CreateVerifiedPairAsync(
         string serviceName)
@@ -273,9 +278,7 @@ internal sealed class TicketSnapshotFixture
     {
         const string processorKind = "jira-fhir";
         const string ticketKey = "FHIR-1001";
-        string[] ticketKeys = canonicalEpochRecovery
-            ? [ticketKey, "FHIR-1002"]
-            : [ticketKey];
+        string[] ticketKeys = [ticketKey, "FHIR-1002"];
         DateTimeOffset utcCapturedAt = capturedAt.ToUniversalTime();
         string fixtureDirectory = Path.Combine(
             root,
@@ -384,8 +387,7 @@ internal sealed class TicketSnapshotFixture
                     WorkGroupDisplay = partition.WorkGroupDisplay,
                     Specification = partition.Specification,
                     Type = partition.Type,
-                    Topics = canonicalEpochRecovery
-                        ? [new()
+                    Topics = [new()
                         {
                             ShortDescription = "Canonical recovery topic",
                             LongerDescription = "Complete retained grouping output",
@@ -402,8 +404,7 @@ internal sealed class TicketSnapshotFixture
                                     }).ToList(),
                             }],
                             RemainingTicketKeys = [],
-                        }]
-                        : [],
+                        }],
                 },
                 sourceRun.Id,
                 stage.Id,
@@ -561,7 +562,10 @@ internal sealed class TicketSnapshotFixture
         return new TicketSnapshotFixture(
             publishedPath,
             descriptorPath,
-            descriptor);
+            descriptor)
+        {
+            ReconciliationProof = proof,
+        };
     }
 
     public static Task<TicketSnapshotFixture>

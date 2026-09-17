@@ -1230,9 +1230,20 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
                 fixture.Descriptor.PublicationProof);
 
         Assert.Equal(
-            PreparedTicketPublicationContract.CurrentVersion,
+            PreparedTicketPublicationReconciliationContract.CurrentVersion,
             proof.ContractVersion);
         Assert.NotEqual(proof.SourceRunId, fixture.Descriptor.RunId);
+        PreparedTicketPublicationFingerprints fingerprints =
+            await PreparedTicketPublicationFingerprintReader.ReadReconciliationAsync(
+                fixture.DatabasePath);
+        Assert.Equal(proof.CorpusFingerprint, fingerprints.Corpus);
+        Assert.Equal(proof.GroupingFingerprint, fingerprints.Grouping);
+        PreparedTicketPublicationReconciliationProof reconciliationProof =
+            Assert.IsType<PreparedTicketPublicationReconciliationProof>(
+                fixture.ReconciliationProof);
+        Assert.Equal(proof.CorpusFingerprint, reconciliationProof.CorpusFingerprint);
+        Assert.Equal(proof.GroupingFingerprint, reconciliationProof.GroupingFingerprint);
+        Assert.NotEqual(proof.GroupingFingerprint, reconciliationProof.GroupingImpactFingerprint);
 
         DiscussionSiteDatabaseBuilder.BuildResult ready =
             await DiscussionSiteDatabaseBuilder.BuildAsync(
@@ -1267,6 +1278,127 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReconciliationProof_WithMismatchedGroupingFingerprint_IsDegraded(
+        bool useImpactDigest)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePromotedReconciliationAsync(
+                _root, new(2026, 9, 16, 18, 30, 0, TimeSpan.Zero), 5252);
+        AuthoringSnapshotPublicationProof proof =
+            Assert.IsType<AuthoringSnapshotPublicationProof>(
+                fixture.Descriptor.PublicationProof);
+        PreparedTicketPublicationReconciliationProof reconciliationProof =
+            Assert.IsType<PreparedTicketPublicationReconciliationProof>(
+                fixture.ReconciliationProof);
+        await fixture.SetPublicationProofAsync(proof with
+        {
+            GroupingFingerprint = useImpactDigest
+                ? reconciliationProof.GroupingImpactFingerprint
+                : new string('0', 64),
+        });
+
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath, fixture.Descriptor, "Tickets", ResolvedFilters.None);
+        try
+        {
+            Assert.False(built.Presentation.Readiness.IsReady);
+            Assert.Equal(
+                DiscussionPublicationReadinessEvidence.PublicationReconciliation,
+                built.Presentation.Readiness.Evidence);
+            Assert.Null(built.Presentation.JiraSourceLastSuccessfulRefreshAt);
+            Assert.Contains(built.Presentation.Readiness.Reasons,
+                reason => reason.Code == DiscussionPublicationReadinessReasonCodes.InvalidReconciliationProof);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Theory]
+    [InlineData("topic")]
+    [InlineData("linked-group")]
+    [InlineData("membership-order")]
+    public async Task ReconciliationProof_WithChangedGroupingRows_IsDegraded(
+        string mutation)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePromotedReconciliationAsync(
+                _root, new(2026, 9, 16, 18, 30, 0, TimeSpan.Zero), 5252);
+        AuthoringSnapshotPublicationProof proof =
+            Assert.IsType<AuthoringSnapshotPublicationProof>(
+                fixture.Descriptor.PublicationProof);
+        await ExecuteAsync(fixture.DatabasePath, mutation switch
+        {
+            "topic" => "UPDATE prepared_ticket_topics SET ShortDescription = 'Changed topic'",
+            "linked-group" => "UPDATE prepared_ticket_topic_groups SET Rationale = 'Changed rationale'",
+            "membership-order" => "UPDATE prepared_ticket_topic_members SET OrderInContainer = 1 - OrderInContainer",
+            _ => throw new ArgumentOutOfRangeException(nameof(mutation)),
+        });
+        await fixture.RefreshDescriptorHashAsync();
+        PreparedTicketPublicationFingerprints changed =
+            await PreparedTicketPublicationFingerprintReader.ReadReconciliationAsync(
+                fixture.DatabasePath);
+        Assert.Equal(proof.CorpusFingerprint, changed.Corpus);
+        Assert.NotEqual(proof.GroupingFingerprint, changed.Grouping);
+
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath, fixture.Descriptor, "Tickets", ResolvedFilters.None);
+        try
+        {
+            Assert.False(built.Presentation.Readiness.IsReady);
+            Assert.Equal(
+                DiscussionPublicationReadinessEvidence.PublicationReconciliation,
+                built.Presentation.Readiness.Evidence);
+            Assert.Contains(built.Presentation.Readiness.Reasons,
+                reason => reason.Code == DiscussionPublicationReadinessReasonCodes.InvalidReconciliationProof);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task ReconciliationProof_LegacyVersionsCannotQualifyAsReady(
+        int contractVersion)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePromotedReconciliationAsync(
+                _root, new(2026, 9, 16, 18, 30, 0, TimeSpan.Zero), 5252);
+        AuthoringSnapshotPublicationProof proof =
+            Assert.IsType<AuthoringSnapshotPublicationProof>(
+                fixture.Descriptor.PublicationProof);
+        await fixture.SetPublicationProofAsync(
+            proof with { ContractVersion = contractVersion });
+        PreparedTicketPublicationFingerprints fingerprints =
+            await PreparedTicketPublicationFingerprintReader.ReadReconciliationAsync(
+                fixture.DatabasePath);
+        Assert.Equal(proof.CorpusFingerprint, fingerprints.Corpus);
+        Assert.Equal(proof.GroupingFingerprint, fingerprints.Grouping);
+
+        DiscussionSiteDatabaseBuilder.BuildResult built =
+            await DiscussionSiteDatabaseBuilder.BuildAsync(
+                fixture.DatabasePath, fixture.Descriptor, "Tickets", ResolvedFilters.None);
+        try
+        {
+            Assert.False(built.Presentation.Readiness.IsReady);
+            Assert.Contains(built.Presentation.Readiness.Reasons,
+                reason => reason.Code == DiscussionPublicationReadinessReasonCodes.InvalidReconciliationProof);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteFile(built.TempDbPath);
+        }
+    }
+
     [Fact]
     public async Task RealCanonicalEpochRecoverySnapshot_IsPublicationReady()
     {
@@ -1280,6 +1412,7 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
         AuthoringSnapshotPublicationProof proof =
             Assert.IsType<AuthoringSnapshotPublicationProof>(
                 fixture.Descriptor.PublicationProof);
+        Assert.Equal(1, proof.ContractVersion);
         Assert.Equal(
             PreparedTicketPublicationContract
                 .CanonicalEpochRecoveryPurpose,

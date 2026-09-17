@@ -280,7 +280,14 @@ public sealed class AuthoringControlClientTests
                 CancellationToken.None);
 
         Assert.Equal("jira-generation-9", started.Comparison.StableJiraGeneration);
+        Assert.Equal(3, started.Comparison.ContractVersion);
         Assert.Equal(1, status.Counts.ReAuthorTicketCount);
+        PublicationReconciliationProof proof =
+            Assert.IsType<PublicationReconciliationProof>(status.PublicationProof);
+        Assert.Equal(3, proof.ContractVersion);
+        Assert.Equal(new string('f', 64), proof.GroupingFingerprint);
+        Assert.Equal(new string('e', 64), proof.GroupingImpactFingerprint);
+        Assert.Equal(proof, retried.Status.PublicationProof);
         Assert.True(retried.RecoveryStarted);
         Assert.Equal("cancelled", cancelled.Status.Promotion.State);
         Assert.Equal(
@@ -297,6 +304,110 @@ public sealed class AuthoringControlClientTests
                 "POST /api/v1/processing-services/Preparer/authoring/runs/reconciliation-run/publication-reconciliation/abandon",
             ],
             targets);
+    }
+
+    [Theory]
+    [InlineData(1, 1)]
+    [InlineData(2, 2)]
+    [InlineData(3, 1)]
+    [InlineData(3, 2)]
+    public async Task PublicationReconciliationLegacyEvidence_IsReadableButCannotAuthorizeRetry(
+        int comparisonVersion,
+        int proofVersion)
+    {
+        PublicationReconciliationStatusResult current = PublicationReconciliationStatus();
+        PublicationReconciliationProof legacyProof =
+            Assert.IsType<PublicationReconciliationProof>(
+                JsonSerializer.Deserialize<PublicationReconciliationProof>(
+                    JsonSerializer.Serialize(new
+                    {
+                        ContractVersion = proofVersion,
+                        Purpose = "publication-reconciliation",
+                        current.Comparison.SourceRunId,
+                        current.Comparison.SourceSnapshotId,
+                        current.Comparison.StableJiraGeneration,
+                        AcceptedTicketCount = 1,
+                        CarryForwardTicketCount = 0,
+                        ReAuthorTicketCount = 1,
+                        CorpusFingerprint = new string('d', 64),
+                        GroupingImpactFingerprint = new string('e', 64),
+                        current.Comparison.CapturedAt,
+                    })));
+        PublicationReconciliationStatusResult legacy = current with
+        {
+            Comparison = current.Comparison with
+            {
+                ContractVersion = comparisonVersion,
+                Items = current.Comparison.Items.Select(item => item with
+                {
+                    ItemKind = comparisonVersion == 1 ? null : item.ItemKind,
+                    ExpectedSourceRevision =
+                        comparisonVersion == 1 ? null : item.ExpectedSourceRevision,
+                }).ToArray(),
+            },
+            PublicationProof = legacyProof,
+        };
+        DelegateHttpHandler handler = new((request, _, _) =>
+            Task.FromResult(request.Method == HttpMethod.Get
+                ? DelegateHttpHandler.Json(legacy)
+                : request.RequestUri!.AbsolutePath.EndsWith("/retry", StringComparison.Ordinal)
+                    ? DelegateHttpHandler.Json(new PublicationReconciliationRetryResult(legacy, true))
+                    : DelegateHttpHandler.Json(new PublicationReconciliationStartResult(
+                        legacy.Run, legacy.Items, legacy.Comparison, legacy.Counts))));
+        AuthoringControlClient client = AuthoringClientTestData.CreateClient(handler);
+
+        PublicationReconciliationStatusResult readable =
+            await client.GetPublicationReconciliationAsync(
+                "Preparer", legacy.Run.RunId, CancellationToken.None);
+        Assert.Equal(proofVersion, readable.PublicationProof?.ContractVersion);
+        Assert.Null(readable.PublicationProof?.GroupingFingerprint);
+        Assert.Equal(new string('e', 64), readable.PublicationProof?.GroupingImpactFingerprint);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => client.RetryPublicationReconciliationAsync(
+                "Preparer", legacy.Run.RunId, CancellationToken.None));
+        if (comparisonVersion < 3)
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => client.StartPublicationReconciliationAsync(
+                    "Preparer", "source-run", CancellationToken.None));
+        }
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("not-a-sha256")]
+    public async Task PublicationReconciliationCurrentProof_RejectsMissingOrInvalidFullGrouping(
+        string? groupingFingerprint)
+    {
+        PublicationReconciliationStatusResult status = PublicationReconciliationStatus();
+        PublicationReconciliationProof proof =
+            Assert.IsType<PublicationReconciliationProof>(status.PublicationProof);
+        status = status with
+        {
+            PublicationProof = proof with { GroupingFingerprint = groupingFingerprint },
+        };
+        DelegateHttpHandler handler = new((_, _, _) =>
+            Task.FromResult(DelegateHttpHandler.Json(status)));
+        AuthoringControlClient client = AuthoringClientTestData.CreateClient(handler);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => client.GetPublicationReconciliationAsync(
+                "Preparer", status.Run.RunId, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task PublicationReconciliationRetry_RequiresProofForPromotedEvidence()
+    {
+        PublicationReconciliationStatusResult status =
+            PublicationReconciliationStatus() with { PublicationProof = null };
+        DelegateHttpHandler handler = new((_, _, _) => Task.FromResult(
+            DelegateHttpHandler.Json(new PublicationReconciliationRetryResult(status, true))));
+        AuthoringControlClient client = AuthoringClientTestData.CreateClient(handler);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => client.RetryPublicationReconciliationAsync(
+                "Preparer", status.Run.RunId, CancellationToken.None));
     }
 
     [Fact]
@@ -1013,7 +1124,7 @@ public sealed class AuthoringControlClientTests
             },
         ];
         PublicationReconciliationComparison comparison = new(
-            1,
+            3,
             "source-run",
             "source-snapshot",
             new string('c', 64),
@@ -1030,7 +1141,9 @@ public sealed class AuthoringControlClientTests
                     "item-1",
                     "source-run",
                     new string('a', 64),
-                    new string('b', 64)),
+                    new string('b', 64),
+                    "fhir",
+                    "revision-2"),
             ]);
         return new(
             run,
@@ -1042,7 +1155,20 @@ public sealed class AuthoringControlClientTests
                 "snapshot-publish-pending",
                 "database-promoted",
                 true),
-            []);
+            [],
+            new PublicationReconciliationProof(
+                3,
+                "publication-reconciliation",
+                comparison.SourceRunId,
+                comparison.SourceSnapshotId,
+                comparison.StableJiraGeneration,
+                1,
+                0,
+                1,
+                new string('d', 64),
+                new string('e', 64),
+                comparison.CapturedAt,
+                new string('f', 64)));
     }
 
     private static CanonicalEpochRecoveryStatusResult

@@ -889,6 +889,141 @@ public sealed class PreparedTicketGroupingPersistenceTests
                     [first with { Complete = false }]));
     }
 
+    [Fact]
+    public void ReconciliationGroupingFingerprint_BindsCompleteOutputSeparatelyFromImpactAudit()
+    {
+        string hashA = new('a', 64);
+        string hashB = new('b', 64);
+        string hashC = new('c', 64);
+        PreparedTicketPublicationGroupingPartition unaffected = new(
+            "Orders\u001fCDA\u001fChange Request",
+            hashA);
+        PreparedTicketPublicationReconciliationGroupingImpact replacement = new(
+            "Orders\u001fFHIR\u001fChange Request",
+            ["FHIR-2", "FHIR-1"],
+            hashA,
+            hashA,
+            hashA,
+            hashB,
+            hashB,
+            hashB,
+            Complete: true);
+        PreparedTicketPublicationReconciliationGroupingImpact second = replacement with
+        {
+            PartitionKey = "Orders\u001fFHIR\u001fComment",
+            RevisedTicketKeys = ["FHIR-3"],
+            StagedOutputFingerprint = hashC,
+        };
+        string full = PreparedTicketPublicationContract
+            .ComputeReconciliationGroupingFingerprint(
+                [unaffected],
+                [replacement, second]);
+        string audit = PreparedTicketPublicationContract
+            .ComputeGroupingImpactFingerprint([replacement, second]);
+
+        Assert.Equal(
+            PreparedTicketPublicationContract.ComputeGroupingFingerprint(
+                new PreparedTicketPublicationGroupingPartition[]
+                {
+                    unaffected,
+                    new(replacement.PartitionKey, hashB),
+                    new(second.PartitionKey, hashC),
+                }),
+            full);
+        Assert.Equal(
+            full,
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [unaffected],
+                    [second, replacement]));
+        Assert.NotEqual(audit, full);
+        Assert.NotEqual(
+            full,
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [unaffected with { OutputFingerprint = hashB }],
+                    [replacement, second]));
+        Assert.NotEqual(
+            full,
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [unaffected],
+                    [replacement with { StagedOutputFingerprint = hashC }, second]));
+
+        PreparedTicketPublicationReconciliationGroupingImpact differentAudit =
+            replacement with { BaselineOutputFingerprint = hashC };
+        Assert.Equal(
+            full,
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [unaffected],
+                    [differentAudit, second]));
+        Assert.NotEqual(
+            audit,
+            PreparedTicketPublicationContract
+                .ComputeGroupingImpactFingerprint([differentAudit, second]));
+        Assert.Throws<ArgumentException>(() =>
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [unaffected],
+                    [replacement with { Complete = false }]));
+        Assert.Throws<ArgumentException>(() =>
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [unaffected],
+                    [replacement with { StagedOutputFingerprint = null }]));
+        Assert.Throws<ArgumentException>(() =>
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [unaffected],
+                    [replacement with { StagedCorpusFingerprint = null }]));
+        Assert.Throws<ArgumentException>(() =>
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [unaffected],
+                    [replacement with { StagedProtectedRowsFingerprint = null }]));
+        Assert.Throws<ArgumentException>(() =>
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [unaffected],
+                    [replacement, replacement]));
+        Assert.Throws<ArgumentException>(() =>
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [new(replacement.PartitionKey, hashA)],
+                    [replacement]));
+    }
+
+    [Fact]
+    public void ReconciliationGroupingFingerprint_RemovedPartitionRemainsOnlyInImpactAudit()
+    {
+        string hash = new('a', 64);
+        PreparedTicketPublicationGroupingPartition unaffected = new(
+            "Orders\u001fCDA\u001fChange Request",
+            hash);
+        PreparedTicketPublicationReconciliationGroupingImpact removed = new(
+            "Orders\u001fFHIR\u001fChange Request",
+            ["FHIR-1"],
+            hash,
+            hash,
+            hash,
+            AuthoringResultHasher.HashNormalizedUtf8(string.Empty),
+            hash,
+            hash,
+            Complete: true);
+
+        Assert.Equal(
+            PreparedTicketPublicationContract.ComputeGroupingFingerprint(
+                [unaffected]),
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [unaffected],
+                    [removed]));
+        Assert.NotEqual(
+            PreparedTicketPublicationContract.ComputeGroupingImpactFingerprint([]),
+            PreparedTicketPublicationContract.ComputeGroupingImpactFingerprint([removed]));
+    }
+
     private static PreparedTicketGroupingPayload SamplePayload() => new()
     {
         WorkGroupClean = WorkGroupClean,

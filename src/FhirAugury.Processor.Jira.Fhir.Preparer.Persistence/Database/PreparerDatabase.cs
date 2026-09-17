@@ -9045,7 +9045,15 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 runId,
                 overlay.CorpusFingerprint,
                 impacts,
-                unaffected);
+                unaffected,
+                inventory.Grouping
+                    .Where(partition =>
+                        !impacted.Contains(partition.PartitionKey))
+                    .Select(partition =>
+                        new PreparedTicketPublicationGroupingPartition(
+                            partition.PartitionKey,
+                            partition.Fingerprint.OutputFingerprint))
+                    .ToArray());
         }
 
         public async Task ValidatePublicationReconciliationGroupingStageAsync(
@@ -10101,6 +10109,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 "The publication proof is not a current reconciliation proof.",
                 nameof(proof));
         }
+        EnsureCandidateMatchesReconciliationProof(candidate, proof);
 
         string descriptorJson = JsonSerializer.Serialize(candidate);
         string proofJson = JsonSerializer.Serialize(proof);
@@ -10218,15 +10227,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 proof.ReAuthorTicketCount != comparison.Items.Count(
                     item => item.Disposition ==
                         PreparedTicketPublicationReconciliationDispositionValues
-                            .ReAuthor) ||
-                !string.Equals(
-                    candidate.OverlayCorpusFingerprint,
-                    proof.CorpusFingerprint,
-                    StringComparison.Ordinal) ||
-                !string.Equals(
-                    candidate.GroupingImpactFingerprint,
-                    proof.GroupingImpactFingerprint,
-                    StringComparison.Ordinal))
+                            .ReAuthor))
             {
                 throw new InvalidOperationException(
                     "The reconciliation candidate evidence does not match the frozen comparison.");
@@ -10412,6 +10413,13 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 "The publication proof is not a current reconciliation proof.",
                 nameof(proof));
         }
+        PreparedTicketPublicationReconciliationContract.EnsureCurrentProof(
+            proof);
+        PreparedTicketPublicationReconciliationComparison comparison =
+            await GetPublicationReconciliationComparisonAsync(runId, ct)
+            ?? throw new KeyNotFoundException(
+                $"Publication reconciliation '{runId}' was not found.");
+        EnsureCurrentPublicationReconciliationComparison(comparison);
         string json = JsonSerializer.Serialize(proof);
         await using SqliteConnection connection = OpenConnection();
         await ExecuteAsync(
@@ -10597,12 +10605,19 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             PreparedTicketPublicationReconciliationPromotionStateValues
                 .SnapshotPublishPending);
         string? json = (string?)await command.ExecuteScalarAsync(ct);
-        return json is null
-            ? null
-            : JsonSerializer.Deserialize<PublicationReconciliationPromotion>(
-                json)
-              ?? throw new InvalidOperationException(
-                  $"Reconciliation '{runId}' has an invalid promotion journal.");
+        if (json is null)
+        {
+            return null;
+        }
+        _ = await ReadPublicationReconciliationProofAsync(
+            connection,
+            transaction: null,
+            runId,
+            ct);
+        return JsonSerializer.Deserialize<PublicationReconciliationPromotion>(
+            json)
+            ?? throw new InvalidOperationException(
+                $"Reconciliation '{runId}' has an invalid promotion journal.");
     }
 
     public async Task<PublicationReconciliationRecoveryEvidence?>
@@ -10668,6 +10683,17 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         {
             throw new InvalidOperationException(
                 $"Reconciliation '{runId}' has conflicting candidate digest evidence.");
+        }
+        await reader.DisposeAsync();
+        PreparedTicketPublicationReconciliationProof proof =
+            await ReadPublicationReconciliationProofAsync(
+                connection,
+                transaction: null,
+                runId,
+                ct);
+        if (candidate is not null)
+        {
+            EnsureCandidateMatchesReconciliationProof(candidate, proof);
         }
         return new(state, promotion, candidate);
     }
@@ -10750,6 +10776,11 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 PreparedTicketPublicationReconciliationPromotionStateValues
                     .SnapshotPublishPending)
             {
+                _ = await ReadPublicationReconciliationProofAsync(
+                    connection,
+                    transaction,
+                    runId,
+                    ct);
                 await transaction.CommitAsync(ct);
                 return await GetPendingPublicationReconciliationAsync(
                     runId,
@@ -10811,8 +10842,11 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                     transaction,
                     runId,
                     ct);
+            EnsureCandidateMatchesReconciliationProof(candidate, proof);
             string snapshotProofJson = JsonSerializer.Serialize(
-                CreateSnapshotPublicationProof(proof),
+                CreateSnapshotPublicationProof(
+                    proof,
+                    candidate.GroupingFingerprint),
                 JsonSerializerOptions.Web);
             AuthoringReviewSnapshotRecord snapshot =
                 CreateCandidateSnapshotRecord(
@@ -10990,6 +11024,11 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             connection.BeginTransaction(deferred: false);
         try
         {
+            _ = await ReadPublicationReconciliationProofAsync(
+                connection,
+                transaction,
+                runId,
+                ct);
             int updated = await ExecuteInTransactionAsync(
                 connection,
                 transaction,
@@ -11480,11 +11519,48 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 ? StringComparison.OrdinalIgnoreCase
                 : StringComparison.Ordinal);
 
+    private static void EnsureCandidateMatchesReconciliationProof(
+        PreparedTicketPublicationCandidateSnapshot candidate,
+        PreparedTicketPublicationReconciliationProof proof)
+    {
+        PreparedTicketPublicationReconciliationContract.EnsureCurrentProof(
+            proof);
+        if (!string.Equals(
+                candidate.OverlayCorpusFingerprint,
+                proof.CorpusFingerprint,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                candidate.GroupingFingerprint,
+                proof.GroupingFingerprint,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                candidate.GroupingImpactFingerprint,
+                proof.GroupingImpactFingerprint,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The reconciliation candidate does not match its complete publication proof.");
+        }
+    }
+
     private static AuthoringSnapshotPublicationProof
         CreateSnapshotPublicationProof(
-            PreparedTicketPublicationReconciliationProof proof)
-        => new(
-            PreparedTicketPublicationContract.CurrentVersion,
+            PreparedTicketPublicationReconciliationProof proof,
+            string? groupingFingerprint)
+    {
+        PreparedTicketPublicationReconciliationContract.EnsureCurrentProof(
+            proof);
+        ArgumentException.ThrowIfNullOrWhiteSpace(groupingFingerprint);
+        if (!string.Equals(
+                groupingFingerprint,
+                proof.GroupingFingerprint,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The snapshot grouping fingerprint does not match its reconciliation proof.");
+        }
+        return new(
+            PreparedTicketPublicationReconciliationContract.CurrentVersion,
             proof.Purpose,
             proof.SourceRunId,
             PreparedTicketPublicationContract.JiraSourceName,
@@ -11497,8 +11573,9 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 : 0,
             0,
             proof.CorpusFingerprint,
-            proof.GroupingImpactFingerprint,
+            groupingFingerprint,
             proof.CapturedAt);
+    }
 
     private static async Task EnsurePublicationPromotionPreconditionsAsync(
         SqliteConnection connection,
@@ -11555,7 +11632,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     private static async Task<PreparedTicketPublicationReconciliationProof>
         ReadPublicationReconciliationProofAsync(
             SqliteConnection connection,
-            SqliteTransaction transaction,
+            SqliteTransaction? transaction,
             string runId,
             CancellationToken ct)
     {
@@ -11563,27 +11640,51 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         command.Transaction = transaction;
         command.CommandText =
             """
-            SELECT ProofJson
-            FROM prepared_ticket_publication_reconciliation_proofs
-            WHERE RunId = @runId
+            SELECT proof.ProofJson, reconciliation.PromotionState,
+                   snapshot.PublicationProofJson
+            FROM prepared_ticket_publication_reconciliation_proofs proof
+            INNER JOIN prepared_ticket_publication_reconciliations
+                reconciliation ON reconciliation.RunId = proof.RunId
+            LEFT JOIN authoring_review_snapshots snapshot
+                ON snapshot.RunId = proof.RunId
+            WHERE proof.RunId = @runId
             """;
         command.Parameters.AddWithValue("@runId", runId);
-        string? json = (string?)await command.ExecuteScalarAsync(ct);
-        PreparedTicketPublicationReconciliationProof proof = json is null
-            ? throw new InvalidOperationException(
-                $"Reconciliation '{runId}' has no publication proof.")
-            : JsonSerializer.Deserialize<
-                PreparedTicketPublicationReconciliationProof>(json)
-              ?? throw new InvalidOperationException(
-                  $"Reconciliation '{runId}' has an invalid publication proof.");
-        if (proof.ContractVersion !=
-                PreparedTicketPublicationReconciliationContract
-                    .CurrentVersion ||
-            proof.Purpose !=
-                PreparedTicketPublicationReconciliationContract.Purpose)
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
         {
-            throw new NotSupportedException(
-                $"Reconciliation '{runId}' does not have a current publication proof.");
+            throw new InvalidOperationException(
+                $"Reconciliation '{runId}' has no publication proof.");
+        }
+        PreparedTicketPublicationReconciliationProof proof =
+            JsonSerializer.Deserialize<
+                PreparedTicketPublicationReconciliationProof>(
+                    reader.GetString(0))
+            ?? throw new InvalidOperationException(
+                $"Reconciliation '{runId}' has an invalid publication proof.");
+        PreparedTicketPublicationReconciliationContract.EnsureCurrentProof(
+            proof);
+        if (reader.GetString(1) is
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .SnapshotPublishPending or
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .Ready)
+        {
+            AuthoringSnapshotPublicationProof? snapshotProof =
+                reader.IsDBNull(2)
+                    ? null
+                    : JsonSerializer.Deserialize<
+                        AuthoringSnapshotPublicationProof>(
+                            reader.GetString(2),
+                            JsonSerializerOptions.Web);
+            if (snapshotProof != CreateSnapshotPublicationProof(
+                    proof,
+                    proof.GroupingFingerprint))
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{runId}' has missing, legacy, or conflicting snapshot publication proof.");
+            }
         }
         return proof;
     }

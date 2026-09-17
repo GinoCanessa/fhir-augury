@@ -371,7 +371,7 @@ newer revisions become decisions rather than a first-mismatch exception, and
 source failures are accumulated. Every successful observation must have
 stable source provenance and the same Jira content generation.
 
-The resulting reconciliation contract-v2 comparison records baseline
+The resulting reconciliation contract-v3 comparison records baseline
 snapshot identity and digest, stable Jira generation, corpus fingerprint, and
 for every ticket: baseline/current source revision, `carry-forward` or
 `re-author`, baseline receipt/run-item/contributing-run coordinates, authored
@@ -475,16 +475,35 @@ candidate descriptor contains both the reserved coordinates and that
 post-provenance digest. Its proof binds purpose
 `publication-reconciliation`, source run/snapshot, stable Jira generation,
 accepted/carried/re-authored counts, overlay corpus fingerprint,
-grouping-impact fingerprint, and capture time.
+complete `GroupingFingerprint`, separate `GroupingImpactFingerprint`, and
+capture time. The complete fingerprint uses the shared canonical serializer
+over unaffected canonical partition fingerprints plus every complete staged
+replacement. A zero-member replacement removes that partition from the
+resulting grouping while remaining in the impact audit. Materialization reads
+the candidate's entire grouping back and requires the same fingerprint before
+trusting its evidence.
 
-The private comparison and reconciliation proof use reconciliation contract
-version 2. Version-1 comparison/proof JSON remains deserializable for status
-and audit, but cannot dispatch grouping, materialize a candidate, recover a
-pending publication, or promote. Missing version-1 item coordinates are never
-inferred. This version is independent of
-`PreparedTicketPublicationContract.CurrentVersion`: the promoted public
-snapshot descriptor continues to use generic publication-proof contract v1
-while retaining the canonical v2 reconciliation corpus fingerprint.
+The private comparison, reconciliation proof, and promoted public
+reconciliation descriptor use reconciliation contract version 3. Promotion
+writes the verified candidate's full `GroupingFingerprint` to
+`AuthoringSnapshotPublicationProof.GroupingFingerprint`. The impact digest
+binds closure/baseline/staging audit data only; it remains in the private
+reconciliation proof and typed status, never substitutes for the full grouping
+proof, and is not a readiness credential. The publisher independently
+recomputes the immutable snapshot's complete corpus and grouping and compares
+both with the descriptor.
+
+Version-1 and version-2 reconciliation evidence remains deserializable for
+status and audit only. It cannot dispatch grouping, materialize, recover,
+promote, or qualify as publication-ready. Missing legacy item coordinates or
+the new full-grouping field are never inferred, default-hashed, or copied
+from the impact digest. Current v3 evidence requires the full fingerprint even
+though the JSON/constructor field remains nullable for legacy diagnostics.
+Regenerate evidence through a supported run rather than relabeling stored
+versions. The canonical hash serialization
+`PreparedTicketPublicationContract.CurrentVersion` remains version 1;
+metadata refresh and dedicated canonical-epoch recovery also retain their
+independent v1 proof contracts.
 
 #### Database-first promotion journal
 
@@ -659,7 +678,7 @@ fence in a retryable run; no automatic compensation or old-publication
 fallback is performed.
 
 The dedicated proof contract is version 1, independent of reconciliation
-contract v2. It records source abandonment, epoch, capture time, corpus,
+contract v3. It records source abandonment, epoch, capture time, corpus,
 complete grouping, and recipe fingerprints. The generic descriptor proof
 has purpose `canonical-epoch-recovery`; its purpose-specific source time and
 revision represent abandonment time and authoring epoch, not newly fetched
