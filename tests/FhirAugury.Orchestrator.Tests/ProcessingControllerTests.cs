@@ -164,6 +164,30 @@ public class ProcessingControllerTests
     }
 
     [Fact]
+    public async Task CanonicalRestriction_PreservesExactBodyAndCoordinates()
+    {
+        ProcessingController controller = CreateController(enabled: true);
+
+        ContentResult result = Assert.IsType<ContentResult>(
+            await controller.StartPublicationRefresh(
+                "Planner",
+                "restricted-run",
+                CancellationToken.None));
+        JsonElement body = JsonDocument.Parse(result.Content!).RootElement;
+
+        Assert.Equal(StatusCodes.Status409Conflict, result.StatusCode);
+        Assert.Equal(
+            "canonical-unpublished-restriction",
+            body.GetProperty("error").GetString());
+        Assert.Equal(
+            ["abandoned-run", "recovery-run"],
+            body.GetProperty("conflictingRunIds")
+                .EnumerateArray()
+                .Select(value => value.GetString()!)
+                .ToArray());
+    }
+
+    [Fact]
     public async Task PublicationReconciliation_PreservesLifecycleBodiesAndHeaders()
     {
         ProcessingController controller = CreateController(enabled: true);
@@ -328,6 +352,8 @@ public class ProcessingControllerTests
                     RefreshRunEnvelope,
                 "/processing/authoring/runs/busy-run/publication-refresh" =>
                     """{"error":"mutation-fence-unavailable","detail":"Another mutation is active.","conflictingRunIds":["active-run"],"runId":"active-run"}""",
+                "/processing/authoring/runs/restricted-run/publication-refresh" =>
+                    """{"error":"canonical-unpublished-restriction","detail":"A canonical epoch remains unpublished.","conflictingRunIds":["abandoned-run","recovery-run"],"runId":null}""",
                 "/processing/authoring/runs/source-run/publication-reconciliation" =>
                     ReconciliationStartEnvelope,
                 "/processing/authoring/runs/reconciliation-run/publication-reconciliation" =>
@@ -352,6 +378,8 @@ public class ProcessingControllerTests
                 : path == "/processing/authoring/runs/source-run/publication-refresh"
                     ? HttpStatusCode.Accepted
                 : path == "/processing/authoring/runs/busy-run/publication-refresh"
+                    ? HttpStatusCode.Conflict
+                : path == "/processing/authoring/runs/restricted-run/publication-refresh"
                     ? HttpStatusCode.Conflict
                 : path == "/processing/authoring/runs/source-run/publication-reconciliation"
                     ? HttpStatusCode.Accepted

@@ -951,7 +951,7 @@ public sealed class PreparedTicketPublicationReconciliationTests
         fixture.Execute(
             """
             UPDATE authoring_runs
-            SET Status = 'finalizing'
+            SET Status = 'error'
             WHERE Id = @runId;
             UPDATE prepared_ticket_publication_reconciliations
             SET PromotionState = 'snapshot-publish-pending'
@@ -995,6 +995,9 @@ public sealed class PreparedTicketPublicationReconciliationTests
                 WHERE RunId = '{run.Id}'
                 """));
         Assert.Null(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Abandoned,
+            (await fixture.Store.GetRunAsync(run.Id))!.Status);
     }
 
     [Fact]

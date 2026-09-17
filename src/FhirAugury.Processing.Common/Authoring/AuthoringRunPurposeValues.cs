@@ -8,6 +8,8 @@ public static class AuthoringRunPurposeValues
     public const string PublicationRefresh = "publication-refresh";
     public const string PublicationReconciliation =
         "publication-reconciliation";
+    public const string CanonicalEpochRecovery =
+        "canonical-epoch-recovery";
 
     public static bool IsValid(string? purpose)
         => purpose is
@@ -15,13 +17,15 @@ public static class AuthoringRunPurposeValues
             InitialRevalidation or
             GroupingMaintenance or
             PublicationRefresh or
-            PublicationReconciliation;
+            PublicationReconciliation or
+            CanonicalEpochRecovery;
 
     public static bool IsMaintenance(string? purpose)
         => purpose is
             GroupingMaintenance or
             PublicationRefresh or
-            PublicationReconciliation;
+            PublicationReconciliation or
+            CanonicalEpochRecovery;
 
     public static void EnsureValid(string purpose)
     {

@@ -13,6 +13,8 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Controllers;
 public sealed class PreparedTicketPublicationMaintenanceController
     : ControllerBase
 {
+    private const string AuthoringProcessorKind = "jira-fhir";
+
     private readonly PreparedTicketPublicationRefreshService _service;
     private readonly PreparedTicketPublicationReconciliationPlanner?
         _reconciliationPlanner;
@@ -58,6 +60,15 @@ public sealed class PreparedTicketPublicationMaintenanceController
     {
         try
         {
+            if (_database is not null)
+            {
+                await _database.EnsureSnapshotWorkflowAllowedAsync(
+                    new AuthoringSnapshotWorkflowIntent(
+                        AuthoringProcessorKind,
+                        DatabaseOnly: false,
+                        AuthoringRunPurposeValues.PublicationRefresh),
+                    ct);
+            }
             PreparedTicketPublicationRefreshResult result =
                 await _service.StartAsync(sourceRunId, ct);
             string location =
@@ -87,14 +98,19 @@ public sealed class PreparedTicketPublicationMaintenanceController
         }
         catch (AuthoringConflictException ex)
         {
-            string[] conflictingRunIds = ex.RelatedRunIds
+            AuthoringConflictException failure =
+                await EnrichCanonicalRestrictionAsync(
+                    ex,
+                    AuthoringRunPurposeValues.PublicationRefresh,
+                    ct);
+            string[] conflictingRunIds = failure.RelatedRunIds
                 .Where(value => !string.IsNullOrWhiteSpace(value))
                 .Distinct(StringComparer.Ordinal)
                 .ToArray();
             return Conflict(
                 new PreparedTicketPublicationRefreshFailure(
-                    ToFailureCode(ex.Code),
-                    ex.Message,
+                    ToFailureCode(failure.Code),
+                    failure.Message,
                     conflictingRunIds,
                     conflictingRunIds.Length == 1
                         ? conflictingRunIds[0]
@@ -119,6 +135,16 @@ public sealed class PreparedTicketPublicationMaintenanceController
                 "Publication reconciliation is not configured.");
         try
         {
+            if (_database is not null)
+            {
+                await _database.EnsureSnapshotWorkflowAllowedAsync(
+                    new AuthoringSnapshotWorkflowIntent(
+                        AuthoringProcessorKind,
+                        DatabaseOnly: false,
+                        AuthoringRunPurposeValues
+                            .PublicationReconciliation),
+                    ct);
+            }
             PreparedTicketPublicationReconciliationStartResult result =
                 await planner.StartAsync(sourceRunId, ct);
             return Accepted(
@@ -142,18 +168,31 @@ public sealed class PreparedTicketPublicationMaintenanceController
         }
         catch (AuthoringConflictException ex)
         {
-            string[] runIds = ex.RelatedRunIds
+            AuthoringConflictException failure =
+                await EnrichCanonicalRestrictionAsync(
+                    ex,
+                    AuthoringRunPurposeValues.PublicationReconciliation,
+                    ct);
+            string[] runIds = failure.RelatedRunIds
                 .Where(value => !string.IsNullOrWhiteSpace(value))
                 .Distinct(StringComparer.Ordinal)
                 .ToArray();
             return Conflict(
                 new PreparedTicketPublicationReconciliationFailure(
-                    ex.Code == AuthoringConflictCode.MutationFenceUnavailable
-                        ? PreparedTicketPublicationReconciliationFailureCodes
-                            .RecoveryInProgress
-                        : PreparedTicketPublicationReconciliationFailureCodes
-                            .InvalidBaseline,
-                    ex.Message,
+                    failure.Code switch
+                    {
+                        AuthoringConflictCode.MutationFenceUnavailable =>
+                            PreparedTicketPublicationReconciliationFailureCodes
+                                .RecoveryInProgress,
+                        AuthoringConflictCode
+                            .CanonicalUnpublishedRestriction =>
+                            PreparedTicketPublicationReconciliationFailureCodes
+                                .CanonicalUnpublishedRestriction,
+                        _ =>
+                            PreparedTicketPublicationReconciliationFailureCodes
+                                .InvalidBaseline,
+                    },
+                    failure.Message,
                     runIds,
                     runIds.Length == 1 ? runIds[0] : null));
         }
@@ -219,6 +258,36 @@ public sealed class PreparedTicketPublicationMaintenanceController
                     ex.FailureCode,
                     ex.Message,
                     RunId: runId));
+        }
+        catch (AuthoringConflictException ex)
+        {
+            AuthoringConflictException failure =
+                await EnrichCanonicalRestrictionAsync(
+                    ex,
+                    AuthoringRunPurposeValues.PublicationReconciliation,
+                    ct);
+            string[] runIds = failure.RelatedRunIds
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            return Conflict(
+                new PreparedTicketPublicationReconciliationFailure(
+                    failure.Code ==
+                        AuthoringConflictCode
+                            .CanonicalUnpublishedRestriction
+                        ? PreparedTicketPublicationReconciliationFailureCodes
+                            .CanonicalUnpublishedRestriction
+                        : PreparedTicketPublicationReconciliationFailureCodes
+                            .PromotionRecoveryFailure,
+                    failure.Message,
+                    runIds,
+                    runIds.Length == 1
+                        ? runIds[0]
+                        : failure.Code ==
+                            AuthoringConflictCode
+                                .CanonicalUnpublishedRestriction
+                            ? null
+                            : runId));
         }
     }
 
@@ -346,7 +415,42 @@ public sealed class PreparedTicketPublicationMaintenanceController
             AuthoringConflictCode.StageFingerprintMismatch =>
                 PreparedTicketPublicationRefreshFailureCodes
                     .StageFingerprintMismatch,
+            AuthoringConflictCode.CanonicalUnpublishedRestriction =>
+                PreparedTicketPublicationReconciliationFailureCodes
+                    .CanonicalUnpublishedRestriction,
             _ => PreparedTicketPublicationRefreshFailureCodes
                 .RunNotActive,
         };
+
+    private async Task<AuthoringConflictException>
+        EnrichCanonicalRestrictionAsync(
+            AuthoringConflictException exception,
+            string purpose,
+            CancellationToken ct)
+    {
+        if (exception.Code !=
+                AuthoringConflictCode.CanonicalUnpublishedRestriction ||
+            exception.RelatedRunIds.Count != 0 ||
+            _database is null)
+        {
+            return exception;
+        }
+
+        try
+        {
+            await _database.EnsureSnapshotWorkflowAllowedAsync(
+                new AuthoringSnapshotWorkflowIntent(
+                    AuthoringProcessorKind,
+                    DatabaseOnly: false,
+                    purpose),
+                ct);
+        }
+        catch (AuthoringConflictException enriched)
+            when (enriched.Code ==
+                AuthoringConflictCode.CanonicalUnpublishedRestriction)
+        {
+            return enriched;
+        }
+        return exception;
+    }
 }

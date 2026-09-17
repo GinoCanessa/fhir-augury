@@ -75,6 +75,7 @@ public enum ProcessorRunOutcome
     CompletedWithSupersededItems,
     CompletedDatabaseOnly,
     Superseded,
+    Abandoned,
 }
 
 public enum PublicationOutcome
@@ -143,7 +144,8 @@ public sealed record TicketStartResult(
     IReadOnlyList<string>? RelatedRunIds = null,
     IReadOnlyList<AuthoringRunStatus>? InspectionCandidates = null,
     string? Message = null,
-    TicketReconciliation? Reconciliation = null)
+    TicketReconciliation? Reconciliation = null,
+    string? FailureCode = null)
 {
     public IReadOnlyList<string> ConflictingRunIds =>
         RelatedRunIds ?? [];
@@ -178,7 +180,8 @@ public sealed record TicketPublicationRefreshResult(
     IReadOnlyList<string>? RelatedRunIds = null,
     IReadOnlyList<AuthoringRunStatus>? InspectionCandidates = null,
     string? Message = null,
-    TicketReconciliation? Reconciliation = null)
+    TicketReconciliation? Reconciliation = null,
+    string? FailureCode = null)
 {
     public string? RefreshRunId =>
         Run?.Run.RunId;

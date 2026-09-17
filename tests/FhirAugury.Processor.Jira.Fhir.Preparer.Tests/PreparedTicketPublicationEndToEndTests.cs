@@ -1109,6 +1109,11 @@ public sealed class PreparedTicketPublicationEndToEndTests
                 corpus,
                 handler,
                 http);
+        AuthoringRunRecord prequeuedSnapshot =
+            await fixture.Store.CreateRunAsync(
+                "jira-fhir",
+                [new("FHIR-99000", "fhir", "revision-0")],
+                databaseOnly: false);
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => fixture.Database.AbandonPublicationReconciliationAsync(
                 staged.RunId,
@@ -1150,12 +1155,59 @@ public sealed class PreparedTicketPublicationEndToEndTests
             }),
             ReadAbandonmentAudit(fixture, staged.RunId));
         Assert.Null(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+        AuthoringRunRecord abandonedRun =
+            Assert.IsType<AuthoringRunRecord>(
+                await fixture.Store.GetRunAsync(staged.RunId));
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Abandoned,
+            abandonedRun.Status);
+        AuthoringRunControlStatus abandonedStatus =
+            await new AuthoringRunControlService(
+                fixture.Store,
+                new AuthoringRetryPolicy(
+                    Options.Create(new ProcessingServiceOptions())))
+                .GetStatusAsync("jira-fhir", staged.RunId);
+        Assert.True(abandonedStatus.Run.State!.IsTerminal);
+        Assert.False(abandonedStatus.Run.State.IsRecoverable);
         Assert.False(File.Exists(promotion.FinalPath));
         Assert.True(File.Exists(promotion.TemporaryPath));
         Assert.Equal(
             $"Reconciled request {RevisedKeys[0]}",
             fixture.Scalar<string>(
                 $"SELECT RequestSummary FROM prepared_tickets WHERE Key = '{RevisedKeys[0]}'"));
+
+        PreparedTicketPublicationRefreshService restrictedRefreshService =
+            fixture.CreateRefreshService(
+                new OrchestratorHydrationFetcher(
+                    http,
+                    NullLogger.Instance));
+        await AssertCanonicalUnpublishedRestrictionAsync(
+            () => fixture.CreatePostProcessor(
+                    restrictedRefreshService)
+                .FinalizeRunAsync(prequeuedSnapshot.Id));
+        PreparedTicketSnapshotMaterializer restrictedMaterializer = new(
+            fixture.Database,
+            fixture.Store,
+            new SqliteReviewSnapshotReconciler(fixture.Store),
+            Options.Create(new PreparerServiceOptions
+            {
+                SnapshotDirectory = fixture.SnapshotDirectory,
+                SnapshotSchemaVersion =
+                    PreparedTicketSnapshotSchemaV3.Version,
+            }));
+        await AssertCanonicalUnpublishedRestrictionAsync(
+            () => restrictedMaterializer.MaterializeAsync(
+                prequeuedSnapshot,
+                PreparedTicketSnapshotSchemaResolver.Resolve(
+                    PreparedTicketSnapshotSchemaV3.Version)));
+        await AssertCanonicalUnpublishedRestrictionAsync(
+            () => fixture.Store.TryAcquireMutationFenceAsync(
+                "jira-fhir",
+                prequeuedSnapshot.Id));
+        Assert.Null(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+        await fixture.Store.SupersedeRunAsync(
+            prequeuedSnapshot.Id,
+            "canonical-unpublished-restriction");
 
         await AssertCanonicalUnpublishedRestrictionAsync(
             () => fixture.Store.CreateRunAsync(
@@ -1182,12 +1234,66 @@ public sealed class PreparedTicketPublicationEndToEndTests
             () => fixture.Database.CreatePublicationReconciliationAsync(
                 staged.Comparison));
 
+        PreparedTicketPublicationMaintenanceController controller = new(
+            restrictedRefreshService,
+            staged.Planner,
+            new PreparedTicketPublicationRecoveryService(
+                fixture.Database,
+                fixture.Store,
+                NullLogger<
+                    PreparedTicketPublicationRecoveryService>.Instance),
+            fixture.Database);
+        ConflictObjectResult restrictedRefresh =
+            Assert.IsType<ConflictObjectResult>(
+                await controller.Start(
+                    corpus.Source.Run.Id,
+                    CancellationToken.None));
+        PreparedTicketPublicationRefreshFailure restrictedFailure =
+            Assert.IsType<PreparedTicketPublicationRefreshFailure>(
+                restrictedRefresh.Value);
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationFailureCodes
+                .CanonicalUnpublishedRestriction,
+            restrictedFailure.Error);
+        Assert.Equal(
+            [staged.RunId],
+            restrictedFailure.ConflictingRunIds);
+        Assert.Equal(staged.RunId, restrictedFailure.RunId);
+
         AuthoringRunRecord databaseOnly = await fixture.Store.CreateRunAsync(
             "jira-fhir",
             [new("FHIR-99002", "fhir", "revision-1")],
-            databaseOnly: true);
+            databaseOnly: true,
+            maxActiveRuns: 1);
         Assert.True(databaseOnly.DatabaseOnly);
         Assert.Equal(AuthoringStatusValues.Runs.Queued, databaseOnly.Status);
+
+        AuthoringRunRecord recoveryBypass =
+            await fixture.Store.CreateMaintenanceRunAsync(
+                "jira-fhir",
+                [
+                    new AuthoringMaintenanceRunItem(
+                        retained.TicketKey,
+                        retained.ItemKind,
+                        retained.ExpectedSourceRevision,
+                        retained.ReceiptId),
+                ],
+                AuthoringRunPurposeValues.CanonicalEpochRecovery,
+                databaseOnly: false,
+                sourceRunId: staged.RunId);
+        Assert.Equal(
+            AuthoringRunPurposeValues.CanonicalEpochRecovery,
+            recoveryBypass.Purpose);
+        AuthoringConflictException enriched =
+            await Assert.ThrowsAsync<AuthoringConflictException>(
+                () => fixture.Database.EnsureSnapshotWorkflowAllowedAsync(
+                    new AuthoringSnapshotWorkflowIntent(
+                        "jira-fhir",
+                        DatabaseOnly: false,
+                        AuthoringRunPurposeValues.Authoring)));
+        Assert.Equal(
+            [staged.RunId, recoveryBypass.Id],
+            enriched.RelatedRunIds);
         Assert.Equal(
             originalHashes,
             await ArtifactHashesAsync(fixture, original));
@@ -2562,13 +2668,16 @@ public sealed class PreparedTicketPublicationEndToEndTests
     private static async Task AssertCanonicalUnpublishedRestrictionAsync(
         Func<Task> action)
     {
-        SqliteException error =
-            await Assert.ThrowsAsync<SqliteException>(action);
-        Assert.Contains(
+        AuthoringConflictException error =
+            await Assert.ThrowsAsync<AuthoringConflictException>(action);
+        Assert.Equal(
+            AuthoringConflictCode.CanonicalUnpublishedRestriction,
+            error.Code);
+        Assert.Equal(
             PreparedTicketPublicationReconciliationFailureCodes
                 .CanonicalUnpublishedRestriction,
-            error.Message,
-            StringComparison.Ordinal);
+            AuthoringConflictException
+                .CanonicalUnpublishedRestrictionCode);
     }
 
     private static async Task<Corpus> CreateCorpusAsync(Fixture fixture)

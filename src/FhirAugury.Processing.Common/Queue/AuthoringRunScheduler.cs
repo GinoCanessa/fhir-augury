@@ -36,7 +36,8 @@ public class AuthoringRunScheduler<TItem>(
     ProcessingLifecycleService lifecycle,
     IOptions<ProcessingServiceOptions> optionsAccessor,
     ILogger<AuthoringRunScheduler<TItem>> logger,
-    AuthoringRunSchedulerWakeSignal? wakeSignal = null)
+    AuthoringRunSchedulerWakeSignal? wakeSignal = null,
+    IAuthoringSnapshotWorkflowGuard? snapshotWorkflowGuard = null)
     : BackgroundService
 {
     private readonly ProcessingServiceOptions _options = optionsAccessor.Value;
@@ -45,6 +46,9 @@ public class AuthoringRunScheduler<TItem>(
         nameof(ProcessingServiceOptions.SyncSchedule));
     private readonly AuthoringRunSchedulerWakeSignal _wakeSignal =
         wakeSignal ?? new AuthoringRunSchedulerWakeSignal();
+    private readonly IAuthoringSnapshotWorkflowGuard _snapshotWorkflowGuard =
+        snapshotWorkflowGuard ??
+        AllowAllAuthoringSnapshotWorkflowGuard.Instance;
 
     protected virtual DateTimeOffset UtcNow => DateTimeOffset.UtcNow;
 
@@ -75,14 +79,38 @@ public class AuthoringRunScheduler<TItem>(
             {
                 AuthoringRunRecord? queued =
                     await store.GetOldestQueuedRunAsync(adapter.ProcessorKind, ct);
-                if (queued is not null &&
-                    await store.TryAcquireMutationFenceAsync(
-                        adapter.ProcessorKind,
-                        queued.Id,
-                        UtcNow,
-                        ct))
+                if (queued is not null)
                 {
-                    return TimeSpan.Zero;
+                    AuthoringSnapshotWorkflowIntent intent = new(
+                        queued.ProcessorKind,
+                        queued.DatabaseOnly,
+                        queued.Purpose,
+                        queued.Id);
+                    try
+                    {
+                        await _snapshotWorkflowGuard
+                            .EnsureSnapshotWorkflowAllowedAsync(intent, ct);
+                        if (await store.TryAcquireMutationFenceAsync(
+                                adapter.ProcessorKind,
+                                queued.Id,
+                                UtcNow,
+                                ct))
+                        {
+                            return TimeSpan.Zero;
+                        }
+                    }
+                    catch (AuthoringConflictException ex)
+                        when (ex.Code ==
+                            AuthoringConflictCode
+                                .CanonicalUnpublishedRestriction)
+                    {
+                        await RefuseQueuedSnapshotRunAsync(
+                            queued,
+                            intent,
+                            ex,
+                            ct);
+                        return TimeSpan.Zero;
+                    }
                 }
             }
             return _syncSchedule;
@@ -239,4 +267,44 @@ public class AuthoringRunScheduler<TItem>(
             : second is null || first <= second
                 ? first
                 : second;
+
+    private async Task RefuseQueuedSnapshotRunAsync(
+        AuthoringRunRecord run,
+        AuthoringSnapshotWorkflowIntent intent,
+        AuthoringConflictException restriction,
+        CancellationToken ct)
+    {
+        if (restriction.RelatedRunIds.Count == 0)
+        {
+            try
+            {
+                await _snapshotWorkflowGuard
+                    .EnsureSnapshotWorkflowAllowedAsync(intent, ct);
+            }
+            catch (AuthoringConflictException ex)
+                when (ex.Code ==
+                    AuthoringConflictCode.CanonicalUnpublishedRestriction)
+            {
+                restriction = ex;
+            }
+        }
+
+        string reason =
+            $"{AuthoringConflictException.CanonicalUnpublishedRestrictionCode}: {restriction.Message}";
+        IReadOnlyList<AuthoringRunItemRecord> items =
+            await store.GetRunItemsAsync(run.Id, ct);
+        bool whollySuperseded = await store.SupersedeRunItemsAsync(
+            run.Id,
+            items.Select(item => item.Id).ToArray(),
+            reason,
+            ct: ct);
+        if (!whollySuperseded)
+        {
+            await store.SupersedeRunAsync(run.Id, reason, ct: ct);
+        }
+        logger.LogWarning(
+            "Refused queued snapshot-producing run {RunId}: {Restriction}",
+            run.Id,
+            reason);
+    }
 }

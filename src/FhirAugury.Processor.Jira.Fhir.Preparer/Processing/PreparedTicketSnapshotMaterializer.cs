@@ -52,6 +52,9 @@ public sealed class PreparedTicketSnapshotMaterializer(
     {
         ArgumentNullException.ThrowIfNull(run);
         ArgumentNullException.ThrowIfNull(proof);
+        await database.EnsureSnapshotWorkflowAllowedAsync(
+            ToSnapshotWorkflowIntent(run),
+            ct);
         if (proof.ContractVersion !=
             PreparedTicketPublicationReconciliationContract.CurrentVersion)
         {
@@ -302,6 +305,9 @@ public sealed class PreparedTicketSnapshotMaterializer(
     {
         ArgumentNullException.ThrowIfNull(run);
         ArgumentNullException.ThrowIfNull(snapshotSchema);
+        await database.EnsureSnapshotWorkflowAllowedAsync(
+            ToSnapshotWorkflowIntent(run),
+            ct);
         PreparedTicketPublicationEnrichmentInput? enrichmentInput =
             run.Purpose == AuthoringRunPurposeValues.PublicationRefresh
                 ? PreparerDatabase.ReadPublicationEnrichmentInput(run) : null;
@@ -371,6 +377,14 @@ public sealed class PreparedTicketSnapshotMaterializer(
                 publicationProof),
             ct);
     }
+
+    private static AuthoringSnapshotWorkflowIntent ToSnapshotWorkflowIntent(
+        AuthoringRunRecord run)
+        => new(
+            run.ProcessorKind,
+            run.DatabaseOnly,
+            run.Purpose,
+            run.Id);
 
     private sealed class ProtectedPublicationSnapshotSanitizer(
         string runId,

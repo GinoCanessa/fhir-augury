@@ -18,6 +18,7 @@ public static class AuthoringStatusValues
         public const string CompletedDatabaseOnly = "completed-database-only";
         public const string Error = "error";
         public const string Superseded = "superseded";
+        public const string Abandoned = "abandoned";
     }
 
     public static class Items
@@ -83,6 +84,8 @@ public static class AuthoringStatusValues
             (Runs.Error, Runs.Running) => true,
             (Runs.Error, Runs.Finalizing) => true,
             (Runs.Error, Runs.Superseded) => true,
+            (Runs.Error, Runs.Abandoned) => true,
+            (Runs.Finalizing, Runs.Abandoned) => true,
             (Runs.Finalizing, Runs.Completed) => true,
             (Runs.Finalizing, Runs.CompletedDatabaseOnly) => true,
             _ when string.Equals(current, next, StringComparison.Ordinal) => true,

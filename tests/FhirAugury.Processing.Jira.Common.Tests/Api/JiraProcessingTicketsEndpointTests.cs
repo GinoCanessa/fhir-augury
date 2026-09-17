@@ -343,6 +343,47 @@ public class JiraProcessingTicketsEndpointTests
     }
 
     [Fact]
+    public async Task PostAuthoringRun_CanonicalRestrictionIsStableAndDatabaseOnlyBypasses()
+    {
+        FakeDiscovery discovery = new(CreateTicket("FHIR-1", "Triaged"));
+        RejectingSnapshotWorkflowGuard guard =
+            new("abandoned-run", "recovery-run");
+        using HttpClient client = CreateClientForMode(
+            discovery,
+            AuthoringStatusValues.ProcessorModes.RunBacked,
+            out JiraProcessingSourceTicketStore store,
+            out _,
+            out _,
+            snapshotWorkflowGuard: guard);
+        await store.UpsertAsync(
+            CreateTicket("FHIR-1", "Triaged"),
+            "fhir",
+            false,
+            CancellationToken.None);
+
+        HttpResponseMessage forbidden = await client.PostAsJsonAsync(
+            "/processing/authoring/runs",
+            new JiraAuthoringRunRequest(["FHIR-1"], DatabaseOnly: false));
+        AuthoringConflictResponse failure =
+            Assert.IsType<AuthoringConflictResponse>(
+                await forbidden.Content
+                    .ReadFromJsonAsync<AuthoringConflictResponse>());
+        HttpResponseMessage allowed = await client.PostAsJsonAsync(
+            "/processing/authoring/runs",
+            new JiraAuthoringRunRequest(["FHIR-1"], DatabaseOnly: true));
+
+        Assert.Equal(HttpStatusCode.Conflict, forbidden.StatusCode);
+        Assert.Equal(
+            "canonical-unpublished-restriction",
+            failure.Error);
+        Assert.Equal(
+            ["abandoned-run", "recovery-run"],
+            failure.ConflictingRunIds);
+        Assert.Null(failure.RunId);
+        Assert.Equal(HttpStatusCode.Accepted, allowed.StatusCode);
+    }
+
+    [Fact]
     public async Task AuthoringControl_ReportsRetryMetadataAndRequiresSupersedeReason()
     {
         using HttpClient client = CreateClientForMode(
@@ -555,7 +596,8 @@ public class JiraProcessingTicketsEndpointTests
         out JiraProcessingSourceTicketStore store,
         out AuthoringRunStore authoringStore,
         out JiraAuthoringRunCoordinator coordinator,
-        int maxActiveAuthoringRuns = int.MaxValue)
+        int maxActiveAuthoringRuns = int.MaxValue,
+        IAuthoringSnapshotWorkflowGuard? snapshotWorkflowGuard = null)
         => CreateClientForMode(
             discovery,
             mode,
@@ -563,7 +605,8 @@ public class JiraProcessingTicketsEndpointTests
             out authoringStore,
             out coordinator,
             out _,
-            maxActiveAuthoringRuns);
+            maxActiveAuthoringRuns,
+            snapshotWorkflowGuard);
 
     private static HttpClient CreateClientForMode(
         FakeDiscovery discovery,
@@ -572,7 +615,8 @@ public class JiraProcessingTicketsEndpointTests
         out AuthoringRunStore authoringStore,
         out JiraAuthoringRunCoordinator coordinator,
         out string dbPath,
-        int maxActiveAuthoringRuns = int.MaxValue)
+        int maxActiveAuthoringRuns = int.MaxValue,
+        IAuthoringSnapshotWorkflowGuard? snapshotWorkflowGuard = null)
     {
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
@@ -605,7 +649,8 @@ public class JiraProcessingTicketsEndpointTests
             store,
             new JiraProcessingFilterResolver(),
             options,
-            processingOptions);
+            processingOptions,
+            snapshotWorkflowGuard);
         authoringStore.EnsureProcessorModeAsync(coordinator.ProcessorKind).GetAwaiter().GetResult();
         if (mode == AuthoringStatusValues.ProcessorModes.CuttingOver)
         {
@@ -687,5 +732,20 @@ public class JiraProcessingTicketsEndpointTests
                     : null);
         }
         public Task MarkProcessedAsync(string key, string sourceTicketShape, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    private sealed class RejectingSnapshotWorkflowGuard(
+        params string[] relatedRunIds)
+        : IAuthoringSnapshotWorkflowGuard
+    {
+        public Task EnsureSnapshotWorkflowAllowedAsync(
+            AuthoringSnapshotWorkflowIntent intent,
+            CancellationToken ct = default)
+            => intent.DatabaseOnly
+                ? Task.CompletedTask
+                : Task.FromException(
+                    AuthoringConflictException
+                        .ForCanonicalUnpublishedRestriction(
+                            relatedRunIds: relatedRunIds));
     }
 }

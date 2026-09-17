@@ -200,6 +200,42 @@ public sealed class AuthoringRunControlServiceTests
     }
 
     [Fact]
+    public async Task GetStatusAsync_ReportsAbandonedAsTerminalAndNonRecoverable()
+    {
+        using AuthoringTestDatabase database = new();
+        (AuthoringRunRecord run, _) = await database.CreateRunningRunAsync();
+        database.Execute(
+            """
+            UPDATE authoring_runs
+            SET Status = @status, CompletedAt = @completedAt,
+                Error = 'canonical-unpublished'
+            WHERE Id = @runId;
+            DELETE FROM authoring_mutation_fences
+            WHERE ProcessorKind = 'test' AND RunId = @runId;
+            """,
+            ("@status", AuthoringStatusValues.Runs.Abandoned),
+            ("@completedAt", DateTimeOffset.UtcNow.ToString("O")),
+            ("@runId", run.Id));
+        AuthoringRunControlService service =
+            new(database.Store, database.RetryPolicy);
+
+        AuthoringRunControlStatus status =
+            await service.GetStatusAsync("test", run.Id);
+
+        Assert.Equal(AuthoringStatusValues.Runs.Abandoned, status.Run.Status);
+        Assert.True(status.Run.State!.IsTerminal);
+        Assert.False(status.Run.State.IsRecoverable);
+        Assert.Null(status.Run.State.NextAutomaticRecoveryAt);
+        Assert.All(
+            status.Items,
+            item =>
+            {
+                Assert.False(item.AllowedActions!.CanRetryNow);
+                Assert.False(item.AllowedActions.CanSupersede);
+            });
+    }
+
+    [Fact]
     public async Task SupersedeItemAsync_RequiresMatchingProcessorAndReason()
     {
         using AuthoringTestDatabase database = new();

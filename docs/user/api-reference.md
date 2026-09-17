@@ -381,7 +381,8 @@ For Preparer and Planner, the run collection defaults to 20 entries and accepts
 runs before item aggregation, prioritizes `queued`, `running`,
 `finalizing`, and recoverable `error` runs, then orders terminal history newest
 first. Ordinary runs require their durable request marker. Purpose-marked maintenance runs, including `grouping-maintenance`,
-`publication-refresh`, and `publication-reconciliation`, are also visible
+`publication-refresh`, `publication-reconciliation`, and the reserved
+`canonical-epoch-recovery`, are also visible
 without that marker so clients can reconcile by `purpose` and `sourceRunId`.
 Initial revalidation and legacy unmarked authoring rows are omitted. The
 response is:
@@ -399,14 +400,18 @@ Run status appends processor-owned state:
 
 - `state.isTerminal` is `false` for `queued`, `running`, `finalizing`, and
   `error`; an `error` is recoverable and remains pollable.
-- `state.isTerminal` is `true` only for `completed`,
-  `completed-database-only`, and `superseded`. There is no generic terminal
+- `state.isTerminal` is `true` for `completed`,
+  `completed-database-only`, `superseded`, and `abandoned`. `abandoned` is a
+  non-recoverable reconciliation outcome; there is no generic terminal
   `failed` status.
 - `state.nextAutomaticRecoveryAt` describes the next run-level recovery time
   when known.
 - `purpose` is an additive value such as `authoring`,
   `initial-revalidation`, `grouping-maintenance`,
   `publication-refresh`, or `publication-reconciliation`.
+  `canonical-epoch-recovery` is reserved for the dedicated snapshot recovery
+  workflow and is the only snapshot-producing purpose allowed through an
+  unresolved canonical restriction.
 - `sourceRunId` is additive maintenance lineage. For a
   `publication-refresh` or `publication-reconciliation`, it identifies the
   completed run selected by the operator; the maintenance run itself has a
@@ -437,6 +442,13 @@ For Preparer and Planner, create/retry/supersede conflicts preserve the stable
 Capacity, revision-collision, and revalidation conflicts populate
 `conflictingRunIds` when coordinates are available. Clients must not parse
 human-readable detail to find a run.
+
+An unresolved abandoned canonical epoch returns HTTP `409` with exact
+`error:"canonical-unpublished-restriction"`. `conflictingRunIds` contains the
+abandoned reconciliation and any linked canonical-epoch recovery run; `runId`
+is populated only when there is one coordinate. The same envelope is used
+whether admission rejected proactively or a last-ditch SQLite integrity
+trigger won a race.
 
 BallotNotes retains its existing conflict bodies with `error` and optional
 `detail`; clients must not require `conflictingRunIds` or `runId` from that
@@ -502,6 +514,7 @@ run is known:
 | `404` | `source-run-not-found` | No source run exists at that coordinate |
 | `409` | `authoring-not-activated`, `cutover-in-progress`, or `revalidation-required` | Run-backed authoring is not ready for maintenance |
 | `409` | `mutation-fence-unavailable` | Another fenced mutation is active; related run coordinates are returned when known |
+| `409` | `canonical-unpublished-restriction` | An abandoned canonical epoch has no verified replacement snapshot; related abandoned/recovery run coordinates are returned |
 | `409` | `run-not-active`, `source-revision-mismatch`, or `stage-fingerprint-mismatch` | Processor state no longer permits the requested maintenance start |
 | `409` | `invalid-source-snapshot` | The selected original snapshot fails identity, integrity, schema, size, or digest validation |
 | `409` | `original-output-changed` or `original-grouping-changed` | Original accepted output or grouping values/IDs/order/membership no longer match the source snapshot |
@@ -727,13 +740,23 @@ Content-Type: application/json
 
 The direct route again uses `/processing/authoring/runs`. Success returns the
 full `status`, `abandonedAt`, and exact `reason`. It records
-`canonical-unpublished`, leaves promoted canonical rows in place, retains the
-prior immutable publication, and does not treat abandonment as proof. All
-later snapshot-producing run creation—including metadata refresh, another
-reconciliation, and ordinary `databaseOnly:false` authoring—is rejected with
-`canonical-unpublished-restriction`; database-only ordinary authoring remains
-eligible. A separately explicit canonical-epoch recovery must create and
-verify a snapshot before that restriction can be removed.
+`canonical-unpublished`, transitions the generic run from `finalizing` or
+recoverable `error` to terminal, non-recoverable `abandoned`, leaves promoted
+canonical rows in place, retains the prior immutable publication, and does
+not treat abandonment as proof. The run releases capacity and both fences and
+does not participate in retry, scheduling, or finalization.
+
+Snapshot intent is durable: every run with `databaseOnly:false` is
+snapshot-producing regardless of purpose. While the restriction is
+unresolved, the Preparer checks that intent at admission, immediately before
+a queued run acquires the mutation fence, before snapshot candidate creation,
+and immediately before finalization/promotion. A snapshot run queued before
+abandonment is terminally refused before fence acquisition. SQLite guards on
+run/fence/snapshot/finalization writes remain the last line of defense.
+Ordinary `databaseOnly:true` work remains eligible, including when active-run
+capacity is one. Only the reserved `canonical-epoch-recovery` purpose may
+bypass the restriction so a separately explicit recovery can create and
+verify the snapshot that resolves the epoch.
 
 Stable reconciliation failure codes are:
 

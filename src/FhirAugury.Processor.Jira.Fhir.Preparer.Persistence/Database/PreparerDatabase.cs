@@ -26,7 +26,8 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> logger, bool readOnly = false)
     : FhirAugury.Processing.Common.Database.ProcessingDatabase(dbPath, logger, readOnly),
       IHydrationTargetDatabase,
-      IAuthoringCutoverParticipant
+      IAuthoringCutoverParticipant,
+      IAuthoringSnapshotWorkflowGuard
 {
     private const string AuthoringProcessorKind = "jira-fhir";
     public const string PublicationMetadataStageName =
@@ -356,9 +357,107 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 PersistedAt TEXT NOT NULL
             );
 
-            CREATE TRIGGER IF NOT EXISTS prevent_snapshot_after_unpublished_canonical
+            DROP TRIGGER IF EXISTS prevent_snapshot_after_unpublished_canonical;
+            DROP TRIGGER IF EXISTS prevent_snapshot_fence_after_unpublished_canonical;
+            DROP TRIGGER IF EXISTS prevent_snapshot_candidate_after_unpublished_canonical;
+            DROP TRIGGER IF EXISTS prevent_snapshot_state_after_unpublished_canonical;
+            DROP TRIGGER IF EXISTS prevent_snapshot_finalization_after_unpublished_canonical;
+            DROP TRIGGER IF EXISTS prevent_reconciliation_promotion_after_unpublished_canonical;
+
+            CREATE TRIGGER prevent_snapshot_after_unpublished_canonical
             BEFORE INSERT ON authoring_runs
             WHEN NEW.DatabaseOnly = 0
+             AND NEW.Purpose <> 'canonical-epoch-recovery'
+             AND EXISTS(
+                SELECT 1
+                FROM prepared_ticket_publication_reconciliations
+                WHERE PromotionState = 'canonical-unpublished')
+            BEGIN
+                SELECT RAISE(
+                    ABORT,
+                    'canonical-unpublished-restriction');
+            END;
+
+            CREATE TRIGGER prevent_snapshot_fence_after_unpublished_canonical
+            BEFORE INSERT ON authoring_mutation_fences
+            WHEN EXISTS(
+                SELECT 1
+                FROM authoring_runs run
+                WHERE run.Id = NEW.RunId
+                  AND run.DatabaseOnly = 0
+                  AND run.Purpose <> 'canonical-epoch-recovery')
+             AND EXISTS(
+                SELECT 1
+                FROM prepared_ticket_publication_reconciliations
+                WHERE PromotionState = 'canonical-unpublished')
+            BEGIN
+                SELECT RAISE(
+                    ABORT,
+                    'canonical-unpublished-restriction');
+            END;
+
+            CREATE TRIGGER prevent_snapshot_candidate_after_unpublished_canonical
+            BEFORE INSERT ON authoring_review_snapshots
+            WHEN EXISTS(
+                SELECT 1
+                FROM authoring_runs run
+                WHERE run.Id = NEW.RunId
+                  AND run.DatabaseOnly = 0
+                  AND run.Purpose <> 'canonical-epoch-recovery')
+             AND EXISTS(
+                SELECT 1
+                FROM prepared_ticket_publication_reconciliations
+                WHERE PromotionState = 'canonical-unpublished')
+            BEGIN
+                SELECT RAISE(
+                    ABORT,
+                    'canonical-unpublished-restriction');
+            END;
+
+            CREATE TRIGGER prevent_snapshot_state_after_unpublished_canonical
+            BEFORE UPDATE OF Status ON authoring_review_snapshots
+            WHEN NEW.Status IN ('promoted', 'ready')
+             AND EXISTS(
+                SELECT 1
+                FROM authoring_runs run
+                WHERE run.Id = NEW.RunId
+                  AND run.DatabaseOnly = 0
+                  AND run.Purpose <> 'canonical-epoch-recovery')
+             AND EXISTS(
+                SELECT 1
+                FROM prepared_ticket_publication_reconciliations
+                WHERE PromotionState = 'canonical-unpublished')
+            BEGIN
+                SELECT RAISE(
+                    ABORT,
+                    'canonical-unpublished-restriction');
+            END;
+
+            CREATE TRIGGER prevent_snapshot_finalization_after_unpublished_canonical
+            BEFORE UPDATE OF Status, SnapshotId ON authoring_runs
+            WHEN NEW.DatabaseOnly = 0
+             AND NEW.Purpose <> 'canonical-epoch-recovery'
+             AND NEW.Status IN ('finalizing', 'completed')
+             AND EXISTS(
+                SELECT 1
+                FROM prepared_ticket_publication_reconciliations
+                WHERE PromotionState = 'canonical-unpublished')
+            BEGIN
+                SELECT RAISE(
+                    ABORT,
+                    'canonical-unpublished-restriction');
+            END;
+
+            CREATE TRIGGER prevent_reconciliation_promotion_after_unpublished_canonical
+            BEFORE UPDATE OF PromotionState
+                ON prepared_ticket_publication_reconciliations
+            WHEN NEW.PromotionState = 'snapshot-publish-pending'
+             AND EXISTS(
+                SELECT 1
+                FROM authoring_runs run
+                WHERE run.Id = NEW.RunId
+                  AND run.DatabaseOnly = 0
+                  AND run.Purpose <> 'canonical-epoch-recovery')
              AND EXISTS(
                 SELECT 1
                 FROM prepared_ticket_publication_reconciliations
@@ -383,6 +482,16 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         SqliteSchemaHelpers.AddColumnIfMissing(
             connection,
             "prepared_ticket_publication_reconciliations",
+            "AbandonedAt",
+            "TEXT NULL");
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "prepared_ticket_publication_reconciliations",
+            "AbandonmentReason",
+            "TEXT NULL");
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "prepared_ticket_publication_reconciliations",
             "CancelledAt",
             "TEXT NULL");
         SqliteSchemaHelpers.AddColumnIfMissing(
@@ -390,6 +499,144 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             "prepared_ticket_publication_reconciliations",
             "CancellationReason",
             "TEXT NULL");
+
+        using SqliteCommand migrateAbandonedRuns = connection.CreateCommand();
+        migrateAbandonedRuns.CommandText =
+            """
+            UPDATE authoring_runs
+            SET Status = 'abandoned',
+                CompletedAt = COALESCE(
+                    CompletedAt,
+                    (
+                        SELECT reconciliation.AbandonedAt
+                        FROM prepared_ticket_publication_reconciliations
+                            reconciliation
+                        WHERE reconciliation.RunId = authoring_runs.Id
+                    )),
+                Error = COALESCE(Error, 'canonical-unpublished')
+            WHERE Status IN ('finalizing', 'error')
+              AND EXISTS(
+                  SELECT 1
+                  FROM prepared_ticket_publication_reconciliations
+                      reconciliation
+                  WHERE reconciliation.RunId = authoring_runs.Id
+                    AND reconciliation.PromotionState =
+                        'canonical-unpublished');
+
+            DELETE FROM prepared_ticket_publication_reconciliation_fences
+            WHERE RunId IN(
+                SELECT RunId
+                FROM prepared_ticket_publication_reconciliations
+                WHERE PromotionState = 'canonical-unpublished');
+
+            DELETE FROM authoring_mutation_fences
+            WHERE RunId IN(
+                SELECT RunId
+                FROM prepared_ticket_publication_reconciliations
+                WHERE PromotionState = 'canonical-unpublished');
+            """;
+        migrateAbandonedRuns.ExecuteNonQuery();
+    }
+
+    public async Task EnsureSnapshotWorkflowAllowedAsync(
+        AuthoringSnapshotWorkflowIntent intent,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(intent);
+        ArgumentException.ThrowIfNullOrWhiteSpace(intent.ProcessorKind);
+        ArgumentException.ThrowIfNullOrWhiteSpace(intent.Purpose);
+        if (intent.DatabaseOnly ||
+            string.Equals(
+                intent.Purpose,
+                AuthoringRunPurposeValues.CanonicalEpochRecovery,
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        await using SqliteConnection connection = OpenConnection();
+        await EnsureSnapshotWorkflowAllowedAsync(
+            connection,
+            transaction: null,
+            intent,
+            ct);
+    }
+
+    private static async Task EnsureSnapshotWorkflowAllowedAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        AuthoringSnapshotWorkflowIntent intent,
+        CancellationToken ct)
+    {
+        if (intent.DatabaseOnly ||
+            string.Equals(
+                intent.Purpose,
+                AuthoringRunPurposeValues.CanonicalEpochRecovery,
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT reconciliation.RunId, recovery.Id
+            FROM prepared_ticket_publication_reconciliations reconciliation
+            INNER JOIN authoring_runs abandoned
+                ON abandoned.Id = reconciliation.RunId
+            LEFT JOIN authoring_runs recovery
+                ON recovery.SourceRunId = reconciliation.RunId
+               AND recovery.Purpose = @recoveryPurpose
+            WHERE reconciliation.PromotionState = @unresolved
+              AND abandoned.ProcessorKind = @processorKind
+            ORDER BY reconciliation.CapturedAt, reconciliation.RunId,
+                     recovery.CreatedAt, recovery.RowId
+            """;
+        command.Parameters.AddWithValue(
+            "@recoveryPurpose",
+            AuthoringRunPurposeValues.CanonicalEpochRecovery);
+        command.Parameters.AddWithValue(
+            "@unresolved",
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .CanonicalUnpublished);
+        command.Parameters.AddWithValue(
+            "@processorKind",
+            intent.ProcessorKind);
+
+        List<string> relatedRunIds = [];
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            string abandonedRunId = reader.GetString(0);
+            if (!relatedRunIds.Contains(
+                    abandonedRunId,
+                    StringComparer.Ordinal))
+            {
+                relatedRunIds.Add(abandonedRunId);
+            }
+            if (!reader.IsDBNull(1))
+            {
+                string recoveryRunId = reader.GetString(1);
+                if (!relatedRunIds.Contains(
+                        recoveryRunId,
+                        StringComparer.Ordinal))
+                {
+                    relatedRunIds.Add(recoveryRunId);
+                }
+            }
+        }
+        if (relatedRunIds.Count == 0)
+        {
+            return;
+        }
+
+        string runCoordinate = string.Join(", ", relatedRunIds);
+        throw AuthoringConflictException
+            .ForCanonicalUnpublishedRestriction(
+                $"Snapshot-producing authoring is blocked by unresolved canonical-unpublished state. Related abandoned/recovery run IDs: {runCoordinate}.",
+                relatedRunIds);
     }
 
     public async Task<AuthoringRunRecord> CreatePublicationReconciliationAsync(
@@ -465,6 +712,15 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         {
             AuthoringRunStore store = new(this);
             string runId = Guid.NewGuid().ToString("N");
+            await EnsureSnapshotWorkflowAllowedAsync(
+                connection,
+                transaction,
+                new AuthoringSnapshotWorkflowIntent(
+                    AuthoringProcessorKind,
+                    DatabaseOnly: false,
+                    PreparedTicketPublicationReconciliationContract.Purpose,
+                    runId),
+                ct);
             AuthoringRunRecord run = await store.CreateMixedRunAsync(
                 connection,
                 transaction,
@@ -7642,6 +7898,15 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                     $"Reconciliation '{runId}' cannot reserve a snapshot from its current state.");
             }
 
+            await EnsureSnapshotWorkflowAllowedAsync(
+                connection,
+                transaction,
+                new AuthoringSnapshotWorkflowIntent(
+                    processorKind,
+                    DatabaseOnly: false,
+                    PreparedTicketPublicationReconciliationContract.Purpose,
+                    runId),
+                ct);
             await EnsurePublicationSnapshotReservationPreconditionsAsync(
                 connection,
                 transaction,
@@ -8509,6 +8774,15 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                     $"Reconciliation '{runId}' cannot promote from '{state}'.");
             }
 
+            await EnsureSnapshotWorkflowAllowedAsync(
+                connection,
+                transaction,
+                new AuthoringSnapshotWorkflowIntent(
+                    AuthoringProcessorKind,
+                    DatabaseOnly: false,
+                    PreparedTicketPublicationReconciliationContract.Purpose,
+                    runId),
+                ct);
             PreparedTicketPublicationCandidateSnapshot candidate =
                 JsonSerializer.Deserialize<
                     PreparedTicketPublicationCandidateSnapshot>(
@@ -9852,12 +10126,32 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(runId);
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        string normalizedReason = reason.Trim();
         DateTimeOffset abandonedAt = now ?? DateTimeOffset.UtcNow;
         await using SqliteConnection connection = OpenConnection();
         await using SqliteTransaction transaction =
             connection.BeginTransaction(deferred: false);
         try
         {
+            string runStatus;
+            await using (SqliteCommand readRun = connection.CreateCommand())
+            {
+                readRun.Transaction = transaction;
+                readRun.CommandText =
+                    """
+                    SELECT Status
+                    FROM authoring_runs
+                    WHERE Id = @runId
+                    """;
+                readRun.Parameters.AddWithValue("@runId", runId);
+                runStatus = (string?)await readRun.ExecuteScalarAsync(ct)
+                    ?? throw new KeyNotFoundException(
+                        $"Publication reconciliation '{runId}' was not found.");
+            }
+            AuthoringStatusValues.EnsureRunTransition(
+                runStatus,
+                AuthoringStatusValues.Runs.Abandoned);
+
             int abandoned = await ExecuteInTransactionAsync(
                 connection,
                 transaction,
@@ -9874,7 +10168,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                     PreparedTicketPublicationReconciliationPromotionStateValues
                         .CanonicalUnpublished),
                 ("@abandonedAt", Format(abandonedAt)),
-                ("@reason", reason),
+                ("@reason", normalizedReason),
                 ("@runId", runId),
                 ("@pending",
                     PreparedTicketPublicationReconciliationPromotionStateValues
@@ -9884,7 +10178,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 throw new InvalidOperationException(
                     $"Reconciliation '{runId}' can only be abandoned after canonical promotion.");
             }
-            await ExecuteInTransactionAsync(
+            int journalUpdated = await ExecuteInTransactionAsync(
                 connection,
                 transaction,
                 """
@@ -9899,11 +10193,16 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                     PreparedTicketPublicationReconciliationPromotionStateValues
                         .CanonicalUnpublished),
                 ("@abandonedAt", Format(abandonedAt)),
-                ("@reason", reason),
+                ("@reason", normalizedReason),
                 ("@runId", runId),
                 ("@pending",
                     PreparedTicketPublicationReconciliationPromotionStateValues
                         .SnapshotPublishPending));
+            if (journalUpdated != 1)
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{runId}' lost its pending publication journal before abandonment.");
+            }
             await ExecuteInTransactionAsync(
                 connection,
                 transaction,
@@ -9923,7 +10222,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 ct,
                 ("@processorKind", AuthoringProcessorKind),
                 ("@runId", runId));
-            await ExecuteInTransactionAsync(
+            int runUpdated = await ExecuteInTransactionAsync(
                 connection,
                 transaction,
                 """
@@ -9934,13 +10233,18 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                   AND Status IN (@finalizing, @error)
                 """,
                 ct,
-                ("@status", AuthoringStatusValues.Runs.Error),
+                ("@status", AuthoringStatusValues.Runs.Abandoned),
                 ("@abandonedAt", Format(abandonedAt)),
                 ("@reason",
-                    $"canonical-unpublished: {reason}"),
+                    $"canonical-unpublished: {normalizedReason}"),
                 ("@runId", runId),
                 ("@finalizing", AuthoringStatusValues.Runs.Finalizing),
                 ("@error", AuthoringStatusValues.Runs.Error));
+            if (runUpdated != 1)
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{runId}' authoring run changed before abandonment.");
+            }
             await transaction.CommitAsync(ct);
         }
         catch
@@ -11029,7 +11333,18 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             command.Parameters.AddWithValue(name, value ?? DBNull.Value);
         }
 
-        await command.ExecuteNonQueryAsync(ct);
+        try
+        {
+            await command.ExecuteNonQueryAsync(ct);
+        }
+        catch (SqliteException ex)
+            when (AuthoringConflictException
+                .IsCanonicalUnpublishedRestriction(ex))
+        {
+            throw AuthoringConflictException
+                .ForCanonicalUnpublishedRestriction(
+                    innerException: ex);
+        }
     }
 
     private static async Task<int> ExecuteInTransactionAsync(
@@ -11046,7 +11361,18 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         {
             command.Parameters.AddWithValue(name, value ?? DBNull.Value);
         }
-        return await command.ExecuteNonQueryAsync(ct);
+        try
+        {
+            return await command.ExecuteNonQueryAsync(ct);
+        }
+        catch (SqliteException ex)
+            when (AuthoringConflictException
+                .IsCanonicalUnpublishedRestriction(ex))
+        {
+            throw AuthoringConflictException
+                .ForCanonicalUnpublishedRestriction(
+                    innerException: ex);
+        }
     }
 
     private static async Task InsertIdempotentStageRowAsync(

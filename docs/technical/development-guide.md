@@ -364,10 +364,26 @@ boundaries when changing it:
   canonical fingerprint or overwrite a conflicting final file.
 - **Audited abandonment:** only a database-promoted pending reconciliation may
   enter `canonical-unpublished`, and only with a non-blank operator reason.
-  It releases the fence without rollback or publication. Database-only
-  ordinary work may continue, but all snapshot-producing workflows must fail
-  with `canonical-unpublished-restriction` until an explicit operation
-  verifies a snapshot for that canonical epoch.
+  It transitions the generic run only from `finalizing` or recoverable
+  `error` to terminal, non-recoverable `abandoned`; preserves the reconciliation
+  audit and prior verified pair; and releases both fences and active capacity
+  without rollback or publication.
+- **Durable-intent restriction:** `DatabaseOnly = 0` defines a
+  snapshot-producing run regardless of purpose. Check unresolved
+  canonical-unpublished state at admission, immediately before a queued run
+  acquires the mutation fence, before candidate creation, and immediately
+  before finalization/promotion. Terminally refuse a prequeued forbidden run
+  before fence acquisition. Database-only ordinary work may continue.
+  `canonical-epoch-recovery` is the sole snapshot-producing bypass.
+- **Shared guard boundary:** generic Jira registration supplies an optional
+  allow-all `IAuthoringSnapshotWorkflowGuard`; the Preparer replaces it with
+  its database implementation. Keep the generic scheduler dependent only on
+  that Processing.Common interface—never on Preparer tables or contracts.
+  SQLite triggers on run/fence/snapshot/finalization writes remain
+  last-ditch race guards and their sentinel must translate to the same HTTP
+  `409 canonical-unpublished-restriction` envelope as proactive rejection.
+  Preserve abandoned/recovery run coordinates through Orchestrator, typed
+  client, CLI, and Dev UI error projections.
 
 Credential-free end-to-end tests should create their SQLite corpus and
 immutable snapshots at runtime. Cover multiple revised tickets, a changed

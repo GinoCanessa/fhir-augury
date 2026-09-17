@@ -46,6 +46,13 @@ public sealed class RunOutcomeClassifier
         }
         if (string.Equals(
                 run.Status,
+                "abandoned",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return ProcessorRunOutcome.Abandoned;
+        }
+        if (string.Equals(
+                run.Status,
                 "completed-database-only",
                 StringComparison.OrdinalIgnoreCase) ||
             run.DatabaseOnly)

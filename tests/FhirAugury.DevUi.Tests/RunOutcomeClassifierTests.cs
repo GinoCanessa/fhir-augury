@@ -99,6 +99,24 @@ public sealed class RunOutcomeClassifierTests
     }
 
     [Fact]
+    public void AbandonedRunIsTerminalNonSuccessAndCannotPublish()
+    {
+        AuthoringRunStatus run =
+            Run("abandoned", terminal: true);
+
+        TicketRunOutcome outcome =
+            _classifier.Classify(run);
+
+        Assert.Equal(
+            ProcessorRunOutcome.Abandoned,
+            outcome.Processor);
+        Assert.Equal(
+            PublicationOutcome.Unavailable,
+            outcome.Publication);
+        Assert.False(run.State!.IsRecoverable);
+    }
+
+    [Fact]
     public void PublicationAxisIsIndependentFromProcessorSuccess()
     {
         AuthoringRunStatus run =

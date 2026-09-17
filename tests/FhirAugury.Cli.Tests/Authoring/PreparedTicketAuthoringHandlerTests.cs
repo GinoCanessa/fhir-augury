@@ -1,6 +1,7 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
+using FhirAugury.Cli.Dispatch;
 using FhirAugury.Cli.Dispatch.Handlers;
 using FhirAugury.Cli.Models;
 using FhirAugury.Processing.Client;
@@ -332,6 +333,66 @@ public sealed class PreparedTicketAuthoringHandlerTests
         Assert.Equal("recovery-in-progress", error.ErrorCode);
         Assert.Equal(["pending-run"], error.RelatedRunIds);
         Assert.Equal(HttpStatusCode.Conflict, error.StatusCode);
+    }
+
+    [Fact]
+    public async Task CanonicalRestrictionPreservesStableFailureAndRunCoordinates()
+    {
+        DelegateHttpHandler handler = new((_, _, _) =>
+            Task.FromResult(
+                DelegateHttpHandler.Json(
+                    new AuthoringConflictResponse(
+                        "canonical-unpublished-restriction",
+                        "A canonical epoch remains unpublished.",
+                        ["abandoned-run", "recovery-run"]),
+                    HttpStatusCode.Conflict)));
+
+        AuthoringControlException error =
+            await Assert.ThrowsAsync<AuthoringControlException>(() =>
+                PreparedTicketAuthoringHandler.HandleAsync(
+                    new PreparedTicketAuthoringRequest
+                    {
+                        Action = "start",
+                        TicketKeys = ["FHIR-1"],
+                    },
+                    "http://orchestrator",
+                    CancellationToken.None,
+                    handler));
+
+        Assert.Equal(
+            "canonical-unpublished-restriction",
+            error.ErrorCode);
+        Assert.Equal(
+            ["abandoned-run", "recovery-run"],
+            error.RelatedRunIds);
+        Assert.Equal(HttpStatusCode.Conflict, error.StatusCode);
+    }
+
+    [Fact]
+    public void DispatcherKeepsCanonicalRestrictionCoordinatesMachineReadable()
+    {
+        OutputEnvelope envelope =
+            CommandDispatcher.CreateAuthoringControlFailure(
+                "prepared-ticket-authoring",
+                new AuthoringControlException(
+                    HttpStatusCode.Conflict,
+                    "canonical-unpublished-restriction",
+                    "A canonical epoch remains unpublished.",
+                    relatedRunIds:
+                        ["abandoned-run", "recovery-run"]));
+
+        Assert.Equal(
+            "canonical-unpublished-restriction",
+            envelope.Error!.Code);
+        JsonElement data = JsonSerializer.SerializeToElement(
+            envelope.Data,
+            CliJsonOptions);
+        Assert.Equal(
+            ["abandoned-run", "recovery-run"],
+            data.GetProperty("relatedRunIds")
+                .EnumerateArray()
+                .Select(value => value.GetString()!)
+                .ToArray());
     }
 
     [Fact]
@@ -792,15 +853,36 @@ public sealed class PreparedTicketAuthoringHandlerTests
     private static PublicationReconciliationStatusResult
         ReconciliationStatusResult(
             string promotionState = "snapshot-publish-pending") => new(
-                ReconciliationRunStatus(),
+                promotionState == "canonical-unpublished"
+                    ? ReconciliationRunStatus() with
+                    {
+                        Status = "abandoned",
+                        CompletedAt = DateTimeOffset.Parse(
+                            "2026-09-16T12:00:00Z"),
+                        State = new(
+                            IsTerminal: true,
+                            IsRecoverable: false),
+                    }
+                    : ReconciliationRunStatus(),
                 [],
                 ReconciliationComparison(),
                 new AuthoringRunReconciliationCounts(1, 0, 1),
                 [],
                 new PublicationReconciliationPromotionStatus(
                     promotionState,
-                    "database-promoted",
-                    promotionState == "snapshot-publish-pending"),
+                    promotionState == "canonical-unpublished"
+                        ? "canonical-unpublished"
+                        : "database-promoted",
+                    promotionState == "snapshot-publish-pending",
+                    AbandonedAt:
+                        promotionState == "canonical-unpublished"
+                            ? DateTimeOffset.Parse(
+                                "2026-09-16T12:00:00Z")
+                            : null,
+                    AbandonmentReason:
+                        promotionState == "canonical-unpublished"
+                            ? "snapshot cannot be recovered"
+                            : null),
                 []);
 
     private static AuthoringRunStatus ReconciliationRunStatus() => new(

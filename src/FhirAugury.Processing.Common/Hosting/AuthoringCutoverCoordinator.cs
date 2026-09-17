@@ -25,8 +25,13 @@ public interface IAuthoringCutoverParticipant
 }
 
 public sealed class AuthoringCutoverCoordinator(
-    Func<SqliteConnection> openConnection)
+    Func<SqliteConnection> openConnection,
+    IAuthoringSnapshotWorkflowGuard? snapshotWorkflowGuard = null)
 {
+    private readonly IAuthoringSnapshotWorkflowGuard _snapshotWorkflowGuard =
+        snapshotWorkflowGuard ??
+        AllowAllAuthoringSnapshotWorkflowGuard.Instance;
+
     public async Task<AuthoringProcessorModeRecord> ActivateAsync(
         AuthoringCutoverRequest request,
         IAuthoringCutoverParticipant participant,
@@ -200,6 +205,14 @@ public sealed class AuthoringCutoverCoordinator(
             DateTimeOffset now = DateTimeOffset.UtcNow;
             if (runId is not null)
             {
+                await _snapshotWorkflowGuard
+                    .EnsureSnapshotWorkflowAllowedAsync(
+                        new AuthoringSnapshotWorkflowIntent(
+                            processorKind,
+                            DatabaseOnly: false,
+                            AuthoringRunPurposeValues.InitialRevalidation,
+                            runId),
+                        ct);
                 await InsertRunAsync(
                     connection,
                     processorKind,
@@ -508,7 +521,18 @@ public sealed class AuthoringCutoverCoordinator(
         {
             command.Parameters.AddWithValue(name, value ?? DBNull.Value);
         }
-        return await command.ExecuteNonQueryAsync(ct);
+        try
+        {
+            return await command.ExecuteNonQueryAsync(ct);
+        }
+        catch (SqliteException ex)
+            when (AuthoringConflictException
+                .IsCanonicalUnpublishedRestriction(ex))
+        {
+            throw AuthoringConflictException
+                .ForCanonicalUnpublishedRestriction(
+                    innerException: ex);
+        }
     }
 
     private static Task BeginImmediateAsync(

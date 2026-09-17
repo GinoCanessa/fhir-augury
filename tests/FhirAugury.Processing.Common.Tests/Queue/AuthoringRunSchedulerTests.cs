@@ -451,6 +451,66 @@ public sealed class AuthoringRunSchedulerTests
         Assert.Equal(first.Id, (await fixture.Database.Store.GetFencedRunAsync("test"))!.Id);
     }
 
+    [Fact]
+    public async Task ForbiddenPrequeuedSnapshotRunIsTerminallyRefusedBeforeFence()
+    {
+        RejectingSnapshotWorkflowGuard guard =
+            new("abandoned-run", "recovery-run");
+        using SchedulerFixture fixture = new(
+            CreateOptions(),
+            snapshotWorkflowGuard: guard);
+        await fixture.Database.ActivateAsync();
+        DateTimeOffset createdAt =
+            new(2026, 9, 17, 12, 0, 0, TimeSpan.Zero);
+        AuthoringRunRecord snapshotRun =
+            await fixture.Database.Store.CreateRunAsync(
+                "test",
+                [new("FHIR-1", "ticket", "revision-1")],
+                databaseOnly: false,
+                now: createdAt);
+        AuthoringRunRecord databaseOnly =
+            await fixture.Database.Store.CreateRunAsync(
+                "test",
+                [new("FHIR-2", "ticket", "revision-2")],
+                databaseOnly: true,
+                now: createdAt.AddSeconds(1));
+
+        Assert.Equal(
+            TimeSpan.Zero,
+            await fixture.Scheduler.RunCycleAsync());
+
+        AuthoringRunRecord refused =
+            Assert.IsType<AuthoringRunRecord>(
+                await fixture.Database.Store.GetRunAsync(snapshotRun.Id));
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Superseded,
+            refused.Status);
+        Assert.Contains(
+            AuthoringConflictException
+                .CanonicalUnpublishedRestrictionCode,
+            refused.Error,
+            StringComparison.Ordinal);
+        Assert.Contains("abandoned-run", refused.Error);
+        Assert.Contains("recovery-run", refused.Error);
+        Assert.Equal(
+            AuthoringStatusValues.Items.Superseded,
+            Assert.Single(
+                await fixture.Database.Store.GetRunItemsAsync(
+                    snapshotRun.Id)).Status);
+        Assert.Null(await fixture.Database.Store.GetFencedRunAsync("test"));
+        Assert.Equal(0, fixture.Handler.InvocationCount);
+
+        Assert.Equal(
+            TimeSpan.Zero,
+            await fixture.Scheduler.RunCycleAsync());
+        Assert.Equal(
+            databaseOnly.Id,
+            (await fixture.Database.Store.GetFencedRunAsync("test"))!.Id);
+        Assert.All(
+            guard.Intents,
+            intent => Assert.Equal("test", intent.ProcessorKind));
+    }
+
     private static ProcessingServiceOptions CreateOptions()
         => new()
         {
@@ -471,7 +531,8 @@ public sealed class AuthoringRunSchedulerTests
             ProcessingServiceOptions options,
             Func<TestItem, AuthoringQueueClaim, Task<AuthoringWorkResult>>? handler = null,
             Func<TimeSpan, CancellationToken, Task>? delay = null,
-            AuthoringRunSchedulerWakeSignal? wakeSignal = null)
+            AuthoringRunSchedulerWakeSignal? wakeSignal = null,
+            IAuthoringSnapshotWorkflowGuard? snapshotWorkflowGuard = null)
         {
             Database = new AuthoringTestDatabase(options);
             Lifecycle = new ProcessingLifecycleService(Options.Create(options));
@@ -495,7 +556,8 @@ public sealed class AuthoringRunSchedulerTests
                 Options.Create(options),
                 () => Now,
                 delay ?? Task.Delay,
-                wakeSignal);
+                wakeSignal,
+                snapshotWorkflowGuard);
         }
 
         public AuthoringTestDatabase Database { get; }
@@ -731,7 +793,8 @@ public sealed class AuthoringRunSchedulerTests
         IOptions<ProcessingServiceOptions> options,
         Func<DateTimeOffset> utcNow,
         Func<TimeSpan, CancellationToken, Task> delay,
-        AuthoringRunSchedulerWakeSignal? wakeSignal)
+        AuthoringRunSchedulerWakeSignal? wakeSignal,
+        IAuthoringSnapshotWorkflowGuard? snapshotWorkflowGuard)
         : AuthoringRunScheduler<TestItem>(
             store,
             adapter,
@@ -740,7 +803,8 @@ public sealed class AuthoringRunSchedulerTests
             lifecycle,
             options,
             NullLogger<AuthoringRunScheduler<TestItem>>.Instance,
-            wakeSignal)
+            wakeSignal,
+            snapshotWorkflowGuard)
     {
         protected override DateTimeOffset UtcNow => utcNow();
 
@@ -751,5 +815,29 @@ public sealed class AuthoringRunSchedulerTests
             TimeSpan wait,
             CancellationToken ct = default)
             => WaitForWakeAsync(wait, ct);
+    }
+
+    private sealed class RejectingSnapshotWorkflowGuard(
+        params string[] relatedRunIds)
+        : IAuthoringSnapshotWorkflowGuard
+    {
+        public List<AuthoringSnapshotWorkflowIntent> Intents { get; } = [];
+
+        public Task EnsureSnapshotWorkflowAllowedAsync(
+            AuthoringSnapshotWorkflowIntent intent,
+            CancellationToken ct = default)
+        {
+            Intents.Add(intent);
+            if (!intent.DatabaseOnly &&
+                intent.Purpose !=
+                    AuthoringRunPurposeValues.CanonicalEpochRecovery)
+            {
+                throw AuthoringConflictException
+                    .ForCanonicalUnpublishedRestriction(
+                        $"Blocked by {string.Join(", ", relatedRunIds)}.",
+                        relatedRunIds);
+            }
+            return Task.CompletedTask;
+        }
     }
 }

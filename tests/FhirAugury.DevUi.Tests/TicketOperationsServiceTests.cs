@@ -234,6 +234,41 @@ public sealed class TicketOperationsServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task CanonicalRestrictionDisplaysStableCodeAndRecoveryCoordinates()
+    {
+        FakeAuthoringClient authoring = new();
+        authoring.StartHandler = (_, _, _) =>
+            Task.FromException<AuthoringStartResult>(
+                new AuthoringControlException(
+                    HttpStatusCode.Conflict,
+                    "canonical-unpublished-restriction",
+                    "A canonical epoch remains unpublished.",
+                    relatedRunIds:
+                        ["abandoned-run", "recovery-run"]));
+        using TicketOperationsService service =
+            CreateService(authoring);
+
+        TicketStartResult result = await service.StartAsync(
+            new TicketRunStartRequest(
+                "prepare",
+                TicketSelectionMode.Configured));
+
+        Assert.Equal(
+            TicketOperationDisposition.Conflict,
+            result.Disposition);
+        Assert.Equal(
+            "canonical-unpublished-restriction",
+            result.FailureCode);
+        Assert.Contains(
+            "canonical-unpublished-restriction",
+            result.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(
+            ["abandoned-run", "recovery-run"],
+            result.ConflictingRunIds);
+    }
+
+    [Fact]
     public async Task AmbiguousStartReconcilesWithoutReplayAndRequiresReview()
     {
         FakeAuthoringClient authoring = new();

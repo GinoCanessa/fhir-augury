@@ -13,6 +13,7 @@ using FhirAugury.Processing.Jira.Common.Filtering;
 using FhirAugury.Processing.Jira.Common.Processing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -73,6 +74,9 @@ public static class JiraProcessingServiceCollectionExtensions
             return database;
         });
         services.AddSingleton<AuthoringRetryPolicy>();
+        services.TryAddSingleton<
+            IAuthoringSnapshotWorkflowGuard,
+            AllowAllAuthoringSnapshotWorkflowGuard>();
         services.AddSingleton<AuthoringRunStore>(sp => new AuthoringRunStore(
             sp.GetRequiredService<JiraProcessingDatabase>(),
             sp.GetRequiredService<ILogger<AuthoringRunStore>>(),

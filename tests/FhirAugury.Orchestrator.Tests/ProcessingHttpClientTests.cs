@@ -153,6 +153,31 @@ public class ProcessingHttpClientTests
     }
 
     [Fact]
+    public async Task CanonicalRestriction_ForwardsExactStatusBodyAndCoordinates()
+    {
+        RecordingHandler handler = new();
+        ProcessingHttpClient client = CreateClient(handler);
+
+        ProcessingProxyResponse response =
+            await client.StartPublicationRefreshAsync(
+                "Preparer",
+                "restricted-run",
+                CancellationToken.None);
+        JsonElement body = JsonDocument.Parse(response.Content).RootElement;
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal(
+            "canonical-unpublished-restriction",
+            body.GetProperty("error").GetString());
+        Assert.Equal(
+            ["abandoned-run", "recovery-run"],
+            body.GetProperty("conflictingRunIds")
+                .EnumerateArray()
+                .Select(value => value.GetString()!)
+                .ToArray());
+    }
+
+    [Fact]
     public async Task PublicationReconciliation_ForwardsTypedLifecycleRoutes()
     {
         RecordingHandler handler = new();
@@ -395,6 +420,8 @@ public class ProcessingHttpClientTests
                 "/processing/authoring/runs/run-1" => RunEnvelope,
                 "/processing/authoring/runs/source-run/publication-refresh" =>
                     RefreshRunEnvelope,
+                "/processing/authoring/runs/restricted-run/publication-refresh" =>
+                    """{"error":"canonical-unpublished-restriction","detail":"A canonical epoch remains unpublished.","conflictingRunIds":["abandoned-run","recovery-run"],"runId":null}""",
                 "/processing/authoring/runs/source-run/publication-reconciliation" =>
                     ReconciliationStartEnvelope,
                 "/processing/authoring/runs/reconciliation-run/publication-reconciliation" =>
@@ -418,6 +445,8 @@ public class ProcessingHttpClientTests
                 ? HttpStatusCode.Accepted
                 : path == "/processing/authoring/runs/source-run/publication-refresh"
                     ? HttpStatusCode.Accepted
+                : path == "/processing/authoring/runs/restricted-run/publication-refresh"
+                    ? HttpStatusCode.Conflict
                 : path == "/processing/authoring/runs/source-run/publication-reconciliation"
                     ? HttpStatusCode.Accepted
                 : path.EndsWith(

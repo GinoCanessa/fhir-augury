@@ -157,6 +157,8 @@ builder.Services.AddSingleton(sp =>
     }
 });
 builder.Services.AddSingleton<ProcessingDatabase>(sp => sp.GetRequiredService<PreparerDatabase>());
+builder.Services.AddSingleton<IAuthoringSnapshotWorkflowGuard>(sp =>
+    sp.GetRequiredService<PreparerDatabase>());
 builder.Services.AddSingleton<SqliteReviewSnapshotReconciler>();
 builder.Services.AddSingleton<IPreparedTicketGroupingDispatcher, PreviewPreparedTicketGroupingDispatcher>();
 builder.Services.AddSingleton<AuthoringRunSchedulerWakeSignal>();
@@ -214,7 +216,10 @@ await app.Services
 if (preparerOptions.ActivateRunBackedAuthoring)
 {
     AuthoringCutoverCoordinator cutover =
-        new(preparerDatabase.OpenConnection);
+        new(
+            preparerDatabase.OpenConnection,
+            app.Services.GetRequiredService<
+                IAuthoringSnapshotWorkflowGuard>());
     await cutover.ActivateAsync(
         new AuthoringCutoverRequest(
             preparerRunCoordinator.ProcessorKind,

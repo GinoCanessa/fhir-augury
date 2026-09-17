@@ -1425,9 +1425,19 @@ public sealed class AuthoringRunStore
             FROM authoring_mutation_fences f
             INNER JOIN authoring_runs r ON r.Id = f.RunId
             WHERE f.ProcessorKind = @processorKind
+              AND r.Status IN (@running, @finalizing, @error)
             LIMIT 1
             """;
         command.Parameters.AddWithValue("@processorKind", processorKind);
+        command.Parameters.AddWithValue(
+            "@running",
+            AuthoringStatusValues.Runs.Running);
+        command.Parameters.AddWithValue(
+            "@finalizing",
+            AuthoringStatusValues.Runs.Finalizing);
+        command.Parameters.AddWithValue(
+            "@error",
+            AuthoringStatusValues.Runs.Error);
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? ReadRun(reader) : null;
     }
@@ -4427,7 +4437,18 @@ public sealed class AuthoringRunStore
         {
             command.Parameters.AddWithValue(name, value ?? DBNull.Value);
         }
-        return await command.ExecuteNonQueryAsync(ct);
+        try
+        {
+            return await command.ExecuteNonQueryAsync(ct);
+        }
+        catch (SqliteException ex)
+            when (AuthoringConflictException
+                .IsCanonicalUnpublishedRestriction(ex))
+        {
+            throw AuthoringConflictException
+                .ForCanonicalUnpublishedRestriction(
+                    innerException: ex);
+        }
     }
 
     private static void AddItemIdParameters(SqliteCommand command, IReadOnlyList<string> itemIds)

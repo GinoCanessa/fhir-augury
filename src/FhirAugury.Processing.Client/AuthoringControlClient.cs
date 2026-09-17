@@ -488,10 +488,25 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
                 raw.Content,
                 path);
         ValidateReconciliationStatus(response.Status, service, runId);
-        if (!string.Equals(response.Reason, reason, StringComparison.Ordinal))
+        if (response.AbandonedAt == default ||
+            !string.Equals(response.Reason, reason, StringComparison.Ordinal) ||
+            !string.Equals(
+                response.Status.Promotion.State,
+                "canonical-unpublished",
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                response.Status.Run.Status,
+                "abandoned",
+                StringComparison.Ordinal) ||
+            response.Status.Promotion.MutationFenceHeld ||
+            response.Status.Promotion.AbandonedAt != response.AbandonedAt ||
+            !string.Equals(
+                response.Status.Promotion.AbandonmentReason,
+                response.Reason,
+                StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
-                "Publication reconciliation abandonment response does not match the requested reason.");
+                "Publication reconciliation abandonment response contains inconsistent audit data.");
         }
         return response;
     }
@@ -1216,6 +1231,22 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
         {
             throw new InvalidOperationException(
                 "Cancelled publication reconciliation response has inconsistent audit or fence state.");
+        }
+        if (string.Equals(
+                response.Promotion.State,
+                "canonical-unpublished",
+                StringComparison.Ordinal) &&
+            (response.Promotion.AbandonedAt is null ||
+             string.IsNullOrWhiteSpace(
+                 response.Promotion.AbandonmentReason) ||
+             !string.Equals(
+                 response.Run.Status,
+                 "abandoned",
+                 StringComparison.Ordinal) ||
+             response.Promotion.MutationFenceHeld))
+        {
+            throw new InvalidOperationException(
+                "Abandoned publication reconciliation response has inconsistent audit or fence state.");
         }
     }
 

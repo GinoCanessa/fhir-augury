@@ -192,12 +192,22 @@ public static class CommandDispatcher
 
     internal static OutputEnvelope CreateAuthoringControlFailure(
         string commandName,
-        AuthoringControlException error) =>
-        OutputEnvelope.Fail(
+        AuthoringControlException error)
+    {
+        OutputEnvelope failure = OutputEnvelope.Fail(
             commandName,
             error.ErrorCode,
             error.Detail ?? error.Message,
             error.Message);
+        if (error.RelatedRunIds.Count != 0)
+        {
+            failure.Data = new
+            {
+                relatedRunIds = error.RelatedRunIds,
+            };
+        }
+        return failure;
+    }
 
     private static Task<object> DispatchAsync(CliRequest request, string orchestratorAddr, CancellationToken ct) =>
         request switch

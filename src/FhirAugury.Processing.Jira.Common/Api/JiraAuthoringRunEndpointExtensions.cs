@@ -68,10 +68,12 @@ public static class JiraAuthoringRunEndpointExtensions
                     ct: ct);
             }
             catch (AuthoringConflictException ex)
-                when (ex.Code == AuthoringConflictCode.ActiveRunCapacityReached)
+                when (ex.Code is
+                    AuthoringConflictCode.ActiveRunCapacityReached or
+                    AuthoringConflictCode.CanonicalUnpublishedRestriction)
             {
                 return Results.Conflict(ToConflictResponse(
-                    "active-run-capacity-reached",
+                    ToConflictCode(ex.Code),
                     ex));
             }
             if (creation is null)
@@ -122,6 +124,13 @@ public static class JiraAuthoringRunEndpointExtensions
                 {
                     return Results.Conflict(ToConflictResponse(
                         "active-run-capacity-reached",
+                        ex));
+                }
+                if (ex.Code ==
+                    AuthoringConflictCode.CanonicalUnpublishedRestriction)
+                {
+                    return Results.Conflict(ToConflictResponse(
+                        ToConflictCode(ex.Code),
                         ex));
                 }
                 return Results.Conflict(ToConflictResponse(
@@ -354,9 +363,17 @@ public static class JiraAuthoringRunEndpointExtensions
     }
 
     private static string ToConflictCode(AuthoringConflictCode code)
-        => code == AuthoringConflictCode.ReconciliationCancelRequired
-            ? "reconciliation-cancel-required"
-            : code.ToString();
+        => code switch
+        {
+            AuthoringConflictCode.ReconciliationCancelRequired =>
+                "reconciliation-cancel-required",
+            AuthoringConflictCode.CanonicalUnpublishedRestriction =>
+                AuthoringConflictException
+                    .CanonicalUnpublishedRestrictionCode,
+            AuthoringConflictCode.ActiveRunCapacityReached =>
+                "active-run-capacity-reached",
+            _ => code.ToString(),
+        };
 }
 
 public sealed record JiraAuthoringRunResponse(

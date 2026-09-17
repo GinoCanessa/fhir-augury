@@ -46,6 +46,16 @@ public sealed class PreparedTicketRunPostProcessor(
     {
         AuthoringRunRecord run = await authoringStore.GetRunAsync(runId, ct)
             ?? throw new KeyNotFoundException($"Authoring run '{runId}' was not found.");
+        if (run.Status is not (
+                AuthoringStatusValues.Runs.Completed or
+                AuthoringStatusValues.Runs.CompletedDatabaseOnly or
+                AuthoringStatusValues.Runs.Superseded or
+                AuthoringStatusValues.Runs.Abandoned))
+        {
+            await database.EnsureSnapshotWorkflowAllowedAsync(
+                ToSnapshotWorkflowIntent(run),
+                ct);
+        }
         if (workflowRegistry?.HandlesFinalization(run) == true)
         {
             return await workflowRegistry.FinalizeReconciliationAsync(
@@ -318,6 +328,9 @@ public sealed class PreparedTicketRunPostProcessor(
                 : null;
         try
         {
+            await database.EnsureSnapshotWorkflowAllowedAsync(
+                ToSnapshotWorkflowIntent(run),
+                ct);
             return await finalizer.FinalizeAsync(
                 runId,
                 stages,
@@ -431,6 +444,14 @@ public sealed class PreparedTicketRunPostProcessor(
             throw;
         }
     }
+
+    private static AuthoringSnapshotWorkflowIntent ToSnapshotWorkflowIntent(
+        AuthoringRunRecord run)
+        => new(
+            run.ProcessorKind,
+            run.DatabaseOnly,
+            run.Purpose,
+            run.Id);
 
     public Task ReconcileSnapshotsOnStartupAsync(CancellationToken ct)
         => snapshotReconciler.ReconcileAsync(ct);

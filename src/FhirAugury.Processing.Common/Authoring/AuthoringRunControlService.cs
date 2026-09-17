@@ -238,6 +238,7 @@ public sealed class AuthoringRunControlService(
             AuthoringStatusValues.Runs.Completed => true,
             AuthoringStatusValues.Runs.CompletedDatabaseOnly => true,
             AuthoringStatusValues.Runs.Superseded => true,
+            AuthoringStatusValues.Runs.Abandoned => true,
             _ => throw new InvalidOperationException(
                 $"Unknown authoring run status '{status}'."),
         };

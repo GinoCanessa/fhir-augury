@@ -375,14 +375,18 @@ transport failure.
 
 Run status `error` is recoverable and non-terminal. Continue polling whenever
 `state.isTerminal` is false (`queued`, `running`, `finalizing`, or `error`).
-Only `completed`, `completed-database-only`, and `superseded` are terminal;
-there is no generic terminal `failed` state. Item status appends
+`completed`, `completed-database-only`, `superseded`, and `abandoned` are
+terminal. `abandoned` is non-recoverable and represents a
+canonical-unpublished reconciliation, not success; there is no generic
+terminal `failed` state. Item status appends
 `currentError`, `supersessionReason`, and processor-computed `allowedActions`
 while retaining legacy fields.
 
 The Preparer has an active-run capacity of one. `queued`, `running`,
 `finalizing`, and recoverable `error` runs are live; only a terminal
-`completed`, `completed-database-only`, or `superseded` run releases capacity.
+`completed`, `completed-database-only`, `superseded`, or `abandoned` run
+releases capacity. An abandoned run is not retried, finalized, or scheduled,
+so database-only work can still be admitted.
 Its normalized start request is stored with the run so a restart resumes the
 same run rather than reconstructing a second one.
 
@@ -552,11 +556,16 @@ After pending, canonical-unpublished, or ready, the stable conflict is
 `abandon-reconciliation` is accepted only in that pending post-database state
 and requires the exact non-blank `reason` returned with `abandonedAt`. It
 leaves canonical data promoted, produces no replacement snapshot, preserves
-the previous verified pair, and releases the fence. Thereafter every
-snapshot-producing run is rejected with
+the previous verified pair, releases the fence and active capacity, and
+reports generic run status `abandoned`. Thereafter every durable
+`databaseOnly:false` run is treated as snapshot-producing and is rejected at
+admission, queued fence acquisition, candidate creation, and
+finalization/promotion with
 `canonical-unpublished-restriction`; database-only ordinary authoring may
-continue until a separate explicit canonical-epoch recovery verifies a
-snapshot.
+continue. A snapshot run queued before abandonment is terminally refused
+before it can acquire the fence. `canonical-epoch-recovery` is the sole
+snapshot-producing bypass, reserved for the separate explicit recovery that
+verifies this canonical epoch.
 
 Reconciliation HTTP failures retain their stable processor code in the CLI's
 ordinary top-level error envelope:
@@ -566,9 +575,12 @@ ordinary top-level error envelope:
   "success": false,
   "command": "prepared-ticket-authoring",
   "error": {
-    "code": "recovery-in-progress",
-    "message": "Snapshot publication is still pending.",
+    "code": "canonical-unpublished-restriction",
+    "message": "A canonical epoch remains unpublished.",
     "details": "..."
+  },
+  "data": {
+    "relatedRunIds": [ "<abandonedRunId>", "<recoveryRunId>" ]
   }
 }
 ```
@@ -577,6 +589,8 @@ The complete code set is `invalid-baseline`, `unstable-jira-generation`,
 `revision-invalidation`, `staging-mismatch`, `grouping-impact-mismatch`,
 `recovery-in-progress`, `promotion-recovery-failure`, and
 `canonical-unpublished-restriction`. Do not branch on human-readable detail.
+For the canonical restriction, `data.relatedRunIds` preserves the abandoned
+and linked recovery coordinates from the HTTP conflict.
 If a reconciliation mutation loses its response, do not replay it; inspect
 the bounded run list for matching `purpose:"publication-reconciliation"` and
 `sourceRunId`, or use `reconciliation-status` when the run ID is known.

@@ -178,6 +178,46 @@ public sealed class AuthoringCutoverCoordinatorTests
     }
 
     [Fact]
+    public async Task InitialRevalidationAdmissionUsesSnapshotWorkflowGuard()
+    {
+        using AuthoringTestDatabase database = new();
+        RecordingSnapshotWorkflowGuard guard = new(reject: true);
+        AuthoringCutoverCoordinator coordinator =
+            new(database.OpenConnection, guard);
+
+        AuthoringConflictException conflict =
+            await Assert.ThrowsAsync<AuthoringConflictException>(
+                () => coordinator.ActivateAsync(
+                    new AuthoringCutoverRequest(
+                        "test",
+                        database.DatabasePath,
+                        $"{database.DatabasePath}.pre-cutover"),
+                    new StaticParticipant(
+                        [new("FHIR-1", "ticket", "revision-1")])));
+
+        Assert.Equal(
+            AuthoringConflictCode.CanonicalUnpublishedRestriction,
+            conflict.Code);
+        AuthoringSnapshotWorkflowIntent intent =
+            Assert.Single(guard.Intents);
+        Assert.Equal("test", intent.ProcessorKind);
+        Assert.False(intent.DatabaseOnly);
+        Assert.Equal(
+            AuthoringRunPurposeValues.InitialRevalidation,
+            intent.Purpose);
+        Assert.False(string.IsNullOrWhiteSpace(intent.RunId));
+        AuthoringProcessorModeRecord mode =
+            await database.Store.GetProcessorModeAsync("test");
+        Assert.Equal(
+            AuthoringStatusValues.ProcessorModes.CuttingOver,
+            mode.Mode);
+        Assert.Equal(
+            0,
+            database.Scalar<int>("SELECT COUNT(*) FROM authoring_runs"));
+        Assert.Null(await database.Store.GetFencedRunAsync("test"));
+    }
+
+    [Fact]
     public async Task PreparationRunsWhileIndependentWritesAreBlocked()
     {
         using AuthoringTestDatabase database = new();
@@ -393,6 +433,25 @@ public sealed class AuthoringCutoverCoordinatorTests
             SqliteConnection connection,
             CancellationToken ct) =>
             throw new InvalidOperationException("classification failed");
+    }
+
+    private sealed class RecordingSnapshotWorkflowGuard(bool reject)
+        : IAuthoringSnapshotWorkflowGuard
+    {
+        public List<AuthoringSnapshotWorkflowIntent> Intents { get; } = [];
+
+        public Task EnsureSnapshotWorkflowAllowedAsync(
+            AuthoringSnapshotWorkflowIntent intent,
+            CancellationToken ct = default)
+        {
+            Intents.Add(intent);
+            return reject
+                ? Task.FromException(
+                    AuthoringConflictException
+                        .ForCanonicalUnpublishedRestriction(
+                            relatedRunIds: ["abandoned-run"]))
+                : Task.CompletedTask;
+        }
     }
 
     private sealed class LockProbeParticipant(string databasePath)

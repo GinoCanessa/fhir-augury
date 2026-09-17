@@ -410,7 +410,7 @@ The observable promotion states are:
 | `snapshot-publish-pending` | The database transaction committed, so canonical output is already the replacement, but the immutable snapshot/run transitions are incomplete. All competing Preparer mutations remain blocked with `recovery-in-progress`. Startup recovery retries automatically; **Retry snapshot publication** / `retry-reconciliation` invokes the same idempotent recovery explicitly. |
 | `ready` | The final file and snapshot record are verified, the run is complete, staging is cleaned, and the fence is released. Repeating recovery does not reapply canonical replacement. |
 | `cancelled` | Pre-promotion cancellation is terminal. Canonical output and the prior publication are unchanged; disposable staging is removed, both fences are released, and the generic run is `superseded`. |
-| `canonical-unpublished` | An operator explicitly abandoned a pending promotion with an audited reason. Canonical replacement remains in the database, no replacement publication is claimed, and the prior verified pair is unchanged. This is terminal, not success. |
+| `canonical-unpublished` | An operator explicitly abandoned a pending promotion with an audited reason. Canonical replacement remains in the database, no replacement publication is claimed, and the prior verified pair is unchanged. The generic run is terminal, non-recoverable `abandoned`, not `error` and not success. |
 
 Recovery evaluates each durable boundary rather than assuming which operation
 ran last:
@@ -448,13 +448,29 @@ Use **Abandon without publication…** only while
 `snapshot-publish-pending`, after retry and evidence repair cannot recover the
 snapshot. The non-blank reason and time are persisted. Abandonment does not
 copy the old snapshot back, undo canonical rows, delete the temporary
-evidence, or make the new epoch publishable. It releases the fence, but every
-snapshot-producing run—including ordinary `databaseOnly:false` authoring,
-metadata refresh, and another reconciliation—is refused with
-`canonical-unpublished-restriction`. Database-only ordinary authoring may
-continue. The restriction remains until a separately explicit recovery
-operation creates and verifies a snapshot for that canonical epoch; neither
-abandonment nor an ordinary retry counts as publication.
+evidence, or make the new epoch publishable. It changes the generic run only
+from `finalizing` or recoverable `error` to `abandoned`, releases both fences
+and the single active-run slot, and leaves the audit plus prior verified pair
+intact.
+
+The restricted/allowed workflow matrix is:
+
+| Durable intent while `canonical-unpublished` is unresolved | Outcome |
+|---|---|
+| Ordinary authoring with `databaseOnly:false` | HTTP `409 canonical-unpublished-restriction` |
+| Initial revalidation, metadata refresh, or another reconciliation | Same typed `409` |
+| Snapshot run queued before abandonment | Terminally refused before mutation-fence acquisition |
+| Candidate creation or finalization/promotion for any non-database-only run | Refused with the same restriction |
+| Ordinary `databaseOnly:true` work | Allowed, including at active capacity one after abandonment |
+| `canonical-epoch-recovery` | Sole reserved snapshot-producing bypass |
+
+The Preparer enforces this at admission, queued fence acquisition, candidate
+creation, and immediately before finalization/promotion; SQLite triggers are
+last-ditch race guards. Conflict details preserve the abandoned run and any
+linked recovery run as operator navigation coordinates. The restriction
+remains until the separate explicit recovery creates and verifies a snapshot
+for that canonical epoch; neither abandonment nor an ordinary retry counts as
+publication.
 
 ## Repair publication metadata only
 
@@ -607,10 +623,10 @@ capacity. At the processor/Orchestrator HTTP surface, a second start returns
 legacy-compatible `runId` when there is one conflict), identifying the existing
 run instead of silently queuing another. Revision and revalidation conflicts
 use the same structured coordinates. The Dev UI turns those coordinates into
-links; the CLI keeps its existing error envelope, so use the read-only
-authoring-list endpoint when headless reconciliation needs coordinates. Start
-the next run only after the current run reaches `completed`,
-`completed-database-only`, or `superseded`.
+links; the CLI keeps its top-level error envelope and adds machine-readable
+`data.relatedRunIds`. Start the next run only after the current run reaches
+`completed`, `completed-database-only`, `superseded`, or terminal
+`abandoned`.
 
 The processor stores the normalized start request (the effective ticket keys
 and `databaseOnly` value) with the frozen run. After a service restart it
@@ -815,9 +831,10 @@ and renders the verified pair supplied after processor completion.
   evidence produces `promotion-recovery-failure`; it never overwrites a
   conflicting final file or reapplies canonical replacement.
 - `canonical-unpublished` is reachable only by explicit reason-bearing
-  abandonment after canonical promotion. It releases the fence but leaves the
-  database replacement in place, preserves the old pair, and rejects all
-  later snapshot-producing workflows with
+  abandonment after canonical promotion. It makes the generic run terminal
+  `abandoned`, releases the fence and active capacity, leaves the database
+  replacement in place, preserves the old pair, and rejects all later
+  snapshot-producing workflows with
   `canonical-unpublished-restriction` until explicit canonical-epoch recovery.
 - Original protected-output drift refuses admission; an execution-time
   protection, source-revision, or source-generation conflict supersedes the

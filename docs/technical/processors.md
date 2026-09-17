@@ -66,11 +66,13 @@ provenance in the logical revalidation corpus.
 
 A run freezes its item membership and expected source/evidence revisions.
 Typical run states are `queued`, `running`, `finalizing`, `completed`,
-`completed-database-only`, `error`, and `superseded`.
+`completed-database-only`, `error`, `superseded`, and `abandoned`.
 
 Run status also carries additive lineage fields. `purpose` is one of
 `authoring`, `initial-revalidation`, `grouping-maintenance`,
-`publication-refresh`, or `publication-reconciliation`; `sourceRunId` is
+`publication-refresh`, or `publication-reconciliation`;
+`canonical-epoch-recovery` is reserved as the sole snapshot-producing bypass
+for an unresolved canonical epoch. `sourceRunId` is
 populated when a maintenance run is linked to an earlier run. Each publication
 maintenance operation therefore has its own `runId`, distinct purpose, and the
 selected snapshot-producing run in `sourceRunId`.
@@ -87,9 +89,12 @@ The processor appends `state` to each operator run:
 |-|-|-|-|
 | `queued`, `running`, `finalizing` | `false` | `false` | Continue |
 | `error` | `false` | `true` | Continue; automatic recovery remains authoritative |
-| `completed`, `completed-database-only`, `superseded` | `true` | `false` | Stop |
+| `completed`, `completed-database-only`, `superseded`, `abandoned` | `true` | `false` | Stop |
 
-There is no generic terminal `failed` run state. `state.nextAutomaticRecoveryAt`
+`abandoned` is a non-success reconciliation outcome reachable only from
+`finalizing` or recoverable `error`; it has no retry or finalization path and
+does not consume active-run capacity. There is no generic terminal `failed`
+run state. `state.nextAutomaticRecoveryAt`
 is populated for a valid run-level automatic recovery time when known.
 
 `AuthoringRunScheduler<TItem>` is the sole run-backed lifecycle loop. It
@@ -99,6 +104,16 @@ invokes processor-specific finalization, and activates the next queued run only
 after successful completion releases the prior fence. Pausing processing stops
 new activation and dispatch, but it does not strand reconciliation or
 finalization for the already fenced run.
+
+Jira processors receive one optional
+`IAuthoringSnapshotWorkflowGuard`. Ordinary processors register the allow-all
+implementation; the Preparer registers its database as the enforcing
+implementation. The generic scheduler knows only this shared interface, not
+Preparer tables or contracts. Before acquiring a fence it asks the guard about
+the queued run's durable `DatabaseOnly`, purpose, processor, and run
+coordinates. A forbidden prequeued snapshot run is marked terminal
+`superseded` before any fence is acquired, allowing later database-only work
+to proceed.
 
 Each item receives an operation ID plus a secret token. The token is supplied
 only to the processor-launched worker through environment variables. Result
@@ -169,6 +184,10 @@ the existing `error` and optional `detail`, adds `conflictingRunIds`, and also
 sets the legacy-compatible `runId` when one related run is known. Capacity,
 revision-collision, and initial-revalidation conflicts therefore give clients
 authoritative navigation coordinates without prose parsing.
+The canonical restriction is always HTTP `409` with exact
+`canonical-unpublished-restriction`; its coordinates identify the abandoned
+reconciliation and any linked recovery run. Proactive guard and SQLite
+sentinel failures use the same envelope.
 
 Jira discovery also freezes source provenance independently of the per-ticket
 revision used for stale-work detection. Every paged read must report a stable,
@@ -553,18 +572,23 @@ available from `snapshot-publish-pending`, `canonical-unpublished`, or
 
 An operator may abandon only `snapshot-publish-pending`, only with a non-blank
 reason, and only through the explicit endpoint. The transaction records
-`canonical-unpublished`, abandonment time/reason, the run error/completion
-time, and releases both fences. It does not compensate canonical data, publish
+`canonical-unpublished`, abandonment time/reason, terminal generic run status
+`abandoned` plus completion detail, and releases both fences and active
+capacity. It does not compensate canonical data, publish
 or delete the candidate, alter the prior verified pair, or count as successful
 publication.
 
-The database trigger then rejects every new `authoring_runs` row with
-`DatabaseOnly = 0`, returning `canonical-unpublished-restriction`. Therefore
-metadata refresh, another reconciliation, and ordinary snapshot-producing
-authoring remain blocked. Ordinary `databaseOnly:true` authoring can continue.
-The state must remain visible until a separately explicit recovery operation
-creates and verifies a snapshot for that canonical epoch; the pending retry
-endpoint and abandonment itself do not clear it.
+Snapshot production is determined only by durable intent:
+`authoring_runs.DatabaseOnly = 0`, regardless of ordinary, revalidation, or
+maintenance purpose. The Preparer rejects such work at admission, immediately
+before queued fence acquisition, before candidate creation, and immediately
+before finalization/promotion. Database triggers guard run insertion, fence
+insertion, snapshot creation/promotion, run finalization, and reconciliation
+promotion as last-ditch race protection. The only bypass is purpose
+`canonical-epoch-recovery`; ordinary `databaseOnly:true` authoring continues,
+including with configured active capacity one. The state remains visible
+until a separately explicit recovery operation verifies a snapshot for that
+canonical epoch; pending retry and abandonment do not clear it.
 
 Stable lifecycle failures are `invalid-baseline`,
 `unstable-jira-generation`, `revision-invalidation`, `staging-mismatch`,

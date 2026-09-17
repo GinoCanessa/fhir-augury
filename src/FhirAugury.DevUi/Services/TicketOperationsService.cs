@@ -230,7 +230,8 @@ public sealed class TicketOperationsService : IDisposable
                     workflow,
                     ParsedKeys: parsedKeys,
                     RelatedRunIds: ex.RelatedRunIds,
-                    Message: ex.Detail ?? ex.Message);
+                    Message: FormatAuthoringControlFailure(ex),
+                    FailureCode: ex.ErrorCode);
             }
             catch (AuthoringMutationOutcomeUnknownException ex)
             {
@@ -281,7 +282,8 @@ public sealed class TicketOperationsService : IDisposable
                     workflow,
                     ParsedKeys: parsedKeys,
                     RelatedRunIds: ex.RelatedRunIds,
-                    Message: ex.Detail ?? ex.Message);
+                    Message: FormatAuthoringControlFailure(ex),
+                    FailureCode: ex.ErrorCode);
             }
         }
         finally
@@ -447,7 +449,8 @@ public sealed class TicketOperationsService : IDisposable
                 definition,
                 sourceRunId,
                 RelatedRunIds: ex.RelatedRunIds,
-                Message: ex.Detail ?? ex.Message);
+                Message: FormatAuthoringControlFailure(ex),
+                FailureCode: ex.ErrorCode);
         }
         catch (Exception ex) when (IsOperationFailure(ex))
         {
@@ -672,6 +675,19 @@ public sealed class TicketOperationsService : IDisposable
             NotSupportedException or ArgumentException or
             TimeoutException or OperationCanceledException;
 
+    private static string FormatAuthoringControlFailure(
+        AuthoringControlException exception)
+    {
+        string message = exception.Detail ?? exception.Message;
+        return string.Equals(
+            exception.ErrorCode,
+            PreparedTicketPublicationReconciliationFailureCodes
+                .CanonicalUnpublishedRestriction,
+            StringComparison.Ordinal)
+            ? $"{exception.ErrorCode}: {message}"
+            : message;
+    }
+
     public async Task<TicketPublicationRefreshResult>
         RefreshPublicationAsync(
             string workflow,
@@ -769,6 +785,8 @@ public sealed class TicketOperationsService : IDisposable
                     "A database-only run has no immutable snapshot to refresh.",
                 ProcessorRunOutcome.Superseded =>
                     "A superseded run cannot be used as a publication-refresh source.",
+                ProcessorRunOutcome.Abandoned =>
+                    "An abandoned run cannot be used as a publication-refresh source.",
                 ProcessorRunOutcome.Completed or
                 ProcessorRunOutcome.CompletedWithSupersededItems
                     when !latest.Run.DatabaseOnly => null,
@@ -810,7 +828,8 @@ public sealed class TicketOperationsService : IDisposable
                     definition,
                     sourceRunId,
                     RelatedRunIds: ex.RelatedRunIds,
-                    Message: ex.Detail ?? ex.Message);
+                    Message: FormatAuthoringControlFailure(ex),
+                    FailureCode: ex.ErrorCode);
             }
             catch (AuthoringMutationOutcomeUnknownException ex)
             {
@@ -873,7 +892,8 @@ public sealed class TicketOperationsService : IDisposable
                     definition,
                     sourceRunId,
                     RelatedRunIds: ex.RelatedRunIds,
-                    Message: ex.Detail ?? ex.Message);
+                    Message: FormatAuthoringControlFailure(ex),
+                    FailureCode: ex.ErrorCode);
             }
         }
         catch (OperationCanceledException)

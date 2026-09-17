@@ -28,6 +28,13 @@ public sealed class AuthoringRunStoreTests
             AuthoringRunPurposeValues.PublicationRefresh);
         AuthoringRunPurposeValues.EnsureValid(
             AuthoringRunPurposeValues.PublicationReconciliation);
+        Assert.Equal(
+            "canonical-epoch-recovery",
+            AuthoringRunPurposeValues.CanonicalEpochRecovery);
+        Assert.True(AuthoringRunPurposeValues.IsValid(
+            AuthoringRunPurposeValues.CanonicalEpochRecovery));
+        Assert.True(AuthoringRunPurposeValues.IsMaintenance(
+            AuthoringRunPurposeValues.CanonicalEpochRecovery));
     }
 
     [Fact]
@@ -314,6 +321,79 @@ public sealed class AuthoringRunStoreTests
             AuthoringConflictCode.ActiveRunCapacityReached,
             conflict.Code);
         Assert.Equal([active.Id], conflict.RelatedRunIds);
+    }
+
+    [Fact]
+    public async Task AbandonedRunIsTerminalForCapacityFenceAndFinalizationSelection()
+    {
+        using AuthoringTestDatabase database = new();
+        (AuthoringRunRecord abandoned, _) =
+            await database.CreateRunningRunAsync();
+        database.Execute(
+            """
+            UPDATE authoring_runs
+            SET Status = @status, CompletedAt = @completedAt,
+                Error = 'canonical-unpublished'
+            WHERE Id = @runId;
+            DELETE FROM authoring_mutation_fences
+            WHERE ProcessorKind = 'test' AND RunId = @runId;
+            """,
+            ("@status", AuthoringStatusValues.Runs.Abandoned),
+            ("@completedAt", DateTimeOffset.UtcNow.ToString("O")),
+            ("@runId", abandoned.Id));
+
+        AuthoringRunRecord databaseOnly =
+            await database.Store.CreateRunAsync(
+                "test",
+                [new("FHIR-2", "ticket", "revision-2")],
+                databaseOnly: true,
+                maxActiveRuns: 1);
+
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Queued,
+            databaseOnly.Status);
+        Assert.DoesNotContain(
+            await database.Store.GetRunsReadyForFinalizationAsync("test"),
+            run => run.Id == abandoned.Id);
+        AuthoringConflictException fenceConflict =
+            await Assert.ThrowsAsync<AuthoringConflictException>(
+                () => database.Store.TryAcquireMutationFenceAsync(
+                    "test",
+                    abandoned.Id));
+        Assert.Equal(
+            AuthoringConflictCode.RunNotActive,
+            fenceConflict.Code);
+        Assert.Null(await database.Store.GetFencedRunAsync("test"));
+    }
+
+    [Fact]
+    public void AbandonedRunTransitionIsOnlyAvailableFromFinalizationFailureStates()
+    {
+        AuthoringStatusValues.EnsureRunTransition(
+            AuthoringStatusValues.Runs.Finalizing,
+            AuthoringStatusValues.Runs.Abandoned);
+        AuthoringStatusValues.EnsureRunTransition(
+            AuthoringStatusValues.Runs.Error,
+            AuthoringStatusValues.Runs.Abandoned);
+
+        foreach (string status in new[]
+                 {
+                     AuthoringStatusValues.Runs.Queued,
+                     AuthoringStatusValues.Runs.Running,
+                     AuthoringStatusValues.Runs.Completed,
+                     AuthoringStatusValues.Runs.CompletedDatabaseOnly,
+                     AuthoringStatusValues.Runs.Superseded,
+                 })
+        {
+            Assert.Throws<InvalidOperationException>(
+                () => AuthoringStatusValues.EnsureRunTransition(
+                    status,
+                    AuthoringStatusValues.Runs.Abandoned));
+        }
+        Assert.Throws<InvalidOperationException>(
+            () => AuthoringStatusValues.EnsureRunTransition(
+                AuthoringStatusValues.Runs.Abandoned,
+                AuthoringStatusValues.Runs.Running));
     }
 
     [Fact]

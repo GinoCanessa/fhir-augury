@@ -59,6 +59,14 @@ public sealed class PreparedTicketRunWorkflowRegistry(
                   ?? throw new InvalidOperationException(
                       $"Completed reconciliation '{run.Id}' has no ready snapshot.");
         }
+        AuthoringSnapshotWorkflowIntent snapshotWorkflow = new(
+            run.ProcessorKind,
+            run.DatabaseOnly,
+            run.Purpose,
+            run.Id);
+        await database.EnsureSnapshotWorkflowAllowedAsync(
+            snapshotWorkflow,
+            ct);
         if (await database.GetPendingPublicationReconciliationAsync(
                 run.Id,
                 ct) is not null)
@@ -104,6 +112,9 @@ public sealed class PreparedTicketRunWorkflowRegistry(
         await reconciliationPlanner.EnsureFrozenCorpusCurrentAsync(
             run.Id,
             ct);
+        await database.EnsureSnapshotWorkflowAllowedAsync(
+            snapshotWorkflow,
+            ct);
         PreparedTicketPublicationCandidateSnapshot candidate =
             await snapshotMaterializer
                 .MaterializeProvisionalReconciliationCandidateAsync(
@@ -133,6 +144,9 @@ public sealed class PreparedTicketRunWorkflowRegistry(
             throw;
         }
 
+        await database.EnsureSnapshotWorkflowAllowedAsync(
+            snapshotWorkflow,
+            ct);
         await authoringStore.MarkRunFinalizingAsync(run.Id, ct: ct);
         await snapshotMaterializer
             .PersistTrustedReconciliationCandidateAsync(

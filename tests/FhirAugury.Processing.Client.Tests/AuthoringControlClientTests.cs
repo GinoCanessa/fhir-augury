@@ -208,17 +208,32 @@ public sealed class AuthoringControlClientTests
                 Assert.Equal(
                     "operator accepted risk",
                     body.GetProperty("reason").GetString());
+                DateTimeOffset abandonedAt =
+                    new(2026, 9, 16, 18, 0, 0, TimeSpan.Zero);
                 return DelegateHttpHandler.Json(
                     new PublicationReconciliationAbandonResult(
                         status with
                         {
+                            Run = status.Run with
+                            {
+                                Status = "abandoned",
+                                CompletedAt = abandonedAt,
+                                State = new(
+                                    IsTerminal: true,
+                                    IsRecoverable: false),
+                            },
                             Promotion = status.Promotion with
                             {
                                 State = "canonical-unpublished",
+                                JournalState =
+                                    "canonical-unpublished",
+                                MutationFenceHeld = false,
+                                AbandonedAt = abandonedAt,
+                                AbandonmentReason =
+                                    "operator accepted risk",
                             },
                         },
-                        new DateTimeOffset(
-                            2026, 9, 16, 18, 0, 0, TimeSpan.Zero),
+                        abandonedAt,
                         "operator accepted risk"));
             }
             if (request.Method == HttpMethod.Post)
@@ -272,6 +287,7 @@ public sealed class AuthoringControlClientTests
             "frozen revision changed",
             cancelled.Status.Promotion.CancellationReason);
         Assert.Equal("canonical-unpublished", abandoned.Status.Promotion.State);
+        Assert.Equal("abandoned", abandoned.Status.Run.Status);
         Assert.Equal(
             [
                 "POST /api/v1/processing-services/Preparer/authoring/runs/source-run/publication-reconciliation",
@@ -666,6 +682,39 @@ public sealed class AuthoringControlClientTests
         Assert.Equal("9", error.RetryAfterHeader);
         Assert.Equal(["run-2", "run-1"], error.RelatedRunIds);
         Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
+    public async Task CanonicalUnpublishedRestrictionRetainsStableCodeAndRunCoordinates()
+    {
+        DelegateHttpHandler handler = new((_, _, _) =>
+            Task.FromResult(DelegateHttpHandler.Json(
+                new AuthoringConflictResponse(
+                    "canonical-unpublished-restriction",
+                    "Snapshot workflows are restricted.",
+                    ["abandoned-run", "recovery-run"]),
+                HttpStatusCode.Conflict)));
+        AuthoringControlClient client =
+            AuthoringClientTestData.CreateClient(handler);
+
+        AuthoringControlException error =
+            await Assert.ThrowsAsync<AuthoringControlException>(
+                () => client.StartAsync(
+                    "Preparer",
+                    new
+                    {
+                        ticketKeys = new[] { "FHIR-1" },
+                        databaseOnly = false,
+                    },
+                    CancellationToken.None));
+
+        Assert.Equal(HttpStatusCode.Conflict, error.StatusCode);
+        Assert.Equal(
+            "canonical-unpublished-restriction",
+            error.ErrorCode);
+        Assert.Equal(
+            ["abandoned-run", "recovery-run"],
+            error.RelatedRunIds);
     }
 
     [Fact]

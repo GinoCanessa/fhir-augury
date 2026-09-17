@@ -830,7 +830,7 @@ Run purpose and repair lineage are additive live-state fields:
 
 | Table | Column | Type | Description |
 |-------|--------|------|-------------|
-| `authoring_runs` | `Purpose` | TEXT NOT NULL | `authoring` by default; also `initial-revalidation`, `grouping-maintenance`, `publication-refresh`, or `publication-reconciliation` |
+| `authoring_runs` | `Purpose` | TEXT NOT NULL | `authoring` by default; also `initial-revalidation`, `grouping-maintenance`, `publication-refresh`, `publication-reconciliation`, or reserved `canonical-epoch-recovery` |
 | `authoring_runs` | `SourceRunId` | TEXT? | Earlier run selected as maintenance lineage; required for publication refresh and reconciliation |
 | `authoring_review_snapshots` | `PublicationProofJson` | TEXT? | Canonical serialized publication proof retained with snapshot lifecycle state and recovery |
 
@@ -1114,15 +1114,28 @@ fences, preventing a retry race from recreating rows after cancellation.
 
 Explicit abandonment is valid only from `snapshot-publish-pending`. It writes
 `canonical-unpublished`, `AbandonedAt`, and `AbandonmentReason`, records the
-canonical-unpublished error and completion time on `authoring_runs`, and
+canonical-unpublished detail and completion time on `authoring_runs`, changes
+that generic row from `finalizing` or `error` to terminal `abandoned`, and
 releases both fences without rolling back canonical rows or changing the prior
-ready snapshot. The
-`prevent_snapshot_after_unpublished_canonical` trigger rejects every future
-`authoring_runs` insert whose `DatabaseOnly = 0` with
-`canonical-unpublished-restriction`. This covers metadata refresh,
-reconciliation, and ordinary snapshot-producing authoring while allowing
-database-only ordinary work. The restriction is durable until a separately
-explicit operation verifies a snapshot for that canonical epoch.
+ready snapshot. `abandoned` is non-recoverable, is excluded from active-run
+capacity and scheduler/finalization queries, and leaves the reconciliation
+row, journal, reason, and time as the canonical-unpublished audit.
+
+Snapshot production is defined by the durable row, not a purpose allowlist:
+every `authoring_runs.DatabaseOnly = 0` row is snapshot-producing. While any
+reconciliation remains `canonical-unpublished`, the sole bypass is
+`Purpose = 'canonical-epoch-recovery'`; database-only rows remain allowed.
+`prevent_snapshot_after_unpublished_canonical` guards run insertion.
+Companion triggers guard mutation-fence insertion, snapshot-row insertion,
+snapshot promotion/readiness, run finalization/completion, and reconciliation
+promotion. Each raises the exact SQLite sentinel
+`canonical-unpublished-restriction`, which service code translates to the
+same typed HTTP `409`. These triggers are last-ditch integrity checks behind
+the shared guard at admission, queued fence acquisition, candidate creation,
+and finalization/promotion. A pre-existing `error` or `finalizing` row already
+audited as canonical-unpublished is migrated to `abandoned` at schema
+initialization. The restriction remains durable until a separately explicit
+operation verifies a snapshot for that canonical epoch.
 
 ### Preparer publication-refresh live state
 

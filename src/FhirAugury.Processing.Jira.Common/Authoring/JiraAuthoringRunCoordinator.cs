@@ -27,7 +27,8 @@ public sealed class JiraAuthoringRunCoordinator(
     JiraProcessingSourceTicketStore sourceStore,
     JiraProcessingFilterResolver filterResolver,
     IOptions<JiraProcessingOptions> optionsAccessor,
-    IOptions<ProcessingServiceOptions>? processingOptionsAccessor = null)
+    IOptions<ProcessingServiceOptions>? processingOptionsAccessor = null,
+    IAuthoringSnapshotWorkflowGuard? snapshotWorkflowGuard = null)
     : IAuthoringRunLifecycleAdapter
 {
     private const string ProvenanceSource = "jira";
@@ -35,6 +36,9 @@ public sealed class JiraAuthoringRunCoordinator(
     private readonly JiraProcessingOptions _options = optionsAccessor.Value;
     private readonly int _maxActiveRuns =
         processingOptionsAccessor?.Value.MaxActiveAuthoringRuns ?? int.MaxValue;
+    private readonly IAuthoringSnapshotWorkflowGuard _snapshotWorkflowGuard =
+        snapshotWorkflowGuard ??
+        AllowAllAuthoringSnapshotWorkflowGuard.Instance;
 
     public string ProcessorKind => $"jira-{_options.SourceTicketShape.ToLowerInvariant()}";
 
@@ -49,6 +53,7 @@ public sealed class JiraAuthoringRunCoordinator(
         bool databaseOnly = false,
         CancellationToken ct = default)
     {
+        await EnsureSnapshotWorkflowAllowedAsync(databaseOnly, ct);
         await EnsureActiveRunCapacityAvailableAsync(ct);
         ResolvedJiraProcessingFilters filters = filterResolver.Resolve(_options);
         for (int attempt = 0; attempt < 3; attempt++)
@@ -77,6 +82,7 @@ public sealed class JiraAuthoringRunCoordinator(
         bool databaseOnly = true,
         CancellationToken ct = default)
     {
+        await EnsureSnapshotWorkflowAllowedAsync(databaseOnly, ct);
         JiraAuthoringRunCreation? existing =
             await GetExistingRunForTicketAsync(ticket, ct);
         if (existing is not null)
@@ -104,6 +110,7 @@ public sealed class JiraAuthoringRunCoordinator(
         bool databaseOnly,
         CancellationToken ct = default)
     {
+        await EnsureSnapshotWorkflowAllowedAsync(databaseOnly, ct);
         JiraAuthoringRunCreation? existing = await ResolveExactReplayAsync(
             tickets,
             databaseOnly,
@@ -146,6 +153,7 @@ public sealed class JiraAuthoringRunCoordinator(
         {
             throw new ArgumentException("An authoring run requires at least one Jira ticket.", nameof(tickets));
         }
+        await EnsureSnapshotWorkflowAllowedAsync(databaseOnly, ct);
 
         JiraProcessingSourceTicketRecord[] distinctTickets = tickets
             .GroupBy(ticket => ticket.Key, StringComparer.OrdinalIgnoreCase)
@@ -158,22 +166,35 @@ public sealed class JiraAuthoringRunCoordinator(
                 JiraProcessingSourceTicketStore.GetSourceRevision(ticket)))
             .ToArray();
         DateTimeOffset createdAt = DateTimeOffset.UtcNow;
-        AuthoringRunRecord run = await authoringStore.CreateRunAsync(
-            ProcessorKind,
-            definitions,
-            databaseOnly,
-            now: createdAt,
-            ct: ct,
-            requestJson: JsonSerializer.Serialize(
-                new JiraAuthoringRunRequestSnapshot(
-                    definitions.Select(definition => definition.BusinessKey).ToArray(),
-                    databaseOnly),
-                JsonSerializerOptions.Web),
-            maxActiveRuns: _maxActiveRuns,
-            inputProvenance:
-            [
-                CreateInputProvenance(distinctTickets),
-            ]);
+        AuthoringRunRecord run;
+        try
+        {
+            run = await authoringStore.CreateRunAsync(
+                ProcessorKind,
+                definitions,
+                databaseOnly,
+                now: createdAt,
+                ct: ct,
+                requestJson: JsonSerializer.Serialize(
+                    new JiraAuthoringRunRequestSnapshot(
+                        definitions.Select(definition => definition.BusinessKey).ToArray(),
+                        databaseOnly),
+                    JsonSerializerOptions.Web),
+                maxActiveRuns: _maxActiveRuns,
+                inputProvenance:
+                [
+                    CreateInputProvenance(distinctTickets),
+                ]);
+        }
+        catch (AuthoringConflictException ex)
+            when (ex.Code ==
+                AuthoringConflictCode.CanonicalUnpublishedRestriction)
+        {
+            throw await EnrichCanonicalRestrictionAsync(
+                databaseOnly,
+                ex,
+                ct);
+        }
         return new JiraAuthoringRunCreation(
             run,
             await authoringStore.GetRunItemsAsync(run.Id, ct));
@@ -521,6 +542,39 @@ public sealed class JiraAuthoringRunCoordinator(
             ProvenanceSource,
             latestSuccessfulRefreshAt,
             contentRevision);
+    }
+
+    private Task EnsureSnapshotWorkflowAllowedAsync(
+        bool databaseOnly,
+        CancellationToken ct)
+        => _snapshotWorkflowGuard.EnsureSnapshotWorkflowAllowedAsync(
+            new AuthoringSnapshotWorkflowIntent(
+                ProcessorKind,
+                databaseOnly,
+                AuthoringRunPurposeValues.Authoring),
+            ct);
+
+    private async Task<AuthoringConflictException>
+        EnrichCanonicalRestrictionAsync(
+            bool databaseOnly,
+            AuthoringConflictException exception,
+            CancellationToken ct)
+    {
+        if (exception.RelatedRunIds.Count != 0)
+        {
+            return exception;
+        }
+        try
+        {
+            await EnsureSnapshotWorkflowAllowedAsync(databaseOnly, ct);
+        }
+        catch (AuthoringConflictException enriched)
+            when (enriched.Code ==
+                AuthoringConflictCode.CanonicalUnpublishedRestriction)
+        {
+            return enriched;
+        }
+        return exception;
     }
 
 }
