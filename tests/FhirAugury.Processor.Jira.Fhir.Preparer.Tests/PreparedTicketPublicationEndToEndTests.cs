@@ -10,6 +10,7 @@ using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Client;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
+using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processing.Jira.Common.Authoring;
@@ -20,11 +21,13 @@ using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Api;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Controllers;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
 using FhirAugury.Publishing.Tickets;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -291,6 +294,152 @@ public sealed class PreparedTicketPublicationEndToEndTests
         Assert.Equal(originalHashes, await ArtifactHashesAsync(fixture, original));
     }
 
+    [Fact]
+    public async Task ChangedTicketReconciliation_AutomaticFinalizationDispatchesGroupingClosure()
+    {
+        using Fixture fixture = new(richGraph: true);
+        Corpus corpus = await CreateCorpusAsync(fixture);
+        PublicationHttpHandler handler = new(fixture, corpus.Updates);
+        using HttpClient http = handler.CreateClient();
+        StagedReconciliation staged =
+            await StageChangedTicketReconciliationAsync(
+                fixture,
+                corpus,
+                handler,
+                http,
+                stageGroupingAndCandidate: false);
+        PreparedTicketGroupingDeltaDispatcher grouping = new(
+            fixture.Database);
+        PreparedTicketPublicationGroupingDelta delta =
+            await grouping.PrepareAsync(staged.RunId);
+        InProcessReconciliationGroupingDispatcher worker = new(
+            fixture.Database,
+            fixture.Store,
+            grouping)
+        {
+            FailOnceForType = MovedTicketType,
+        };
+        PreparedTicketReconciliationGroupingStageAdapter stageAdapter =
+            new(worker);
+        IOptions<PreparerServiceOptions> options =
+            Options.Create(new PreparerServiceOptions
+            {
+                SnapshotDirectory = fixture.SnapshotDirectory,
+                SnapshotSchemaVersion =
+                    PreparedTicketSnapshotSchemaV3.Version,
+            });
+        SqliteReviewSnapshotReconciler snapshotReconciler = new(
+            fixture.Store);
+        PreparedTicketSnapshotMaterializer materializer = new(
+            fixture.Database,
+            fixture.Store,
+            snapshotReconciler,
+            options);
+        PreparedTicketPublicationRecoveryService recovery = new(
+            fixture.Database,
+            fixture.Store,
+            NullLogger<PreparedTicketPublicationRecoveryService>.Instance);
+        JiraAuthoringRunCoordinator coordinator =
+            CreateCoordinator(fixture);
+        PreparedTicketRunWorkflowRegistry workflows = new(
+            fixture.Store,
+            fixture.Database,
+            new OrchestratorHydrationFetcher(http, NullLogger.Instance),
+            staged.Planner,
+            grouping,
+            materializer,
+            recovery,
+            options,
+            NullLogger<PreparedTicketRunWorkflowRegistry>.Instance,
+            stageAdapter);
+        PreparedTicketRunPostProcessor postProcessor = new(
+            fixture.Database,
+            fixture.Store,
+            new AuthoringRunFinalizer(fixture.Store),
+            snapshotReconciler,
+            coordinator,
+            new OrchestratorWorkGroupCatalogFetcher(http),
+            worker,
+            options,
+            snapshotMaterializer: materializer,
+            workflowRegistry: workflows);
+
+        Assert.Equal(
+            $"Request {RevisedKeys[0]}\n\nExact authored text: caf\u00e9.",
+            fixture.Scalar<string>(
+                $"SELECT RequestSummary FROM prepared_tickets WHERE Key = '{RevisedKeys[0]}'"));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => postProcessor.FinalizeRunAsync(staged.RunId));
+        AuthoringRunStageRecord[] interruptedStages =
+            (await fixture.Store.GetRunStagesAsync(staged.RunId)).ToArray();
+        Assert.Single(
+            interruptedStages,
+            stage => stage.Status == AuthoringStatusValues.Stages.Complete);
+        Assert.Single(
+            interruptedStages,
+            stage => stage.Status == AuthoringStatusValues.Stages.Error);
+        Assert.Equal(
+            0,
+            fixture.Scalar<long>(
+                """
+                SELECT COUNT(*)
+                FROM prepared_ticket_topics
+                WHERE ShortDescription = 'Reconciled shared container'
+                """));
+
+        AuthoringSnapshotDescriptor descriptor =
+            Assert.IsType<AuthoringSnapshotDescriptor>(
+                await postProcessor.FinalizeRunAsync(staged.RunId));
+
+        Assert.Equal(staged.RunId, descriptor.RunId);
+        Assert.Equal(delta.Impacts.Count + 1, worker.WorkItems.Count);
+        Assert.Equal(delta.Impacts.Count, worker.Receipts.Count);
+        Assert.Equal(
+            1,
+            worker.WorkItems.Count(workItem =>
+                string.Equals(
+                    workItem.Type,
+                    "Change Request",
+                    StringComparison.Ordinal)));
+        Assert.Equal(
+            2,
+            worker.WorkItems.Count(workItem =>
+                string.Equals(
+                    workItem.Type,
+                    MovedTicketType,
+                    StringComparison.Ordinal)));
+        Assert.All(
+            worker.WorkItems,
+            workItem => Assert.Equal(
+                delta.OverlayCorpusFingerprint,
+                workItem.OverlayCorpusFingerprint));
+        Assert.All(
+            await fixture.Store.GetRunStagesAsync(staged.RunId),
+            stage =>
+            {
+                Assert.Equal(
+                    PreparerDatabase
+                        .PublicationReconciliationGroupingStageName,
+                    stage.StageName);
+                Assert.Equal(
+                    AuthoringStatusValues.Stages.Complete,
+                    stage.Status);
+                Assert.Equal(
+                    delta.OverlayCorpusFingerprint,
+                    stage.InputFingerprint);
+            });
+        Assert.All(worker.CanonicalGroupingChecks, Assert.False);
+        Assert.Equal(
+            "Reconciled shared container",
+            fixture.Scalar<string>(
+                """
+                SELECT ShortDescription
+                FROM prepared_ticket_topics
+                WHERE Specification = 'FHIR'
+                  AND Type = 'Change Request'
+                """));
+    }
+
     [Theory]
     [InlineData("candidate-materialized")]
     [InlineData("database-promoted")]
@@ -445,6 +594,7 @@ public sealed class PreparedTicketPublicationEndToEndTests
                 "prepared_ticket_publication_staged_receipts",
                 "prepared_ticket_publication_grouping_impacts",
                 "prepared_ticket_publication_staged_grouping",
+                "prepared_ticket_publication_grouping_stage_receipts",
                 "prepared_ticket_publication_snapshot_descriptors",
                 "prepared_ticket_publication_reconciliation_fences",
             },
@@ -642,12 +792,156 @@ public sealed class PreparedTicketPublicationEndToEndTests
         PreparedTicketPublicationReconciliationComparison Comparison,
         PreparedTicketPublicationReconciliationPlanner Planner);
 
+    private sealed class InProcessReconciliationGroupingDispatcher(
+        PreparerDatabase database,
+        AuthoringRunStore store,
+        PreparedTicketGroupingDeltaDispatcher grouping)
+        : IPreparedTicketGroupingDispatcher,
+          IPreparedTicketReconciliationGroupingDispatcher
+    {
+        public List<PreparedTicketPublicationGroupingWorkItem> WorkItems
+            { get; } = [];
+        public List<AuthoringRunStageReceipt> Receipts { get; } = [];
+        public List<bool> CanonicalGroupingChecks { get; } = [];
+        public string? FailOnceForType { get; init; }
+        private bool _failedOnce;
+
+        public Task ReplaceGroupingAsync(
+            string runId,
+            PreparedTicketRunPartition partition,
+            AuthoringRunStageLease lease,
+            CancellationToken ct)
+            => throw new InvalidOperationException(
+                "Reconciliation used the ordinary canonical grouping worker path.");
+
+        public async Task ReplaceGroupingAsync(
+            PreparedTicketPublicationGroupingWorkItem workItem,
+            AuthoringRunStageLease lease,
+            CancellationToken ct)
+        {
+            WorkItems.Add(workItem);
+            if (!_failedOnce &&
+                string.Equals(
+                    workItem.Type,
+                    FailOnceForType,
+                    StringComparison.Ordinal))
+            {
+                _failedOnce = true;
+                throw new InvalidOperationException(
+                    "Synthetic grouping worker interruption.");
+            }
+            PreparedTicketGroupingStageContext context =
+                PreparedTicketGroupingDeltaDispatcher.CreateStageContext(
+                    workItem,
+                    lease);
+            PreparedTicketClusteringSignalsController clustering = new(
+                database,
+                new PreparedTicketCorpusView(database),
+                grouping);
+            ActionResult<PreparedTicketClusteringSignalsDto>
+                clusteringResult =
+                    await clustering.GetReconciliationPartition(
+                        workItem.WorkGroupClean,
+                        workItem.Specification,
+                        workItem.Type,
+                        workItem.RunId,
+                        lease.StageId,
+                        lease.LeaseId,
+                        workItem.OverlayCorpusFingerprint,
+                        ct);
+            PreparedTicketClusteringSignalsDto signals =
+                Assert.IsType<PreparedTicketClusteringSignalsDto>(
+                    Assert.IsType<OkObjectResult>(
+                        clusteringResult.Result).Value);
+            Assert.Equal(
+                workItem.TicketKeys,
+                signals.Tickets.Select(value => value.TicketKey));
+            Assert.Equal(
+                workItem.WorkGroupDisplay,
+                signals.WorkGroupDisplay);
+            foreach (string revisedTicketKey in
+                     workItem.RevisedTicketKeys.Intersect(
+                         workItem.TicketKeys,
+                         StringComparer.OrdinalIgnoreCase))
+            {
+                Assert.StartsWith(
+                    "Reconciled request",
+                    Assert.Single(
+                        signals.Tickets,
+                        value => string.Equals(
+                            value.TicketKey,
+                            revisedTicketKey,
+                            StringComparison.OrdinalIgnoreCase))
+                        .RequestSummary,
+                    StringComparison.Ordinal);
+            }
+
+            PreparedTicketHydrationController hydration = new(
+                database,
+                new PreparedTicketCorpusView(database),
+                grouping);
+            ActionResult<PreparedJiraHydrationListResponse>
+                hydrationResult =
+                    await hydration.GetReconciliationPartition(
+                        workItem.WorkGroupClean,
+                        workItem.Specification,
+                        workItem.Type,
+                        workItem.RunId,
+                        lease.StageId,
+                        lease.LeaseId,
+                        workItem.OverlayCorpusFingerprint,
+                        ct);
+            PreparedJiraHydrationListResponse hydrated =
+                Assert.IsType<PreparedJiraHydrationListResponse>(
+                    Assert.IsType<OkObjectResult>(
+                        hydrationResult.Result).Value);
+            Assert.Equal(
+                workItem.TicketKeys,
+                hydrated.Items.Select(value => value.TicketKey));
+
+            PreparedTicketGroupingPayload replacement =
+                string.Equals(
+                    workItem.Type,
+                    "Change Request",
+                    StringComparison.Ordinal)
+                    ? CreateChangedSharedGrouping(workItem.PartitionKey)
+                    : CreateEmptyGrouping(workItem.PartitionKey);
+            PreparedTicketGroupingsController controller = new(
+                database,
+                store,
+                grouping);
+            ActionResult<PreparedTicketGroupingSaveResultDto> put =
+                await controller.PutPartition(
+                    workItem.WorkGroupClean,
+                    workItem.Specification,
+                    workItem.Type,
+                    CreateGroupingPutRequest(replacement, context),
+                    ct);
+            PreparedTicketGroupingSaveResultDto saved =
+                Assert.IsType<PreparedTicketGroupingSaveResultDto>(
+                    Assert.IsType<OkObjectResult>(put.Result).Value);
+            Receipts.Add(Assert.IsType<AuthoringRunStageReceipt>(
+                saved.AuthoringReceipt));
+            using SqliteConnection connection = database.OpenConnection();
+            CanonicalGroupingChecks.Add(
+                Scalar<long>(
+                    connection,
+                    """
+                    SELECT COUNT(*)
+                    FROM prepared_ticket_topics
+                    WHERE ShortDescription =
+                        'Reconciled shared container'
+                    """) != 0);
+        }
+    }
+
     private static async Task<StagedReconciliation>
         StageChangedTicketReconciliationAsync(
             Fixture fixture,
             Corpus corpus,
             PublicationHttpHandler handler,
-            HttpClient http)
+            HttpClient http,
+            bool stageGroupingAndCandidate = true)
     {
         Dictionary<string, DateTimeOffset> revisedAt =
             new(StringComparer.OrdinalIgnoreCase)
@@ -672,18 +966,8 @@ public sealed class PreparedTicketPublicationEndToEndTests
                 ("@key", key));
         }
 
-        JiraAuthoringRunCoordinator coordinator = new(
-            fixture.Store,
-            new JiraProcessingSourceTicketStore(
-                fixture.Database.DatabasePath),
-            new JiraProcessingFilterResolver(),
-            Options.Create(new JiraProcessingOptions
-            {
-                AgentCliCommand = "agent {ticketKey}",
-                JiraSourceAddress = "http://source",
-                SourceTicketShape = "fhir",
-                TicketStatusesToProcess = ["Triaged"],
-            }));
+        JiraAuthoringRunCoordinator coordinator =
+            CreateCoordinator(fixture);
         AuthoringRetryPolicy retryPolicy = new(
             Options.Create(new ProcessingServiceOptions()));
         PreparedTicketPublicationReconciliationPlanner planner = new(
@@ -829,12 +1113,63 @@ public sealed class PreparedTicketPublicationEndToEndTests
             ["FHIR-803"],
             newPartition.RevisedTicketKeys);
 
-        await grouping.StageReplacementsAsync(
-            start.Run.RunId,
-            [
-                CreateChangedSharedGrouping(oldPartition.PartitionKey),
-                CreateEmptyGrouping(newPartition.PartitionKey),
-            ]);
+        if (!stageGroupingAndCandidate)
+        {
+            return new(
+                start.Run.RunId,
+                start.Comparison,
+                planner);
+        }
+
+        PreparedTicketGroupingsController groupingController = new(
+            fixture.Database,
+            fixture.Store,
+            grouping);
+        foreach (PreparedTicketPublicationReconciliationGroupingImpact impact
+                 in delta.Impacts)
+        {
+            AuthoringRunStageRecord stage =
+                await fixture.Store.EnsureRunStageAsync(
+                    start.Run.RunId,
+                    PreparerDatabase
+                        .PublicationReconciliationGroupingStageName,
+                    impact.PartitionKey,
+                    delta.OverlayCorpusFingerprint);
+            AuthoringRunStageLease lease =
+                Assert.IsType<AuthoringRunStageLease>(
+                    await fixture.Store.TryStartRunStageAsync(stage.Id));
+            PreparedTicketPublicationGroupingWorkItem workItem =
+                await grouping.GetStageWorkItemAsync(
+                    start.Run.RunId,
+                    stage.Id,
+                    lease.LeaseId,
+                    impact.PartitionKey,
+                    delta.OverlayCorpusFingerprint);
+            PreparedTicketGroupingPayload replacement =
+                string.Equals(
+                    impact.PartitionKey,
+                    oldPartition.PartitionKey,
+                    StringComparison.Ordinal)
+                    ? CreateChangedSharedGrouping(impact.PartitionKey)
+                    : CreateEmptyGrouping(impact.PartitionKey);
+            ActionResult<PreparedTicketGroupingSaveResultDto> put =
+                await groupingController.PutPartition(
+                    workItem.WorkGroupClean,
+                    workItem.Specification,
+                    workItem.Type,
+                    CreateGroupingPutRequest(
+                        replacement,
+                        PreparedTicketGroupingDeltaDispatcher
+                            .CreateStageContext(workItem, lease)),
+                    CancellationToken.None);
+            PreparedTicketGroupingSaveResultDto saved =
+                Assert.IsType<PreparedTicketGroupingSaveResultDto>(
+                    Assert.IsType<OkObjectResult>(put.Result).Value);
+            Assert.Equal(stage.Id, saved.AuthoringReceipt?.StageId);
+            await fixture.Store.CompleteRunStageAsync(
+                stage.Id,
+                lease.LeaseId);
+        }
         PreparedTicketPublicationGroupingDelta complete =
             await grouping.PrepareAsync(start.Run.RunId);
         Assert.All(complete.Impacts, impact => Assert.True(impact.Complete));
@@ -911,6 +1246,21 @@ public sealed class PreparedTicketPublicationEndToEndTests
             start.Comparison,
             planner);
     }
+
+    private static JiraAuthoringRunCoordinator CreateCoordinator(
+        Fixture fixture)
+        => new(
+            fixture.Store,
+            new JiraProcessingSourceTicketStore(
+                fixture.Database.DatabasePath),
+            new JiraProcessingFilterResolver(),
+            Options.Create(new JiraProcessingOptions
+            {
+                AgentCliCommand = "agent {ticketKey}",
+                JiraSourceAddress = "http://source",
+                SourceTicketShape = "fhir",
+                TicketStatusesToProcess = ["Triaged"],
+            }));
 
     private static PreparedTicketPayload CreateRevisedPayload(
         string key,
@@ -1079,6 +1429,30 @@ public sealed class PreparedTicketPublicationEndToEndTests
             Topics = [],
         };
     }
+
+    private static PreparedTicketGroupingPutRequest CreateGroupingPutRequest(
+        PreparedTicketGroupingPayload payload,
+        PreparedTicketGroupingStageContext context)
+        => new(
+            payload.WorkGroupDisplay,
+            payload.Topics.Select(topic =>
+                new PreparedTicketGroupingTopicRequest(
+                    topic.ShortDescription,
+                    topic.LongerDescription,
+                    topic.RenderOrderHint,
+                    topic.LinkedTicketGroups.Select(group =>
+                        new PreparedTicketGroupingLinkedGroupRequest(
+                            group.FirstTicketKey,
+                            group.Rationale,
+                            group.Members.Select(member =>
+                                new PreparedTicketGroupingMemberRequest(
+                                    member.TicketKey,
+                                    member.Order))
+                                .ToArray()))
+                        .ToArray(),
+                    topic.RemainingTicketKeys.ToArray()))
+                .ToArray(),
+            context);
 
     private static string[] ParsePartitionKey(string partitionKey)
     {

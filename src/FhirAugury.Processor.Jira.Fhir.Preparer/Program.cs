@@ -167,7 +167,10 @@ builder.Services.AddSingleton<PreparedTicketPublicationBaselineReader>();
 builder.Services.AddSingleton<PreparedTicketPublicationEnricher>();
 builder.Services.AddSingleton<PreparedTicketPublicationRefreshService>();
 builder.Services.AddSingleton<PreparedTicketPublicationReconciliationPlanner>();
+builder.Services.AddSingleton<PreparedTicketCorpusView>();
 builder.Services.AddSingleton<PreparedTicketGroupingDeltaDispatcher>();
+builder.Services.AddSingleton<
+    PreparedTicketReconciliationGroupingStageAdapter>();
 builder.Services.AddSingleton<PreparedTicketRunWorkflowRegistry>();
 builder.Services.AddSingleton<PreparedTicketSnapshotMaterializer>();
 builder.Services.AddSingleton<PreparedTicketPublicationRecoveryService>();

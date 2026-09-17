@@ -383,6 +383,27 @@ no grouped container there. Unchanged ticket authored content is fixed input
 to the replacement; the workflow does not re-author unchanged tickets or
 regroup unrelated partitions.
 
+Production finalization persists one
+`publication-reconciliation-grouping` authoring stage per exact impacted
+partition. Every stage uses the candidate
+`OverlayCorpusFingerprint` as its input fingerprint and carries the revised
+keys plus the complete overlay membership. The configured `topic-groupings`
+worker receives those run/stage/lease coordinates through its reconciliation
+adapter. Its clustering-signals and hydration reads use the run-scoped
+`/{workGroupClean}/{specification}/{type}` routes, which resolve only
+`PreparedTicketCorpusView`; the worker must not fall back to the live
+workgroup-only projections.
+
+An exact reconciliation-context grouping `PUT` writes
+`prepared_ticket_publication_staged_grouping` and a matching durable stage
+receipt. It never calls the ordinary canonical grouping writer. Ordinary
+grouping-maintenance stages retain their existing read/write contract and
+continue to replace canonical grouping under the mutation fence. A
+zero-member impacted partition is completed directly as `topics: []`, without
+requiring a worker process. If a worker exits without the exact staged
+receipt, the stage fails and a later finalization attempt resumes that
+pending/error stage rather than re-running completed partitions.
+
 Before candidate materialization, the Preparer freezes and rechecks three
 independent unaffected components:
 
@@ -397,8 +418,9 @@ canonical ticket row is excluded by that rule, and receipt and grouping
 fingerprints remain separate and exact. Any other drift fails with
 `staging-mismatch` or `grouping-impact-mismatch`.
 
-Once all changed items and grouping replacements are complete, finalization
-rechecks frozen Jira revisions and builds a sanitized schema-v3 temporary
+Only after every durable grouping stage and matching receipt is complete does
+finalization check closure completeness and unaffected canonical rows. It
+then rechecks frozen Jira revisions and builds a sanitized schema-v3 temporary
 snapshot from the carried-plus-staged overlay. The candidate is integrity
 checked, sized, and SHA-256 hashed before canonical promotion. Its proof binds
 purpose `publication-reconciliation`, source run/snapshot, stable Jira

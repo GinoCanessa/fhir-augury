@@ -33,6 +33,8 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         "publication-metadata";
     public const string GroupingCertificationStageName =
         "grouping-certification";
+    public const string PublicationReconciliationGroupingStageName =
+        "publication-reconciliation-grouping";
     public const string CurrentSnapshotReceiptBackedTicketsTable =
         "current_prepared_receipt_backed_tickets";
     private static readonly string MaintenanceOwnerGeneration = Guid.NewGuid().ToString("N");
@@ -308,6 +310,20 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 OutputFingerprint TEXT NOT NULL,
                 ProtectedRowsFingerprint TEXT NOT NULL,
                 StagedAt TEXT NOT NULL,
+                PRIMARY KEY(RunId, PartitionKey)
+            );
+
+            CREATE TABLE IF NOT EXISTS prepared_ticket_publication_grouping_stage_receipts(
+                RunId TEXT NOT NULL,
+                StageId TEXT NOT NULL,
+                StageLeaseId TEXT NOT NULL,
+                PartitionKey TEXT NOT NULL,
+                InputFingerprint TEXT NOT NULL,
+                OutputFingerprint TEXT NOT NULL,
+                TopicRows INTEGER NOT NULL,
+                TopicGroupRows INTEGER NOT NULL,
+                MemberRows INTEGER NOT NULL,
+                PersistedAt TEXT NOT NULL,
                 PRIMARY KEY(RunId, PartitionKey)
             );
 
@@ -5889,6 +5905,79 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         }
     }
 
+    private static void ValidatePublicationReconciliationGroupingStageContext(
+        PreparedTicketGroupingStageContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentException.ThrowIfNullOrWhiteSpace(context.RunId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(context.StageId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(context.StageLeaseId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(context.InputFingerprint);
+        if (!context.HasCompleteReconciliationContext())
+        {
+            throw new ArgumentException(
+                "Complete reconciliation grouping stage context is required.",
+                nameof(context));
+        }
+        if (!string.Equals(
+                context.InputFingerprint,
+                context.OverlayCorpusFingerprint,
+                StringComparison.Ordinal))
+        {
+            throw new AuthoringConflictException(
+                AuthoringConflictCode.StageFingerprintMismatch,
+                "The reconciliation grouping input fingerprint does not match the candidate overlay.");
+        }
+        IReadOnlyList<string> revisedTicketKeys =
+            context.RevisedTicketKeys!;
+        IReadOnlyList<string> ticketKeys = context.TicketKeys!;
+        if (revisedTicketKeys.Any(string.IsNullOrWhiteSpace) ||
+            ticketKeys.Any(string.IsNullOrWhiteSpace) ||
+            revisedTicketKeys
+                .Distinct(StringComparer.OrdinalIgnoreCase).Count() !=
+            revisedTicketKeys.Count ||
+            ticketKeys
+                .Distinct(StringComparer.OrdinalIgnoreCase).Count() !=
+            ticketKeys.Count)
+        {
+            throw new ArgumentException(
+                "Reconciliation grouping stage membership must contain non-empty unique ticket keys.",
+                nameof(context));
+        }
+    }
+
+    private static async Task EnsurePublicationReconciliationGroupingStageAsync(
+        SqliteConnection connection,
+        string runId,
+        string partitionKey,
+        CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT 1
+            FROM authoring_runs run
+            INNER JOIN prepared_ticket_publication_reconciliations reconciliation
+                ON reconciliation.RunId = run.Id
+            INNER JOIN prepared_ticket_publication_grouping_impacts impact
+                ON impact.RunId = run.Id
+               AND impact.PartitionKey = @partitionKey
+            WHERE run.Id = @runId
+              AND run.Purpose = @purpose
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue(
+            "@purpose",
+            PreparedTicketPublicationReconciliationContract.Purpose);
+        command.Parameters.AddWithValue("@partitionKey", partitionKey);
+        if (await command.ExecuteScalarAsync(ct) is null)
+        {
+            throw new AuthoringConflictException(
+                AuthoringConflictCode.StageFingerprintMismatch,
+                $"Grouping partition '{partitionKey}' is not an impacted partition of reconciliation '{runId}'.");
+        }
+    }
+
     private static async Task EnsureStageLeaseAsync(
         SqliteConnection connection,
         string runId,
@@ -6548,6 +6637,402 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 ComputeOverlayCorpusFingerprint(overlay),
                 impacts,
                 unaffected);
+        }
+
+        public async Task ValidatePublicationReconciliationGroupingStageAsync(
+            PreparedTicketGroupingStageContext context,
+            CancellationToken ct = default)
+        {
+            ValidatePublicationReconciliationGroupingStageContext(context);
+            await using SqliteConnection connection = OpenConnection();
+            await EnsureStageLeaseAsync(
+                connection,
+                context.RunId,
+                context.StageId,
+                context.StageLeaseId,
+                context.InputFingerprint,
+                PublicationReconciliationGroupingStageName,
+                context.PartitionKey!,
+                ct);
+            await EnsurePublicationReconciliationGroupingStageAsync(
+                connection,
+                context.RunId,
+                context.PartitionKey!,
+                ct);
+        }
+
+        public async Task<AuthoringRunStageReceipt>
+            SavePublicationReconciliationGroupingStageAsync(
+                PreparedTicketGroupingStageContext context,
+                PreparedTicketPublicationStagedGroupingReplacement replacement,
+                CancellationToken ct = default)
+        {
+            ValidatePublicationReconciliationGroupingStageContext(context);
+            ArgumentNullException.ThrowIfNull(replacement);
+            string partitionKey = context.PartitionKey!;
+            if (!string.Equals(
+                    context.RunId,
+                    replacement.RunId,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    partitionKey,
+                    replacement.PartitionKey,
+                    StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    "The staged grouping replacement does not match its reconciliation stage coordinates.",
+                    nameof(replacement));
+            }
+
+            PreparedTicketGroupingPayload payload =
+                JsonSerializer.Deserialize<PreparedTicketGroupingPayload>(
+                    replacement.ReplacementJson)
+                ?? throw new ArgumentException(
+                    "The staged grouping replacement payload is invalid.",
+                    nameof(replacement));
+            payload = CanonicalizeGroupingPayload(payload);
+            PreparedTicketGroupingPayloadValidator.ThrowIfInvalid(payload);
+            HashSet<string> members = context.TicketKeys!.ToHashSet(
+                StringComparer.OrdinalIgnoreCase);
+            string[] unknown = CollectReferencedTicketKeys(payload)
+                .Where(ticketKey => !members.Contains(ticketKey))
+                .ToArray();
+            if (unknown.Length != 0 ||
+                members.Count == 0 && payload.Topics.Count != 0)
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.StageFingerprintMismatch,
+                    $"Grouping replacement for partition '{partitionKey}' does not match its complete overlay membership.");
+            }
+            if (!string.Equals(
+                    GetPartitionKey(
+                        payload.WorkGroupClean,
+                        payload.Specification,
+                        payload.Type),
+                    partitionKey,
+                    StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    "The staged grouping replacement payload does not match its partition key.",
+                    nameof(replacement));
+            }
+
+            string expectedCorpusFingerprint =
+                AuthoringResultHasher.HashNormalizedUtf8(string.Join(
+                    "\n",
+                    context.TicketKeys!
+                        .OrderBy(
+                            value => value,
+                            StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(value => value, StringComparer.Ordinal)));
+            string expectedOutputFingerprint =
+                PreparedTicketPublicationContract
+                    .ComputeGroupingOutputFingerprint(payload);
+            if (!string.Equals(
+                    replacement.CorpusFingerprint,
+                    expectedCorpusFingerprint,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    replacement.OutputFingerprint,
+                    expectedOutputFingerprint,
+                    StringComparison.Ordinal))
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.StageFingerprintMismatch,
+                    $"Grouping replacement for partition '{partitionKey}' does not match its staged input or output fingerprint.");
+            }
+
+            PreparedTicketGroupingSaveResult result = new(
+                payload.WorkGroupClean,
+                payload.Specification,
+                payload.Type,
+                payload.Topics.Count,
+                payload.Topics.Sum(topic =>
+                    topic.LinkedTicketGroups.Count),
+                payload.Topics.Sum(topic =>
+                    topic.LinkedTicketGroups.Sum(group =>
+                        group.Members.Count) +
+                    topic.RemainingTicketKeys.Count));
+            DateTimeOffset persistedAt = replacement.StagedAt;
+            string protectedRowsFingerprint =
+                AuthoringResultHasher.HashNormalizedUtf8(
+                    replacement.ReplacementJson);
+
+            await using SqliteConnection connection = OpenConnection();
+            await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
+            try
+            {
+                await EnsureStageLeaseAsync(
+                    connection,
+                    context.RunId,
+                    context.StageId,
+                    context.StageLeaseId,
+                    context.InputFingerprint,
+                    PublicationReconciliationGroupingStageName,
+                    partitionKey,
+                    ct);
+                await EnsurePublicationReconciliationGroupingStageAsync(
+                    connection,
+                    context.RunId,
+                    partitionKey,
+                    ct);
+                PreparedTicketPublicationReconciliationGroupingImpact impact =
+                    await ReadGroupingImpactAsync(
+                        connection,
+                        context.RunId,
+                        partitionKey,
+                        ct)
+                    ?? throw new InvalidOperationException(
+                        $"Grouping partition '{partitionKey}' is not in the reconciliation impact closure.");
+                if (!string.Equals(
+                        replacement.ProtectedRowsFingerprint,
+                        impact.BaselineProtectedRowsFingerprint,
+                        StringComparison.Ordinal))
+                {
+                    throw new AuthoringConflictException(
+                        AuthoringConflictCode.StageFingerprintMismatch,
+                        $"Grouping replacement for partition '{partitionKey}' does not match its protected baseline.");
+                }
+
+                await ExecuteAsync(
+                    connection,
+                    """
+                    INSERT INTO prepared_ticket_publication_staged_grouping(
+                        RunId, PartitionKey, ReplacementJson,
+                        CorpusFingerprint, OutputFingerprint,
+                        ProtectedRowsFingerprint, StagedAt)
+                    VALUES(
+                        @runId, @partitionKey, @replacementJson,
+                        @corpusFingerprint, @outputFingerprint,
+                        @protectedRowsFingerprint, @stagedAt)
+                    ON CONFLICT(RunId, PartitionKey) DO UPDATE SET
+                        StagedAt = excluded.StagedAt
+                    WHERE ReplacementJson = excluded.ReplacementJson
+                      AND CorpusFingerprint = excluded.CorpusFingerprint
+                      AND OutputFingerprint = excluded.OutputFingerprint
+                      AND ProtectedRowsFingerprint =
+                          excluded.ProtectedRowsFingerprint
+                    """,
+                    ct,
+                    ("@runId", context.RunId),
+                    ("@partitionKey", partitionKey),
+                    ("@replacementJson", replacement.ReplacementJson),
+                    ("@corpusFingerprint", replacement.CorpusFingerprint),
+                    ("@outputFingerprint", replacement.OutputFingerprint),
+                    ("@protectedRowsFingerprint",
+                        protectedRowsFingerprint),
+                    ("@stagedAt", Format(persistedAt)));
+                await using (SqliteCommand verify = connection.CreateCommand())
+                {
+                    verify.CommandText =
+                        """
+                        SELECT 1
+                        FROM prepared_ticket_publication_staged_grouping
+                        WHERE RunId = @runId
+                          AND PartitionKey = @partitionKey
+                          AND ReplacementJson = @replacementJson
+                          AND CorpusFingerprint = @corpusFingerprint
+                          AND OutputFingerprint = @outputFingerprint
+                          AND ProtectedRowsFingerprint =
+                              @protectedRowsFingerprint
+                        """;
+                    verify.Parameters.AddWithValue(
+                        "@runId",
+                        context.RunId);
+                    verify.Parameters.AddWithValue(
+                        "@partitionKey",
+                        partitionKey);
+                    verify.Parameters.AddWithValue(
+                        "@replacementJson",
+                        replacement.ReplacementJson);
+                    verify.Parameters.AddWithValue(
+                        "@corpusFingerprint",
+                        replacement.CorpusFingerprint);
+                    verify.Parameters.AddWithValue(
+                        "@outputFingerprint",
+                        replacement.OutputFingerprint);
+                    verify.Parameters.AddWithValue(
+                        "@protectedRowsFingerprint",
+                        protectedRowsFingerprint);
+                    if (await verify.ExecuteScalarAsync(ct) is null)
+                    {
+                        throw new InvalidOperationException(
+                            $"Grouping replacement '{partitionKey}' was already staged with different content.");
+                    }
+                }
+
+                PreparedTicketPublicationReconciliationGroupingImpact
+                    complete = impact with
+                    {
+                        StagedCorpusFingerprint =
+                            replacement.CorpusFingerprint,
+                        StagedOutputFingerprint =
+                            replacement.OutputFingerprint,
+                        StagedProtectedRowsFingerprint =
+                            protectedRowsFingerprint,
+                        Complete = true,
+                    };
+                await ExecuteAsync(
+                    connection,
+                    """
+                    UPDATE prepared_ticket_publication_grouping_impacts
+                    SET ImpactJson = @json, Complete = 1, UpdatedAt = @updatedAt
+                    WHERE RunId = @runId AND PartitionKey = @partitionKey
+                    """,
+                    ct,
+                    ("@json", JsonSerializer.Serialize(complete)),
+                    ("@updatedAt", Format(persistedAt)),
+                    ("@runId", context.RunId),
+                    ("@partitionKey", partitionKey));
+
+                await ExecuteAsync(
+                    connection,
+                    """
+                    INSERT INTO prepared_ticket_publication_grouping_stage_receipts(
+                        RunId, StageId, StageLeaseId, PartitionKey,
+                        InputFingerprint, OutputFingerprint, TopicRows,
+                        TopicGroupRows, MemberRows, PersistedAt)
+                    VALUES(
+                        @runId, @stageId, @stageLeaseId, @partitionKey,
+                        @inputFingerprint, @outputFingerprint, @topicRows,
+                        @topicGroupRows, @memberRows, @persistedAt)
+                    ON CONFLICT(RunId, PartitionKey) DO UPDATE SET
+                        StageLeaseId = excluded.StageLeaseId,
+                        PersistedAt = excluded.PersistedAt
+                    WHERE StageId = excluded.StageId
+                      AND InputFingerprint = excluded.InputFingerprint
+                      AND OutputFingerprint = excluded.OutputFingerprint
+                      AND TopicRows = excluded.TopicRows
+                      AND TopicGroupRows = excluded.TopicGroupRows
+                      AND MemberRows = excluded.MemberRows
+                    """,
+                    ct,
+                    ("@runId", context.RunId),
+                    ("@stageId", context.StageId),
+                    ("@stageLeaseId", context.StageLeaseId),
+                    ("@partitionKey", partitionKey),
+                    ("@inputFingerprint", context.InputFingerprint),
+                    ("@outputFingerprint", replacement.OutputFingerprint),
+                    ("@topicRows", result.TopicRows),
+                    ("@topicGroupRows", result.TopicGroupRows),
+                    ("@memberRows", result.MemberRows),
+                    ("@persistedAt", Format(persistedAt)));
+                await using (SqliteCommand verifyReceipt =
+                             connection.CreateCommand())
+                {
+                    verifyReceipt.CommandText =
+                        """
+                        SELECT 1
+                        FROM prepared_ticket_publication_grouping_stage_receipts
+                        WHERE RunId = @runId
+                          AND StageId = @stageId
+                          AND StageLeaseId = @stageLeaseId
+                          AND PartitionKey = @partitionKey
+                          AND InputFingerprint = @inputFingerprint
+                          AND OutputFingerprint = @outputFingerprint
+                          AND TopicRows = @topicRows
+                          AND TopicGroupRows = @topicGroupRows
+                          AND MemberRows = @memberRows
+                        """;
+                    verifyReceipt.Parameters.AddWithValue(
+                        "@runId",
+                        context.RunId);
+                    verifyReceipt.Parameters.AddWithValue(
+                        "@stageId",
+                        context.StageId);
+                    verifyReceipt.Parameters.AddWithValue(
+                        "@stageLeaseId",
+                        context.StageLeaseId);
+                    verifyReceipt.Parameters.AddWithValue(
+                        "@partitionKey",
+                        partitionKey);
+                    verifyReceipt.Parameters.AddWithValue(
+                        "@inputFingerprint",
+                        context.InputFingerprint);
+                    verifyReceipt.Parameters.AddWithValue(
+                        "@outputFingerprint",
+                        replacement.OutputFingerprint);
+                    verifyReceipt.Parameters.AddWithValue(
+                        "@topicRows",
+                        result.TopicRows);
+                    verifyReceipt.Parameters.AddWithValue(
+                        "@topicGroupRows",
+                        result.TopicGroupRows);
+                    verifyReceipt.Parameters.AddWithValue(
+                        "@memberRows",
+                        result.MemberRows);
+                    if (await verifyReceipt.ExecuteScalarAsync(ct) is null)
+                    {
+                        throw new InvalidOperationException(
+                            $"Grouping stage receipt for partition '{partitionKey}' conflicts with its staged replacement.");
+                    }
+                }
+
+                await ExecuteRawAsync(connection, "COMMIT", ct);
+                return new AuthoringRunStageReceipt(
+                    context.RunId,
+                    context.StageId,
+                    partitionKey,
+                    context.InputFingerprint,
+                    result.TopicRows,
+                    result.TopicGroupRows,
+                    result.MemberRows,
+                    persistedAt);
+            }
+            catch
+            {
+                await ExecuteRawAsync(
+                    connection,
+                    "ROLLBACK",
+                    CancellationToken.None);
+                throw;
+            }
+        }
+
+        public async Task<AuthoringRunStageReceipt?>
+            GetPublicationReconciliationGroupingStageReceiptAsync(
+                string runId,
+                string stageId,
+                string partitionKey,
+                string inputFingerprint,
+                string? stageLeaseId = null,
+                CancellationToken ct = default)
+        {
+            await using SqliteConnection connection = OpenConnection();
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT TopicRows, TopicGroupRows, MemberRows, PersistedAt
+                FROM prepared_ticket_publication_grouping_stage_receipts
+                WHERE RunId = @runId
+                  AND StageId = @stageId
+                  AND PartitionKey = @partitionKey
+                  AND InputFingerprint = @inputFingerprint
+                  AND (@stageLeaseId IS NULL OR
+                       StageLeaseId = @stageLeaseId)
+                """;
+            command.Parameters.AddWithValue("@runId", runId);
+            command.Parameters.AddWithValue("@stageId", stageId);
+            command.Parameters.AddWithValue(
+                "@partitionKey",
+                partitionKey);
+            command.Parameters.AddWithValue(
+                "@inputFingerprint",
+                inputFingerprint);
+            AddNullable(command, "@stageLeaseId", stageLeaseId);
+            await using SqliteDataReader reader =
+                await command.ExecuteReaderAsync(ct);
+            return await reader.ReadAsync(ct)
+                ? new AuthoringRunStageReceipt(
+                    runId,
+                    stageId,
+                    partitionKey,
+                    inputFingerprint,
+                    reader.GetInt32(0),
+                    reader.GetInt32(1),
+                    reader.GetInt32(2),
+                    ParseDate(reader.GetString(3)))
+                : null;
         }
 
         public async Task SaveCompletePublicationReconciliationGroupingAsync(
@@ -7544,6 +8029,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 "prepared_ticket_publication_staged_receipts",
                 "prepared_ticket_publication_grouping_impacts",
                 "prepared_ticket_publication_staged_grouping",
+                "prepared_ticket_publication_grouping_stage_receipts",
                 "prepared_ticket_publication_snapshot_descriptors",
                 "prepared_ticket_publication_reconciliation_fences",
             })

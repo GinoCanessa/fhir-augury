@@ -450,6 +450,28 @@ public interface IPreparedTicketGroupingDispatcher
         CancellationToken ct);
 }
 
+public interface IPreparedTicketReconciliationGroupingDispatcher
+{
+    Task ReplaceGroupingAsync(
+        PreparedTicketPublicationGroupingWorkItem workItem,
+        AuthoringRunStageLease lease,
+        CancellationToken ct);
+}
+
+public sealed class PreparedTicketReconciliationGroupingStageAdapter(
+    IPreparedTicketGroupingDispatcher configuredDispatcher)
+{
+    public Task ReplaceGroupingAsync(
+        PreparedTicketPublicationGroupingWorkItem workItem,
+        AuthoringRunStageLease lease,
+        CancellationToken ct)
+        => configuredDispatcher is
+            IPreparedTicketReconciliationGroupingDispatcher reconciliation
+            ? reconciliation.ReplaceGroupingAsync(workItem, lease, ct)
+            : throw new InvalidOperationException(
+                $"The configured grouping worker does not support staged publication reconciliation for partition '{workItem.PartitionKey}'.");
+}
+
 public sealed class UnconfiguredPreparedTicketGroupingDispatcher
     : IPreparedTicketGroupingDispatcher
 {
@@ -465,7 +487,8 @@ public sealed class UnconfiguredPreparedTicketGroupingDispatcher
 public sealed class PreviewPreparedTicketGroupingDispatcher(
     IOptions<PreparerServiceOptions> optionsAccessor,
     ILogger<PreviewPreparedTicketGroupingDispatcher> logger)
-    : IPreparedTicketGroupingDispatcher
+    : IPreparedTicketGroupingDispatcher,
+      IPreparedTicketReconciliationGroupingDispatcher
 {
     private readonly PreparerServiceOptions _options = optionsAccessor.Value;
 
@@ -476,7 +499,23 @@ public sealed class PreviewPreparedTicketGroupingDispatcher(
         CancellationToken ct)
     {
         ProcessStartInfo startInfo = CreateStartInfo(runId, partition, lease);
+        await RunWorkerAsync(startInfo, partition.PartitionKey, ct);
+    }
 
+    public async Task ReplaceGroupingAsync(
+        PreparedTicketPublicationGroupingWorkItem workItem,
+        AuthoringRunStageLease lease,
+        CancellationToken ct)
+    {
+        ProcessStartInfo startInfo = CreateStartInfo(workItem, lease);
+        await RunWorkerAsync(startInfo, workItem.PartitionKey, ct);
+    }
+
+    private async Task RunWorkerAsync(
+        ProcessStartInfo startInfo,
+        string partitionKey,
+        CancellationToken ct)
+    {
         using Process process = new() { StartInfo = startInfo };
         process.Start();
         Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
@@ -503,7 +542,7 @@ public sealed class PreviewPreparedTicketGroupingDispatcher(
         }
         logger.LogInformation(
             "Preview grouping completed for {PartitionKey}: {Output}",
-            partition.PartitionKey,
+            partitionKey,
             Tail(stdout));
     }
 
@@ -525,12 +564,45 @@ public sealed class PreviewPreparedTicketGroupingDispatcher(
         return startInfo;
     }
 
+    internal ProcessStartInfo CreateStartInfo(
+        PreparedTicketPublicationGroupingWorkItem workItem,
+        AuthoringRunStageLease lease)
+    {
+        ProcessStartInfo startInfo = CreateWorkerStartInfo();
+        AddEnvironment(startInfo, workItem, lease);
+        return startInfo;
+    }
+
+    private static ProcessStartInfo CreateWorkerStartInfo()
+    {
+        ProcessStartInfo startInfo = new("copilot")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        startInfo.ArgumentList.Add("-p");
+        startInfo.ArgumentList.Add("/topic-groupings");
+        startInfo.ArgumentList.Add("--allow-all");
+        return startInfo;
+    }
+
     private void AddEnvironment(
         ProcessStartInfo startInfo,
         string runId,
         PreparedTicketRunPartition partition,
         AuthoringRunStageLease lease)
     {
+        startInfo.Environment.Remove(
+            "FHIR_AUGURY_GROUPING_RECONCILIATION");
+        startInfo.Environment.Remove(
+            "FHIR_AUGURY_GROUPING_PARTITION_KEY");
+        startInfo.Environment.Remove(
+            "FHIR_AUGURY_GROUPING_OVERLAY_CORPUS_FINGERPRINT");
+        startInfo.Environment.Remove(
+            "FHIR_AUGURY_GROUPING_REVISED_TICKET_KEYS_JSON");
+        startInfo.Environment.Remove(
+            "FHIR_AUGURY_GROUPING_TICKET_KEYS_JSON");
         startInfo.Environment["FHIR_AUGURY_GROUPING_WORKER"] = "1";
         startInfo.Environment["FHIR_AUGURY_GROUPING_PROCESSOR_URL"] =
             $"http://localhost:{_options.Ports.Http}";
@@ -544,6 +616,45 @@ public sealed class PreviewPreparedTicketGroupingDispatcher(
         startInfo.Environment["FHIR_AUGURY_GROUPING_SPECIFICATION"] =
             partition.Specification;
         startInfo.Environment["FHIR_AUGURY_GROUPING_TYPE"] = partition.Type;
+    }
+
+    private void AddEnvironment(
+        ProcessStartInfo startInfo,
+        PreparedTicketPublicationGroupingWorkItem workItem,
+        AuthoringRunStageLease lease)
+    {
+        startInfo.Environment["FHIR_AUGURY_GROUPING_WORKER"] = "1";
+        startInfo.Environment[
+            "FHIR_AUGURY_GROUPING_RECONCILIATION"] = "1";
+        startInfo.Environment["FHIR_AUGURY_GROUPING_PROCESSOR_URL"] =
+            $"http://localhost:{_options.Ports.Http}";
+        startInfo.Environment["FHIR_AUGURY_GROUPING_RUN_ID"] =
+            workItem.RunId;
+        startInfo.Environment["FHIR_AUGURY_GROUPING_STAGE_ID"] =
+            lease.StageId;
+        startInfo.Environment["FHIR_AUGURY_GROUPING_STAGE_LEASE_ID"] =
+            lease.LeaseId;
+        startInfo.Environment[
+            "FHIR_AUGURY_GROUPING_INPUT_FINGERPRINT"] =
+                workItem.OverlayCorpusFingerprint;
+        startInfo.Environment["FHIR_AUGURY_GROUPING_PARTITION_KEY"] =
+            workItem.PartitionKey;
+        startInfo.Environment[
+            "FHIR_AUGURY_GROUPING_OVERLAY_CORPUS_FINGERPRINT"] =
+                workItem.OverlayCorpusFingerprint;
+        startInfo.Environment[
+            "FHIR_AUGURY_GROUPING_REVISED_TICKET_KEYS_JSON"] =
+                System.Text.Json.JsonSerializer.Serialize(
+                    workItem.RevisedTicketKeys);
+        startInfo.Environment[
+            "FHIR_AUGURY_GROUPING_TICKET_KEYS_JSON"] =
+                System.Text.Json.JsonSerializer.Serialize(
+                    workItem.TicketKeys);
+        startInfo.Environment["FHIR_AUGURY_GROUPING_WORK_GROUP_CLEAN"] =
+            workItem.WorkGroupClean;
+        startInfo.Environment["FHIR_AUGURY_GROUPING_SPECIFICATION"] =
+            workItem.Specification;
+        startInfo.Environment["FHIR_AUGURY_GROUPING_TYPE"] = workItem.Type;
     }
 
     private static string Tail(string value)

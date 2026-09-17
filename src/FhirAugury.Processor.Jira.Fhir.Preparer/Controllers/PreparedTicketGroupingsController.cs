@@ -3,9 +3,11 @@ using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Api;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
 using Microsoft.AspNetCore.Mvc;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Controllers;
@@ -25,13 +27,18 @@ public sealed class PreparedTicketGroupingsController : ControllerBase
 {
     private readonly PreparerDatabase _database;
     private readonly AuthoringRunStore _authoringStore;
+    private readonly PreparedTicketGroupingDeltaDispatcher
+        _groupingDeltaDispatcher;
 
     public PreparedTicketGroupingsController(
         PreparerDatabase database,
-        AuthoringRunStore? authoringStore = null)
+        AuthoringRunStore? authoringStore = null,
+        PreparedTicketGroupingDeltaDispatcher? groupingDeltaDispatcher = null)
     {
         _database = database;
         _authoringStore = authoringStore ?? new AuthoringRunStore(database);
+        _groupingDeltaDispatcher = groupingDeltaDispatcher ??
+            new PreparedTicketGroupingDeltaDispatcher(database);
     }
 
     /// <summary>Gets every partition the work group can render.</summary>
@@ -114,6 +121,50 @@ public sealed class PreparedTicketGroupingsController : ControllerBase
             string canonical = Canonicalise(workGroupClean);
             PreparedTicketGroupingPayload payload =
                 PreparedTicketGroupingDtoMapper.ToPayload(canonical, specification, type, request);
+            var run = await _authoringStore.GetRunAsync(
+                request.Authoring.RunId,
+                ct);
+            bool reconciliation = string.Equals(
+                run?.Purpose,
+                PreparedTicketPublicationReconciliationContract.Purpose,
+                StringComparison.Ordinal);
+            if (request.Authoring.ClaimsReconciliationContext() &&
+                !reconciliation)
+            {
+                return BadRequest(new ProblemDetails
+                {
+                    Title = "Invalid grouping stage context",
+                    Detail =
+                        "Reconciliation grouping coordinates cannot be used by an ordinary grouping run.",
+                });
+            }
+            if (reconciliation &&
+                !request.Authoring.HasCompleteReconciliationContext())
+            {
+                return BadRequest(new ProblemDetails
+                {
+                    Title = "Invalid grouping stage context",
+                    Detail =
+                        "Publication reconciliation requires complete grouping stage coordinates.",
+                });
+            }
+            if (reconciliation)
+            {
+                (
+                    PreparedTicketGroupingSaveResult stagedResult,
+                    AuthoringRunStageReceipt stagedReceipt) =
+                        await _groupingDeltaDispatcher
+                            .StageReplacementsAsync(
+                                payload,
+                                request.Authoring,
+                                ct);
+                return Ok(PreparedTicketGroupingDtoMapper
+                    .ToDto(stagedResult) with
+                {
+                    AuthoringReceipt = stagedReceipt,
+                });
+            }
+
             PreparedTicketGroupingSaveResult result =
                 await _database.SaveGroupingForRunAsync(
                     payload,
@@ -142,6 +193,14 @@ public sealed class PreparedTicketGroupingsController : ControllerBase
         catch (Exception ex) when (ex is ArgumentException or AuthoringConflictException)
         {
             return BadRequest(new ProblemDetails { Title = "Invalid grouping payload", Detail = ex.Message });
+        }
+        catch (PreparedTicketPublicationReconciliationException ex)
+        {
+            return BadRequest(new ProblemDetails
+            {
+                Title = "Invalid reconciliation grouping payload",
+                Detail = ex.Message,
+            });
         }
     }
 

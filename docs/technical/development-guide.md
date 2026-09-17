@@ -317,6 +317,17 @@ boundaries when changing it:
   shared containers whose text, identity, membership, or ordering can change.
   Stage complete partition replacements. Unchanged authored ticket content is
   fixed input; do not re-author it or rewrite partitions outside the closure.
+- **Durable overlay-only grouping:** production finalization creates one
+  retryable `publication-reconciliation-grouping` stage per impacted
+  partition, keyed by the candidate overlay corpus fingerprint. Pass revised
+  keys and complete overlay membership to the configured grouping worker.
+  Reconciliation clustering/hydration reads must use `PreparedTicketCorpusView`
+  for that exact run and partition, and exact-context writes must create staged
+  replacements plus matching receipts without touching canonical grouping.
+  Keep ordinary grouping-maintenance reads and canonical writes unchanged.
+  Complete zero-member partitions explicitly with `topics: []`, resume only
+  missing/error stages, and defer closure/unaffected checks until every stage
+  is complete.
 - **Exact unaffected protection:** fingerprint canonical authored rows and
   receipt coordinates for unaffected tickets and grouping rows/order outside
   the closure independently. The reconciliation run's own mutable

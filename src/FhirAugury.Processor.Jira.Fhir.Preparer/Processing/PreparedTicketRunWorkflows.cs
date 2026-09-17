@@ -23,9 +23,14 @@ public sealed class PreparedTicketRunWorkflowRegistry(
     PreparedTicketSnapshotMaterializer snapshotMaterializer,
     PreparedTicketPublicationRecoveryService recoveryService,
     IOptions<PreparerServiceOptions> optionsAccessor,
-    ILogger<PreparedTicketRunWorkflowRegistry> logger)
+    ILogger<PreparedTicketRunWorkflowRegistry> logger,
+    PreparedTicketReconciliationGroupingStageAdapter?
+        reconciliationGroupingStageAdapter = null)
 {
     private readonly PreparerServiceOptions _options = optionsAccessor.Value;
+    private readonly PreparedTicketReconciliationGroupingStageAdapter?
+        _reconciliationGroupingStageAdapter =
+            reconciliationGroupingStageAdapter;
 
     public bool HandlesFinalization(AuthoringRunRecord run)
         => string.Equals(
@@ -80,6 +85,10 @@ public sealed class PreparedTicketRunWorkflowRegistry(
         }
         PreparedTicketPublicationGroupingDelta delta =
             await groupingDeltaDispatcher.PrepareAsync(run.Id, ct);
+
+        await authoringStore.MarkRunFinalizingAsync(run.Id, ct: ct);
+        await ExecuteGroupingStagesAsync(run.Id, delta, ct);
+        delta = await groupingDeltaDispatcher.PrepareAsync(run.Id, ct);
         if (delta.Impacts.Any(impact => !impact.Complete))
         {
             throw new PreparedTicketPublicationReconciliationException(
@@ -88,7 +97,6 @@ public sealed class PreparedTicketRunWorkflowRegistry(
                 "The complete grouping-impact closure must be staged before promotion.");
         }
 
-        await authoringStore.MarkRunFinalizingAsync(run.Id, ct: ct);
         PreparedTicketPublicationReconciliationProof proof =
             await groupingDeltaDispatcher.CreateProofAsync(
                 run.Id,
@@ -115,6 +123,106 @@ public sealed class PreparedTicketRunWorkflowRegistry(
             run.Id,
             candidate.Sha256);
         return await recoveryService.RecoverAsync(run.Id, ct);
+    }
+
+    private async Task ExecuteGroupingStagesAsync(
+        string runId,
+        PreparedTicketPublicationGroupingDelta delta,
+        CancellationToken ct)
+    {
+        foreach (PreparedTicketPublicationReconciliationGroupingImpact impact
+                 in delta.Impacts)
+        {
+            AuthoringRunStageRecord stage =
+                await authoringStore.EnsureRunStageAsync(
+                    runId,
+                    PreparerDatabase
+                        .PublicationReconciliationGroupingStageName,
+                    impact.PartitionKey,
+                    delta.OverlayCorpusFingerprint,
+                    ct: ct);
+            if (string.Equals(
+                    stage.Status,
+                    AuthoringStatusValues.Stages.Complete,
+                    StringComparison.Ordinal))
+            {
+                _ = await groupingDeltaDispatcher.RequireStageReceiptAsync(
+                    runId,
+                    stage.Id,
+                    stageLeaseId: null,
+                    partitionKey: impact.PartitionKey,
+                    inputFingerprint: delta.OverlayCorpusFingerprint,
+                    ct: ct);
+                continue;
+            }
+
+            AuthoringRunStageLease? lease =
+                await authoringStore.TryStartRunStageAsync(
+                    stage.Id,
+                    ct: ct);
+            if (lease is null)
+            {
+                AuthoringRunStageRecord current =
+                    (await authoringStore.GetRunStagesAsync(runId, ct))
+                    .Single(value => value.Id == stage.Id);
+                if (string.Equals(
+                        current.Status,
+                        AuthoringStatusValues.Stages.Complete,
+                        StringComparison.Ordinal))
+                {
+                    _ = await groupingDeltaDispatcher
+                        .RequireStageReceiptAsync(
+                            runId,
+                            stage.Id,
+                            stageLeaseId: null,
+                            partitionKey: impact.PartitionKey,
+                            inputFingerprint:
+                                delta.OverlayCorpusFingerprint,
+                            ct: ct);
+                    continue;
+                }
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.StageAlreadyInProgress,
+                    $"Reconciliation grouping stage for partition '{impact.PartitionKey}' is already in progress.");
+            }
+
+            try
+            {
+                _ = await groupingDeltaDispatcher.DispatchStageAsync(
+                    runId,
+                    impact.PartitionKey,
+                    delta.OverlayCorpusFingerprint,
+                    lease,
+                    (workItem, stageLease, cancellationToken) =>
+                        _reconciliationGroupingStageAdapter is null
+                            ? throw new InvalidOperationException(
+                                $"No reconciliation grouping worker is configured for partition '{workItem.PartitionKey}'.")
+                            : _reconciliationGroupingStageAdapter
+                                .ReplaceGroupingAsync(
+                                    workItem,
+                                    stageLease,
+                                    cancellationToken),
+                    ct);
+                await authoringStore.CompleteRunStageAsync(
+                    stage.Id,
+                    lease.LeaseId,
+                    ct: ct);
+            }
+            catch (AuthoringConflictException ex)
+                when (ex.Code == AuthoringConflictCode.StageLeaseLost)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                await authoringStore.FailRunStageAsync(
+                    stage.Id,
+                    lease.LeaseId,
+                    ex.Message,
+                    ct: CancellationToken.None);
+                throw;
+            }
+        }
     }
 
     public async Task<AuthoringReceiptAcceptance> AcceptResultAsync(

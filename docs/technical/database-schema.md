@@ -967,6 +967,7 @@ fingerprint-divergent children are rejected.
 |-------|-----|------------------|
 | `prepared_ticket_publication_grouping_impacts` | `(RunId, PartitionKey)` | `ImpactJson`, completion bit, and update time for each old/new affected partition |
 | `prepared_ticket_publication_staged_grouping` | `(RunId, PartitionKey)` | Complete replacement JSON plus overlay corpus, semantic output, protected-row fingerprints, and staging time |
+| `prepared_ticket_publication_grouping_stage_receipts` | `(RunId, PartitionKey)` | Exact stage/lease/partition/input coordinates, semantic output fingerprint, topic/group/member counts, and persistence time |
 | `prepared_ticket_publication_unaffected_fingerprints` | `RunId` | JSON containing impacted partition keys and independent authored-row, receipt-coordinate, grouping-row, and combined fingerprints |
 
 The impacted key is the normalized
@@ -974,6 +975,18 @@ The impacted key is the normalized
 partition move therefore records both old and new partitions. Staged grouping
 is replacement data, not a merge; empty output is represented by a complete
 payload with no topics.
+
+Finalization also creates one `authoring_run_stages` row named
+`publication-reconciliation-grouping` for every impacted partition. Its
+`InputFingerprint` is the candidate overlay corpus fingerprint, not the
+baseline comparison fingerprint. A stage-context write must hold the exact
+in-progress lease and must carry the same partition, overlay fingerprint,
+revised keys, and complete overlay membership. The replacement, completed
+impact, and receipt commit together while canonical topic/group/member rows
+remain unchanged. A reclaimed lease may replay only identical staged content;
+the durable receipt moves to the new lease. Completed stages are skipped only
+when their matching receipt exists. Closure and unaffected-row validation run
+after all such stages complete.
 
 The unaffected authored-row component includes every protected canonical row
 outside the revised ticket set except the reconciliation run's own
