@@ -651,7 +651,9 @@ public sealed class PreparedTicketGroupingPersistenceTests
                     "baseline-item",
                     "baseline-run",
                     hashA,
-                    hashA),
+                    hashA,
+                    "fhir",
+                    "revision-2"),
             ]);
         AuthoringRunRecord run =
             await database.Database.CreatePublicationReconciliationAsync(

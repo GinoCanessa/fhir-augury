@@ -567,6 +567,12 @@ public sealed class PreparedTicketPublicationEndToEndTests
             PreparedTicketPublicationContract.PublicationReconciliationPurpose,
             replacementDescriptor.PublicationProof?.Purpose);
         Assert.Equal(
+            PreparedTicketPublicationContract.CurrentVersion,
+            replacementDescriptor.PublicationProof?.ContractVersion);
+        Assert.Equal(
+            staged.CorpusFingerprint,
+            replacementDescriptor.PublicationProof?.CorpusFingerprint);
+        Assert.Equal(
             PreparedTicketPublicationReconciliationPromotionStateValues.Ready,
             fixture.Scalar<string>(
                 $"""
@@ -611,6 +617,12 @@ public sealed class PreparedTicketPublicationEndToEndTests
         Assert.Equal(
             PreparedTicketPublicationContract.PublicationReconciliationPurpose,
             status.PublicationProof?.Purpose);
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationContract.CurrentVersion,
+            status.PublicationProof?.ContractVersion);
+        Assert.Equal(
+            staged.CorpusFingerprint,
+            status.PublicationProof?.CorpusFingerprint);
 
         VerifiedAuthoringSnapshotPair replacement =
             await client.DownloadSnapshotPairAsync(
@@ -634,6 +646,9 @@ public sealed class PreparedTicketPublicationEndToEndTests
                await SqliteReviewSnapshotValidator.OpenReadOnlyAsync(
                    replacement.DatabasePath))
         {
+            Assert.Equal(
+                staged.CorpusFingerprint,
+                ReadCorpusFingerprint(snapshot));
             foreach ((string key, TicketPreservation expected) in preserved)
             {
                 Assert.Equal(
@@ -790,7 +805,8 @@ public sealed class PreparedTicketPublicationEndToEndTests
     private sealed record StagedReconciliation(
         string RunId,
         PreparedTicketPublicationReconciliationComparison Comparison,
-        PreparedTicketPublicationReconciliationPlanner Planner);
+        PreparedTicketPublicationReconciliationPlanner Planner,
+        string CorpusFingerprint);
 
     private sealed class InProcessReconciliationGroupingDispatcher(
         PreparerDatabase database,
@@ -1093,6 +1109,17 @@ public sealed class PreparedTicketPublicationEndToEndTests
             fixture.Database);
         PreparedTicketPublicationGroupingDelta delta =
             await grouping.PrepareAsync(start.Run.RunId);
+        PreparedTicketPublicationCorpusOverlay overlay =
+            await fixture.Database.GetPublicationReconciliationCorpusAsync(
+                start.Run.RunId);
+        Assert.Equal(
+            PreparedTicketPublicationContract.ComputeCorpusFingerprint(
+                overlay.Tickets.Select(
+                    ticket => ticket.ToPublicationCorpusItem())),
+            overlay.CorpusFingerprint);
+        Assert.Equal(
+            overlay.CorpusFingerprint,
+            delta.OverlayCorpusFingerprint);
         Assert.Equal(2, delta.Impacts.Count);
         PreparedTicketPublicationReconciliationGroupingImpact oldPartition =
             Assert.Single(
@@ -1118,7 +1145,8 @@ public sealed class PreparedTicketPublicationEndToEndTests
             return new(
                 start.Run.RunId,
                 start.Comparison,
-                planner);
+                planner,
+                delta.OverlayCorpusFingerprint);
         }
 
         PreparedTicketGroupingsController groupingController = new(
@@ -1217,6 +1245,10 @@ public sealed class PreparedTicketPublicationEndToEndTests
             finalizingDelta.Unaffected.CombinedFingerprint);
         PreparedTicketPublicationReconciliationProof proof =
             await grouping.CreateProofAsync(start.Run.RunId);
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationContract.CurrentVersion,
+            proof.ContractVersion);
+        Assert.Equal(delta.OverlayCorpusFingerprint, proof.CorpusFingerprint);
         PreparedTicketSnapshotMaterializer materializer = new(
             fixture.Database,
             fixture.Store,
@@ -1238,13 +1270,17 @@ public sealed class PreparedTicketPublicationEndToEndTests
             PreparedTicketSnapshotSchemaV3.Version,
             candidate.SchemaVersion);
         Assert.Equal(
+            delta.OverlayCorpusFingerprint,
+            candidate.OverlayCorpusFingerprint);
+        Assert.Equal(
             PreparedTicketPublicationContract.PublicationReconciliationPurpose,
             proof.Purpose);
 
         return new(
             start.Run.RunId,
             start.Comparison,
-            planner);
+            planner,
+            delta.OverlayCorpusFingerprint);
     }
 
     private static JiraAuthoringRunCoordinator CreateCoordinator(
@@ -1545,6 +1581,50 @@ public sealed class PreparedTicketPublicationEndToEndTests
                 WHERE state.TicketKey = @key COLLATE NOCASE
                 """,
                 ("@key", key)));
+    }
+
+    private static string ReadCorpusFingerprint(
+        SqliteConnection connection)
+    {
+        List<PreparedTicketPublicationCorpusItem> corpus = [];
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT ticket.Key, receipt.Id, item.Id, item.RunId,
+                   item.ItemKind, item.ExpectedSourceRevision
+            FROM prepared_tickets ticket
+            INNER JOIN authoring_run_items item
+                ON item.BusinessKey = ticket.Key COLLATE NOCASE
+               AND item.AcceptedReceiptId IS NOT NULL
+               AND item.Status IN ('complete', 'superseded')
+            INNER JOIN authoring_result_receipts receipt
+                ON receipt.Id = item.AcceptedReceiptId
+               AND receipt.RunId = item.RunId
+               AND receipt.RunItemId = item.Id
+               AND receipt.BusinessKey = item.BusinessKey COLLATE NOCASE
+               AND receipt.ExpectedSourceRevision =
+                   item.ExpectedSourceRevision
+               AND receipt.ObservedSourceRevision =
+                   receipt.ExpectedSourceRevision
+            INNER JOIN authoring_runs run
+                ON run.Id = item.RunId
+               AND run.ProcessorKind = 'jira-fhir'
+               AND run.AuthoringEpoch = receipt.AuthoringEpoch
+            ORDER BY ticket.Key COLLATE NOCASE, ticket.Key
+            """;
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            corpus.Add(new(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3),
+                reader.GetString(4),
+                reader.GetString(5)));
+        }
+        return PreparedTicketPublicationContract.ComputeCorpusFingerprint(
+            corpus);
     }
 
     private static byte[] ReadGroupingBytes(

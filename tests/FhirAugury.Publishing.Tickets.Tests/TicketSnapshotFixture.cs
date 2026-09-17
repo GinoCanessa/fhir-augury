@@ -2,11 +2,22 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Text;
+using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Client;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Planner.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Api;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Publishing.Tickets.Tests;
 
@@ -251,86 +262,464 @@ internal sealed class TicketSnapshotFixture
         await WriteDescriptorAsync(DescriptorPath, Descriptor);
     }
 
-    public async Task AttachValidPublicationReconciliationProofAsync(
-        DateTimeOffset capturedAt,
-        long stableJiraGeneration)
+    public static async Task<TicketSnapshotFixture>
+        CreatePromotedReconciliationAsync(
+            string root,
+            DateTimeOffset capturedAt,
+            long stableJiraGeneration)
     {
-        if (Descriptor.SchemaVersion != PreparedTicketSnapshotSchemaV3.Version)
+        const string processorKind = "jira-fhir";
+        const string ticketKey = "FHIR-1001";
+        DateTimeOffset utcCapturedAt = capturedAt.ToUniversalTime();
+        string fixtureDirectory = Path.Combine(
+            root,
+            $"preparer-reconciliation-{Guid.NewGuid():N}");
+        string snapshotDirectory = Path.Combine(
+            fixtureDirectory,
+            "snapshots");
+        Directory.CreateDirectory(fixtureDirectory);
+        using PreparerDatabase database = new(
+            Path.Combine(fixtureDirectory, "preparer.db"),
+            NullLogger<PreparerDatabase>.Instance);
+        database.Initialize();
+        AuthoringRunStore store = new(database);
+        await store.EnsureProcessorModeAsync(processorKind);
+        await store.TransitionProcessorModeAsync(
+            processorKind,
+            AuthoringStatusValues.ProcessorModes.Legacy,
+            AuthoringStatusValues.ProcessorModes.CuttingOver);
+        await store.TransitionProcessorModeAsync(
+            processorKind,
+            AuthoringStatusValues.ProcessorModes.CuttingOver,
+            AuthoringStatusValues.ProcessorModes.RunBacked);
+
+        AuthoringRunRecord sourceRun = await store.CreateRunAsync(
+            processorKind,
+            [new(ticketKey, "fhir", "rev-1")],
+            now: utcCapturedAt.AddMinutes(-10),
+            inputProvenance:
+            [
+                new(
+                    PreparedTicketPublicationContract.JiraSourceName,
+                    utcCapturedAt,
+                    stableJiraGeneration),
+            ]);
+        if (!await store.TryAcquireMutationFenceAsync(
+                processorKind,
+                sourceRun.Id,
+                utcCapturedAt.AddMinutes(-9)))
         {
             throw new InvalidOperationException(
-                "Publication-reconciliation proof fixtures require snapshot schema v3.");
+                "The source fixture could not acquire its mutation fence.");
+        }
+        AuthoringRunItemRecord sourceItem = (await store.GetRunItemsAsync(
+            sourceRun.Id)).Single();
+        AuthoringOperationClaim sourceClaim =
+            await store.ClaimItemAsync(
+                sourceRun.Id,
+                sourceItem.Id,
+                utcCapturedAt.AddMinutes(-8))
+            ?? throw new InvalidOperationException(
+                "The source fixture item could not be claimed.");
+        PreparedTicketPayload payload =
+            CreateReconciliationSourcePayload(ticketKey, utcCapturedAt);
+        string contentHash =
+            PreparedTicketAuthoringDtos.ComputeContentHash(payload);
+        AuthoringReceiptAcceptance sourceAcceptance =
+            await store.AcceptResultAsync(
+                new(
+                    sourceRun.Id,
+                    sourceItem.Id,
+                    sourceClaim.OperationId,
+                    sourceItem.ExpectedSourceRevision,
+                    contentHash),
+                sourceClaim.OperationToken,
+                (connection, ct) =>
+                    database.SavePreparedTicketForAuthoringAsync(
+                        connection,
+                        payload,
+                        contentHash,
+                        sourceRun.Id,
+                        sourceItem.Id,
+                        sourceClaim.OperationId,
+                        ct),
+                now: utcCapturedAt.AddMinutes(-7));
+        await database.SaveHydrationAsync(
+            CreateReconciliationSourceHydration(
+                ticketKey,
+                utcCapturedAt,
+                stableJiraGeneration));
+        await store.MarkItemCompleteAsync(
+            sourceItem.Id,
+            sourceAcceptance.Receipt.ReceiptId,
+            now: utcCapturedAt.AddMinutes(-6));
+        await store.MarkRunFinalizingAsync(
+            sourceRun.Id,
+            now: utcCapturedAt.AddMinutes(-5));
+        foreach (PreparedTicketRunPartition partition in
+                 await database.GetRunPartitionsAsync(sourceRun.Id))
+        {
+            AuthoringRunStageRecord stage =
+                await store.EnsureRunStageAsync(
+                    sourceRun.Id,
+                    "grouping",
+                    partition.PartitionKey,
+                    partition.InputFingerprint);
+            AuthoringRunStageLease lease =
+                await store.TryStartRunStageAsync(stage.Id)
+                ?? throw new InvalidOperationException(
+                    $"The source grouping stage '{stage.Id}' could not be claimed.");
+            _ = await database.SaveGroupingForRunAsync(
+                new PreparedTicketGroupingPayload
+                {
+                    WorkGroupClean = partition.WorkGroupClean,
+                    WorkGroupDisplay = partition.WorkGroupDisplay,
+                    Specification = partition.Specification,
+                    Type = partition.Type,
+                    Topics = [],
+                },
+                sourceRun.Id,
+                stage.Id,
+                lease.LeaseId,
+                partition.InputFingerprint);
+            await store.CompleteRunStageAsync(stage.Id, lease.LeaseId);
         }
 
-        PreparedTicketPublicationFingerprints fingerprints =
-            await PreparedTicketPublicationFingerprintReader.ReadAsync(
-                DatabasePath);
-        string sourceRunId = Descriptor.RunId;
-        string reconciliationRunId =
-            $"reconciliation-{Guid.NewGuid():N}";
-        DateTimeOffset utcCapturedAt = capturedAt.ToUniversalTime();
-        string groupingImpactFingerprint = Convert.ToHexString(
-                SHA256.HashData(
-                    JsonSerializer.SerializeToUtf8Bytes(new
-                    {
-                        purpose = PreparedTicketPublicationContract
-                            .PublicationReconciliationPurpose,
-                        sourceRunId,
-                        sourceSnapshotId = Descriptor.SnapshotId,
-                        stableJiraGeneration,
-                        grouping = fingerprints.Grouping,
-                    })))
-            .ToLowerInvariant();
+        IOptions<PreparerServiceOptions> options = Options.Create(
+            new PreparerServiceOptions
+            {
+                SnapshotDirectory = snapshotDirectory,
+                SnapshotSchemaVersion =
+                    PreparedTicketSnapshotSchemaV3.Version,
+            });
+        SqliteReviewSnapshotReconciler snapshotReconciler = new(store);
+        PreparedTicketSnapshotMaterializer materializer = new(
+            database,
+            store,
+            snapshotReconciler,
+            options);
+        AuthoringRunRecord sourceFinalizing =
+            await store.GetRunAsync(sourceRun.Id)
+            ?? throw new InvalidOperationException(
+                "The source fixture run was not persisted.");
+        AuthoringSnapshotDescriptor sourceDescriptor =
+            await materializer.MaterializeAsync(
+                sourceFinalizing,
+                PreparedTicketSnapshotSchemaV3.Catalog);
+        await store.CompleteRunAsync(
+            sourceRun.Id,
+            sourceDescriptor.SnapshotId,
+            now: utcCapturedAt.AddMinutes(-4));
 
+        PreparedTicketPublicationProtectedInventory inventory;
+        await using (SqliteConnection connection = database.OpenConnection())
+        {
+            inventory =
+                await PreparedTicketPublicationProtectionReader
+                    .ReadCurrentAsync(connection);
+        }
+        PreparedTicketPublicationCorpusItem sourceCoordinate =
+            inventory.Corpus.Single(item => string.Equals(
+                item.TicketKey,
+                ticketKey,
+                StringComparison.OrdinalIgnoreCase));
+        PreparedTicketPublicationProtectedRow sourceState =
+            inventory.Rows.Single(row =>
+                string.Equals(
+                    row.Table,
+                    "prepared_ticket_authoring_state",
+                    StringComparison.Ordinal) &&
+                string.Equals(
+                    row.Scope,
+                    ticketKey,
+                    StringComparison.OrdinalIgnoreCase));
+        string sourceGraphHash = sourceState.Values.Single(value =>
+                string.Equals(
+                    value.Column,
+                    "GraphHash",
+                    StringComparison.Ordinal))
+            .Value
+            ?? throw new InvalidOperationException(
+                "The source fixture has no authored graph fingerprint.");
+        PreparedTicketPublicationProtectedGrouping sourceGrouping =
+            inventory.Grouping.Single(partition =>
+                partition.Corpus.Any(item => string.Equals(
+                    item.TicketKey,
+                    ticketKey,
+                    StringComparison.OrdinalIgnoreCase)));
+        PreparedTicketPublicationReconciliationComparison comparison = new(
+            PreparedTicketPublicationReconciliationContract.CurrentVersion,
+            sourceRun.Id,
+            sourceDescriptor.SnapshotId,
+            sourceDescriptor.Sha256,
+            stableJiraGeneration.ToString(
+                System.Globalization.CultureInfo.InvariantCulture),
+            utcCapturedAt,
+            inventory.CorpusFingerprint,
+            [
+                new(
+                    ticketKey,
+                    PreparedTicketPublicationReconciliationDispositionValues
+                        .CarryForward,
+                    sourceCoordinate.ExpectedSourceRevision,
+                    sourceCoordinate.ExpectedSourceRevision,
+                    sourceCoordinate.ReceiptId,
+                    sourceCoordinate.RunItemId,
+                    sourceCoordinate.ContributingRunId,
+                    sourceGraphHash,
+                    sourceGrouping.Fingerprint.OutputFingerprint,
+                    sourceCoordinate.ItemKind,
+                    sourceCoordinate.ExpectedSourceRevision),
+            ]);
+        AuthoringRunRecord reconciliation =
+            await database.CreatePublicationReconciliationAsync(
+                comparison,
+                now: utcCapturedAt.AddMinutes(-3));
+        PreparedTicketGroupingDeltaDispatcher grouping = new(database);
+        PreparedTicketPublicationGroupingDelta delta =
+            await grouping.PrepareAsync(reconciliation.Id);
+        if (delta.Impacts.Count != 0)
+        {
+            throw new InvalidOperationException(
+                "The carry-forward reconciliation fixture unexpectedly requires grouping replacement.");
+        }
+        await store.MarkRunFinalizingAsync(
+            reconciliation.Id,
+            now: utcCapturedAt.AddMinutes(-2));
+        PreparedTicketPublicationReconciliationProof proof =
+            await grouping.CreateProofAsync(
+                reconciliation.Id,
+                capturedAt: utcCapturedAt);
+        AuthoringRunRecord reconciliationFinalizing =
+            await store.GetRunAsync(reconciliation.Id)
+            ?? throw new InvalidOperationException(
+                "The reconciliation fixture run was not persisted.");
+        _ = await materializer.MaterializeReconciliationCandidateAsync(
+            reconciliationFinalizing,
+            proof);
+        string finalPath = Path.Combine(
+            snapshotDirectory,
+            $"{processorKind}-{reconciliation.Id}.db");
+        PreparerDatabase.PublicationReconciliationPromotion promotion =
+            await database.PromotePublicationReconciliationAsync(
+                reconciliation.Id,
+                finalPath);
+        PreparedTicketPublicationRecoveryService recovery = new(
+            database,
+            store,
+            NullLogger<PreparedTicketPublicationRecoveryService>.Instance);
+        AuthoringSnapshotDescriptor descriptor =
+            await recovery.RecoverAsync(reconciliation.Id);
+        if (descriptor.PublicationProof is null)
+        {
+            throw new InvalidOperationException(
+                "The promoted reconciliation descriptor has no publication proof.");
+        }
+        string descriptorPath = promotion.FinalPath + ".json";
+        await WriteDescriptorAsync(descriptorPath, descriptor);
+        return new TicketSnapshotFixture(
+            promotion.FinalPath,
+            descriptorPath,
+            descriptor);
+    }
+
+    private static PreparedTicketPayload CreateReconciliationSourcePayload(
+        string ticketKey,
+        DateTimeOffset savedAt)
+        => new()
+        {
+            Key = ticketKey,
+            RequestSummary = "Request",
+            ProposalA = "A",
+            ProposalAImpact =
+                PreparedTicketImpactValues.NonSubstantive,
+            ProposalB = "B",
+            ProposalBImpact =
+                PreparedTicketImpactValues.NonSubstantive,
+            ProposalC = "C",
+            Recommendation =
+                PreparedTicketRecommendationValues.ProposalA,
+            RecommendationJustification = "Because",
+            SavedAt = savedAt,
+        };
+
+    private static PreparedTicketHydrationBatch
+        CreateReconciliationSourceHydration(
+            string ticketKey,
+            DateTimeOffset capturedAt,
+            long stableJiraGeneration)
+        => new(
+            ticketKey,
+            new(
+                ticketKey,
+                "Major",
+                "Persuasive",
+                "Resolution",
+                "FHIR",
+                null,
+                null,
+                null,
+                null,
+                null,
+                0,
+                "Description",
+                capturedAt,
+                "resolved",
+                null,
+                Reporter: "Ada Lovelace",
+                Assignee: "Grace Hopper",
+                SourceProject: "FHIR",
+                SourceLastSuccessfulRefreshAt: capturedAt,
+                SourceContentRevision: stableJiraGeneration,
+                PublicDisplayNamePolicyVersion:
+                    PublicDisplayNamePolicy.CurrentVersion),
+            [
+                new(
+                    ticketKey,
+                    ticketKey,
+                    $"Title {ticketKey}",
+                    "Triaged",
+                    "Change Request",
+                    "Major",
+                    "Persuasive",
+                    "Resolution",
+                    "FHIR Infrastructure",
+                    "FHIR",
+                    capturedAt.AddDays(-1),
+                    $"https://jira.hl7.org/browse/{ticketKey}",
+                    capturedAt,
+                    "resolved",
+                    null,
+                    Reporter: "Ada Lovelace",
+                    Assignee: "Grace Hopper",
+                    PublicDisplayNamePolicyVersion:
+                        PublicDisplayNamePolicy.CurrentVersion),
+            ],
+            [],
+            [],
+            [],
+            [],
+            [
+                new(
+                    ticketKey,
+                    "Lin Example",
+                    PublicDisplayNamePolicy.CurrentVersion),
+            ]);
+
+    public async Task ChangePublicationCorpusCoordinateAsync(
+        string coordinate)
+    {
+        AuthoringSnapshotPublicationProof proof =
+            Descriptor.PublicationProof
+            ?? throw new InvalidOperationException(
+                "A publication proof is required.");
+        string sourceRunId = proof.SourceRunId;
+        string? replacementSourceRunId = null;
         await using (SqliteConnection connection = new(
             $"Data Source={DatabasePath};Pooling=False"))
         {
             await connection.OpenAsync();
-            await ExecuteAsync(
-                connection,
-                """
-                INSERT INTO authoring_runs(
-                    Id, ProcessorKind, AuthoringEpoch, Status, DatabaseOnly,
-                    TotalItems, CreatedAt, StartedAt, CompletedAt, SnapshotId)
-                SELECT @reconciliationRunId, ProcessorKind, AuthoringEpoch,
-                       'finalizing', 0,
-                       (SELECT COUNT(*) FROM prepared_tickets),
-                       @capturedAt, @capturedAt, NULL, @snapshotId
-                FROM authoring_runs
-                WHERE Id = @sourceRunId;
-
-                DELETE FROM prepared_ticket_partition_receipts;
-                """,
-                ("@reconciliationRunId", reconciliationRunId),
-                ("@sourceRunId", sourceRunId),
-                ("@capturedAt", utcCapturedAt.ToString("O")),
-                ("@snapshotId", Descriptor.SnapshotId));
-            await connection.CloseAsync();
+            switch (coordinate)
+            {
+                case nameof(PreparedTicketPublicationCorpusItem.TicketKey):
+                    await ExecuteAsync(
+                        connection,
+                        "UPDATE prepared_tickets SET Key = LOWER(Key)");
+                    break;
+                case nameof(PreparedTicketPublicationCorpusItem.ReceiptId):
+                    await ExecuteAsync(
+                        connection,
+                        """
+                        UPDATE authoring_run_items
+                        SET AcceptedReceiptId = 'changed-' ||
+                            AcceptedReceiptId
+                        WHERE RunId = @sourceRunId;
+                        UPDATE authoring_result_receipts
+                        SET Id = 'changed-' || Id
+                        WHERE RunId = @sourceRunId;
+                        """,
+                        ("@sourceRunId", sourceRunId));
+                    break;
+                case nameof(PreparedTicketPublicationCorpusItem.RunItemId):
+                    await ExecuteAsync(
+                        connection,
+                        """
+                        UPDATE authoring_result_receipts
+                        SET RunItemId = 'changed-' || RunItemId
+                        WHERE RunId = @sourceRunId;
+                        UPDATE authoring_run_items
+                        SET Id = 'changed-' || Id
+                        WHERE RunId = @sourceRunId;
+                        """,
+                        ("@sourceRunId", sourceRunId));
+                    break;
+                case nameof(
+                    PreparedTicketPublicationCorpusItem.ContributingRunId):
+                    replacementSourceRunId =
+                        $"changed-{sourceRunId}";
+                    await ExecuteAsync(
+                        connection,
+                        """
+                        UPDATE authoring_runs
+                        SET Id = @replacementRunId
+                        WHERE Id = @sourceRunId;
+                        UPDATE authoring_run_items
+                        SET RunId = @replacementRunId
+                        WHERE RunId = @sourceRunId;
+                        UPDATE authoring_result_receipts
+                        SET RunId = @replacementRunId
+                        WHERE RunId = @sourceRunId;
+                        UPDATE authoring_run_input_provenance
+                        SET RunId = @replacementRunId
+                        WHERE RunId = @sourceRunId;
+                        """,
+                        ("@replacementRunId", replacementSourceRunId),
+                        ("@sourceRunId", sourceRunId));
+                    break;
+                case nameof(PreparedTicketPublicationCorpusItem.ItemKind):
+                    await ExecuteAsync(
+                        connection,
+                        """
+                        UPDATE authoring_run_items
+                        SET ItemKind = 'changed-fhir'
+                        WHERE RunId = @sourceRunId
+                        """,
+                        ("@sourceRunId", sourceRunId));
+                    break;
+                case nameof(
+                    PreparedTicketPublicationCorpusItem
+                        .ExpectedSourceRevision):
+                    await ExecuteAsync(
+                        connection,
+                        """
+                        UPDATE authoring_run_items
+                        SET ExpectedSourceRevision = 'changed-revision'
+                        WHERE RunId = @sourceRunId;
+                        UPDATE authoring_result_receipts
+                        SET ExpectedSourceRevision = 'changed-revision',
+                            ObservedSourceRevision = 'changed-revision'
+                        WHERE RunId = @sourceRunId;
+                        """,
+                        ("@sourceRunId", sourceRunId));
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(
+                        nameof(coordinate),
+                        coordinate,
+                        "Unknown publication corpus coordinate.");
+            }
         }
-
-        AuthoringSnapshotPublicationProof proof = new(
-            PreparedTicketPublicationContract.CurrentVersion,
-            PreparedTicketPublicationContract
-                .PublicationReconciliationPurpose,
-            sourceRunId,
-            PreparedTicketPublicationContract.JiraSourceName,
-            utcCapturedAt,
-            stableJiraGeneration,
-            0,
-            fingerprints.Corpus,
-            groupingImpactFingerprint,
-            utcCapturedAt);
-        Descriptor = await CreateDescriptorAsync(
-            DatabasePath,
-            reconciliationRunId,
-            Descriptor.SnapshotId,
-            Descriptor.Sequence,
-            Descriptor.SchemaVersion,
-            Descriptor.TableCounts,
-            Descriptor.CreatedAt,
-            Descriptor.ItemCount,
-            Descriptor.ReceiptCount,
-            proof);
-        await WriteDescriptorAsync(DescriptorPath, Descriptor);
+        if (replacementSourceRunId is not null)
+        {
+            Descriptor = Descriptor with
+            {
+                PublicationProof = proof with
+                {
+                    SourceRunId = replacementSourceRunId,
+                },
+            };
+        }
+        await RefreshDescriptorHashAsync();
     }
 
     public async Task SetPublicationProofAsync(

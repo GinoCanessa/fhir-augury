@@ -9,6 +9,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="10.0.1">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
@@ -27,6 +31,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\FhirAugury.Processor.Jira.Fhir.Preparer\FhirAugury.Processor.Jira.Fhir.Preparer.csproj" />
     <ProjectReference Include="..\..\src\FhirAugury.Publishing.Tickets\FhirAugury.Publishing.Tickets.csproj" />
     <ProjectReference Include="..\..\src\FhirAugury.Processing.Client\FhirAugury.Processing.Client.csproj" />
     <ProjectReference Include="..\..\src\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence\FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.csproj" />

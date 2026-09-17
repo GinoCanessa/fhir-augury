@@ -4,7 +4,7 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 
 public static class PreparedTicketPublicationReconciliationContract
 {
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
     public const string Purpose = "publication-reconciliation";
 }
 
@@ -85,7 +85,9 @@ public sealed record PreparedTicketPublicationReconciliationItemDecision(
     string BaselineRunItemId,
     string BaselineContributingRunId,
     string BaselineAuthoredFingerprint,
-    string BaselineGroupingFingerprint);
+    string BaselineGroupingFingerprint,
+    string? ItemKind = null,
+    string? ExpectedSourceRevision = null);
 
 public sealed record PreparedTicketPublicationReconciliationComparison(
     int ContractVersion,

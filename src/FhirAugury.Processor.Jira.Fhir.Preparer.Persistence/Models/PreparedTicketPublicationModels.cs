@@ -114,6 +114,8 @@ public sealed record PreparedTicketPublicationCarriedCoordinate(
     string ReceiptId,
     string RunItemId,
     string ContributingRunId,
+    string ItemKind,
+    string ExpectedSourceRevision,
     string AuthoredFingerprint,
     string GroupingFingerprint);
 
@@ -133,13 +135,24 @@ public sealed record PreparedTicketPublicationStagedTicket(
 public sealed record PreparedTicketPublicationCorpusTicket(
     string TicketKey,
     string Disposition,
-    string SourceRevision,
     string ReceiptId,
     string RunItemId,
     string ContributingRunId,
+    string ItemKind,
+    string ExpectedSourceRevision,
     string AuthoredFingerprint,
     PreparedTicketPayload Payload,
-    PreparedTicketHydrationBatch Hydration);
+    PreparedTicketHydrationBatch Hydration)
+{
+    public PreparedTicketPublicationCorpusItem ToPublicationCorpusItem()
+        => new(
+            TicketKey,
+            ReceiptId,
+            RunItemId,
+            ContributingRunId,
+            ItemKind,
+            ExpectedSourceRevision);
+}
 
 public sealed record PreparedTicketPublicationCorpusOverlay(
     string RunId,

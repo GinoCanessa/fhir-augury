@@ -1211,17 +1211,23 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
     }
 
     [Fact]
-    public async Task ReconciliationProofQualifiesOnlyMatchingReadySnapshot()
+    public async Task RealReconciliationSnapshot_IsPublicationReady()
     {
-        TicketSnapshotFixture fixture =
-            await TicketSnapshotFixture.CreatePreparerAsync(
-                _root,
-                schemaVersion: PreparedTicketSnapshotSchemaV3.Version);
         DateTimeOffset capturedAt =
             new(2026, 9, 16, 18, 30, 0, TimeSpan.Zero);
-        await fixture.AttachValidPublicationReconciliationProofAsync(
-            capturedAt,
-            stableJiraGeneration: 5252);
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePromotedReconciliationAsync(
+                _root,
+                capturedAt,
+                stableJiraGeneration: 5252);
+        AuthoringSnapshotPublicationProof proof =
+            Assert.IsType<AuthoringSnapshotPublicationProof>(
+                fixture.Descriptor.PublicationProof);
+
+        Assert.Equal(
+            PreparedTicketPublicationContract.CurrentVersion,
+            proof.ContractVersion);
+        Assert.NotEqual(proof.SourceRunId, fixture.Descriptor.RunId);
 
         DiscussionSiteDatabaseBuilder.BuildResult ready =
             await DiscussionSiteDatabaseBuilder.BuildAsync(
@@ -1254,15 +1260,34 @@ public sealed class DiscussionSiteDatabaseBuilderTests : IDisposable
         {
             TestFileCleanup.SafeDeleteFile(ready.TempDbPath);
         }
+    }
 
-        AuthoringSnapshotPublicationProof proof =
-            Assert.IsType<AuthoringSnapshotPublicationProof>(
-                fixture.Descriptor.PublicationProof);
-        await fixture.SetPublicationProofAsync(
-            proof with
-            {
-                CorpusFingerprint = new string('0', 64),
-            });
+    [Theory]
+    [InlineData(nameof(PreparedTicketPublicationCorpusItem.TicketKey))]
+    [InlineData(nameof(PreparedTicketPublicationCorpusItem.ReceiptId))]
+    [InlineData(nameof(PreparedTicketPublicationCorpusItem.RunItemId))]
+    [InlineData(
+        nameof(PreparedTicketPublicationCorpusItem.ContributingRunId))]
+    [InlineData(nameof(PreparedTicketPublicationCorpusItem.ItemKind))]
+    [InlineData(
+        nameof(PreparedTicketPublicationCorpusItem.ExpectedSourceRevision))]
+    public async Task RealReconciliationSnapshot_ChangingAnyCorpusCoordinateDegradesReadiness(
+        string coordinate)
+    {
+        TicketSnapshotFixture fixture =
+            await TicketSnapshotFixture.CreatePromotedReconciliationAsync(
+                _root,
+                new DateTimeOffset(
+                    2026,
+                    9,
+                    16,
+                    18,
+                    30,
+                    0,
+                    TimeSpan.Zero),
+                stableJiraGeneration: 5252);
+        await fixture.ChangePublicationCorpusCoordinateAsync(coordinate);
+
         DiscussionSiteDatabaseBuilder.BuildResult degraded =
             await DiscussionSiteDatabaseBuilder.BuildAsync(
                 fixture.DatabasePath,

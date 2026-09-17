@@ -27,7 +27,9 @@ public sealed record PublicationReconciliationItemDecision(
     string BaselineRunItemId,
     string BaselineContributingRunId,
     string BaselineAuthoredFingerprint,
-    string BaselineGroupingFingerprint);
+    string BaselineGroupingFingerprint,
+    string? ItemKind = null,
+    string? ExpectedSourceRevision = null);
 
 public sealed record PublicationReconciliationComparison(
     int ContractVersion,
@@ -1177,6 +1179,7 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
         if (comparison is null ||
             counts is null ||
             comparison.Items is null ||
+            comparison.ContractVersion < 1 ||
             string.IsNullOrWhiteSpace(comparison.SourceRunId) ||
             expectedSourceRunId is not null &&
             !string.Equals(
@@ -1186,6 +1189,18 @@ public sealed class AuthoringControlClient : IAuthoringControlClient
         {
             throw new InvalidOperationException(
                 "Publication reconciliation comparison has inconsistent source coordinates.");
+        }
+        if (comparison.Items.Any(item =>
+                item is null ||
+                string.IsNullOrWhiteSpace(item.TicketKey) ||
+                string.IsNullOrWhiteSpace(item.Disposition) ||
+                comparison.ContractVersion >= 2 &&
+                (string.IsNullOrWhiteSpace(item.ItemKind) ||
+                 string.IsNullOrWhiteSpace(
+                     item.ExpectedSourceRevision))))
+        {
+            throw new InvalidOperationException(
+                "Publication reconciliation comparison has incomplete item coordinates.");
         }
         counts.Validate();
         int carryForward = comparison.Items.Count(item =>

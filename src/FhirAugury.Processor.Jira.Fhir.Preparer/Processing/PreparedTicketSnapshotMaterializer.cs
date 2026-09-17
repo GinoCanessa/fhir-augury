@@ -31,6 +31,12 @@ public sealed class PreparedTicketSnapshotMaterializer(
     {
         ArgumentNullException.ThrowIfNull(run);
         ArgumentNullException.ThrowIfNull(proof);
+        if (proof.ContractVersion !=
+            PreparedTicketPublicationReconciliationContract.CurrentVersion)
+        {
+            throw new NotSupportedException(
+                $"Reconciliation proof contract version {proof.ContractVersion} cannot be materialized.");
+        }
         snapshotSchema ??= PreparedTicketSnapshotSchemaResolver.Resolve(
             _options.SnapshotSchemaVersion);
         if (!string.Equals(
@@ -43,8 +49,6 @@ public sealed class PreparedTicketSnapshotMaterializer(
                 PreparedTicketPublicationContract
                     .PublicationReconciliationPurpose,
                 StringComparison.Ordinal) ||
-            proof.ContractVersion !=
-                PreparedTicketPublicationContract.CurrentVersion ||
             !string.Equals(
                 proof.SourceRunId,
                 run.SourceRunId,
@@ -61,6 +65,12 @@ public sealed class PreparedTicketSnapshotMaterializer(
                 ct)
             ?? throw new InvalidOperationException(
                 $"Run '{run.Id}' has no reconciliation comparison.");
+        if (comparison.ContractVersion !=
+            PreparedTicketPublicationReconciliationContract.CurrentVersion)
+        {
+            throw new NotSupportedException(
+                $"Reconciliation contract version {comparison.ContractVersion} cannot be materialized.");
+        }
         PreparedTicketPublicationGroupingDelta delta =
             await database
                 .PreparePublicationReconciliationGroupingDeltaAsync(

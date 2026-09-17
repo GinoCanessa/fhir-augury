@@ -255,6 +255,8 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 BaselineReceiptId TEXT NOT NULL,
                 BaselineRunItemId TEXT NOT NULL,
                 BaselineContributingRunId TEXT NOT NULL,
+                ItemKind TEXT NULL,
+                ExpectedSourceRevision TEXT NULL,
                 BaselineAuthoredFingerprint TEXT NOT NULL,
                 BaselineGroupingFingerprint TEXT NOT NULL,
                 PRIMARY KEY(RunId, TicketKey)
@@ -366,6 +368,16 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             END;
             """;
         command.ExecuteNonQuery();
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "prepared_ticket_publication_reconciliation_items",
+            "ItemKind",
+            "TEXT NULL");
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "prepared_ticket_publication_reconciliation_items",
+            "ExpectedSourceRevision",
+            "TEXT NULL");
     }
 
     public async Task<AuthoringRunRecord> CreatePublicationReconciliationAsync(
@@ -409,6 +421,28 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         {
             PreparedTicketPublicationReconciliationDispositionValues
                 .EnsureValid(item.Disposition);
+            if (string.IsNullOrWhiteSpace(item.ItemKind) ||
+                string.IsNullOrWhiteSpace(item.ExpectedSourceRevision))
+            {
+                throw new ArgumentException(
+                    $"Reconciliation item '{item.TicketKey}' is missing its publication corpus coordinate.",
+                    nameof(comparison));
+            }
+            string selectedSourceRevision =
+                item.Disposition ==
+                    PreparedTicketPublicationReconciliationDispositionValues
+                        .CarryForward
+                    ? item.BaselineSourceRevision
+                    : item.CurrentSourceRevision;
+            if (!string.Equals(
+                    item.ExpectedSourceRevision,
+                    selectedSourceRevision,
+                    StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    $"Reconciliation item '{item.TicketKey}' does not retain its selected source revision.",
+                    nameof(comparison));
+            }
         }
 
         DateTimeOffset timestamp = now ?? DateTimeOffset.UtcNow;
@@ -430,9 +464,13 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                     item.Disposition ==
                         PreparedTicketPublicationReconciliationDispositionValues
                             .CarryForward
-                        ? $"reconciliation:{runId}:fhir"
-                        : "fhir",
-                    item.CurrentSourceRevision,
+                        ? $"reconciliation:{runId}:{item.ItemKind}"
+                        : item.ItemKind!,
+                    item.Disposition ==
+                        PreparedTicketPublicationReconciliationDispositionValues
+                            .CarryForward
+                        ? item.CurrentSourceRevision
+                        : item.ExpectedSourceRevision!,
                     item.Disposition ==
                         PreparedTicketPublicationReconciliationDispositionValues
                             .CarryForward
@@ -488,11 +526,13 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                         RunId, TicketKey, Disposition, BaselineSourceRevision,
                         CurrentSourceRevision, BaselineReceiptId,
                         BaselineRunItemId, BaselineContributingRunId,
+                        ItemKind, ExpectedSourceRevision,
                         BaselineAuthoredFingerprint, BaselineGroupingFingerprint)
                     VALUES(
                         @runId, @ticketKey, @disposition, @baselineRevision,
                         @currentRevision, @receiptId, @runItemId,
-                        @contributingRunId, @authoredFingerprint,
+                        @contributingRunId, @itemKind,
+                        @expectedSourceRevision, @authoredFingerprint,
                         @groupingFingerprint)
                     """,
                     ct,
@@ -504,6 +544,9 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                     ("@receiptId", item.BaselineReceiptId),
                     ("@runItemId", item.BaselineRunItemId),
                     ("@contributingRunId", item.BaselineContributingRunId),
+                    ("@itemKind", item.ItemKind),
+                    ("@expectedSourceRevision",
+                        item.ExpectedSourceRevision),
                     ("@authoredFingerprint", item.BaselineAuthoredFingerprint),
                     ("@groupingFingerprint", item.BaselineGroupingFingerprint));
             }
@@ -6269,6 +6312,9 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                         ON r.RunId = i.RunId
                        AND r.Id = @runItemId
                        AND r.BusinessKey = i.TicketKey COLLATE NOCASE
+                       AND r.ItemKind = i.ItemKind
+                       AND r.ExpectedSourceRevision =
+                           i.ExpectedSourceRevision
                     WHERE i.RunId = @runId
                       AND i.TicketKey = @ticketKey COLLATE NOCASE
                       AND i.Disposition = @disposition
@@ -6501,6 +6547,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 await GetPublicationReconciliationComparisonAsync(runId, ct)
                 ?? throw new KeyNotFoundException(
                     $"Publication reconciliation '{runId}' was not found.");
+            EnsureCurrentPublicationReconciliationComparison(comparison);
             PreparedTicketPublicationCorpusOverlay overlay =
                 await GetPublicationReconciliationCorpusAsync(runId, ct);
             await using SqliteConnection connection = OpenConnection();
@@ -6634,7 +6681,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 ct);
             return new(
                 runId,
-                ComputeOverlayCorpusFingerprint(overlay),
+                overlay.CorpusFingerprint,
                 impacts,
                 unaffected);
         }
@@ -7218,6 +7265,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 await GetPublicationReconciliationComparisonAsync(runId, ct)
                 ?? throw new KeyNotFoundException(
                     $"Publication reconciliation '{runId}' was not found.");
+            EnsureCurrentPublicationReconciliationComparison(comparison);
             PreparedTicketPublicationProtectedInventory inventory =
                 await PreparedTicketPublicationProtectionReader.ReadCurrentAsync(
                     connection,
@@ -7505,6 +7553,13 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             string runId,
             CancellationToken ct = default)
     {
+        PreparedTicketPublicationReconciliationComparison? comparison =
+            await GetPublicationReconciliationComparisonAsync(runId, ct);
+        if (comparison is null)
+        {
+            return null;
+        }
+        EnsureCurrentPublicationReconciliationComparison(comparison);
         await using SqliteConnection connection = OpenConnection();
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText =
@@ -7562,6 +7617,11 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(runId);
         ArgumentException.ThrowIfNullOrWhiteSpace(finalPath);
+        PreparedTicketPublicationReconciliationComparison comparison =
+            await GetPublicationReconciliationComparisonAsync(runId, ct)
+            ?? throw new KeyNotFoundException(
+                $"Publication reconciliation '{runId}' was not found.");
+        EnsureCurrentPublicationReconciliationComparison(comparison);
         await using SqliteConnection connection = OpenConnection();
         await using SqliteTransaction transaction =
             connection.BeginTransaction(deferred: false);
@@ -7697,7 +7757,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                     runId,
                     ct);
             AuthoringSnapshotPublicationProof snapshotProof = new(
-                proof.ContractVersion,
+                PreparedTicketPublicationContract.CurrentVersion,
                 proof.Purpose,
                 proof.SourceRunId,
                 PreparedTicketPublicationContract.JiraSourceName,
@@ -7822,6 +7882,11 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         string runId,
         CancellationToken ct = default)
     {
+        PreparedTicketPublicationReconciliationComparison comparison =
+            await GetPublicationReconciliationComparisonAsync(runId, ct)
+            ?? throw new KeyNotFoundException(
+                $"Publication reconciliation '{runId}' was not found.");
+        EnsureCurrentPublicationReconciliationComparison(comparison);
         await using SqliteConnection connection = OpenConnection();
         await using SqliteTransaction transaction =
             connection.BeginTransaction(deferred: false);
@@ -7958,13 +8023,23 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             """;
         command.Parameters.AddWithValue("@runId", runId);
         string? json = (string?)await command.ExecuteScalarAsync(ct);
-        return json is null
+        PreparedTicketPublicationReconciliationProof proof = json is null
             ? throw new InvalidOperationException(
                 $"Reconciliation '{runId}' has no publication proof.")
             : JsonSerializer.Deserialize<
                 PreparedTicketPublicationReconciliationProof>(json)
               ?? throw new InvalidOperationException(
                   $"Reconciliation '{runId}' has an invalid publication proof.");
+        if (proof.ContractVersion !=
+                PreparedTicketPublicationReconciliationContract
+                    .CurrentVersion ||
+            proof.Purpose !=
+                PreparedTicketPublicationReconciliationContract.Purpose)
+        {
+            throw new NotSupportedException(
+                $"Reconciliation '{runId}' does not have a current publication proof.");
+        }
+        return proof;
     }
 
     public async Task CleanupPublicationReconciliationWorkspaceAsync(
@@ -8059,6 +8134,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             await GetPublicationReconciliationComparisonAsync(runId, ct)
             ?? throw new KeyNotFoundException(
                 $"Publication reconciliation '{runId}' was not found.");
+        EnsureCurrentPublicationReconciliationComparison(comparison);
         List<PreparedTicketPublicationCorpusTicket> tickets =
             new(comparison.Items.Count);
         await using SqliteConnection connection = OpenConnection();
@@ -8087,9 +8163,12 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             throw new InvalidOperationException(
                 $"Reconciliation '{runId}' overlay contains duplicate or missing tickets.");
         }
+        string corpusFingerprint = PreparedTicketPublicationContract
+            .ComputeCorpusFingerprint(
+                tickets.Select(ticket => ticket.ToPublicationCorpusItem()));
         return new PreparedTicketPublicationCorpusOverlay(
             runId,
-            comparison.CorpusFingerprint,
+            corpusFingerprint,
             tickets);
     }
 
@@ -8235,6 +8314,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                   ?? throw new InvalidOperationException(
                       $"Reconciliation '{runId}' has an invalid comparison.");
         }
+        EnsureCurrentPublicationReconciliationComparison(comparison);
         foreach (PreparedTicketPublicationReconciliationItemDecision decision
                  in comparison.Items.Where(item => item.Disposition ==
                      PreparedTicketPublicationReconciliationDispositionValues
@@ -8550,16 +8630,40 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         }
     }
 
-    private static string ComputeOverlayCorpusFingerprint(
-        PreparedTicketPublicationCorpusOverlay overlay)
-        => AuthoringResultHasher.HashNormalizedUtf8(string.Join(
-            "\n",
-            overlay.Tickets.OrderBy(
-                    ticket => ticket.TicketKey,
-                    StringComparer.OrdinalIgnoreCase)
-                .ThenBy(ticket => ticket.TicketKey, StringComparer.Ordinal)
-                .Select(ticket =>
-                    $"{ticket.TicketKey}:{ticket.ReceiptId}:{ticket.AuthoredFingerprint}:{ticket.SourceRevision}")));
+    private static void EnsureCurrentPublicationReconciliationComparison(
+        PreparedTicketPublicationReconciliationComparison comparison)
+    {
+        if (comparison.ContractVersion !=
+            PreparedTicketPublicationReconciliationContract.CurrentVersion)
+        {
+            throw new NotSupportedException(
+                $"Reconciliation contract version {comparison.ContractVersion} is readable for status and audit only.");
+        }
+        foreach (PreparedTicketPublicationReconciliationItemDecision item in
+                 comparison.Items)
+        {
+            if (string.IsNullOrWhiteSpace(item.ItemKind) ||
+                string.IsNullOrWhiteSpace(item.ExpectedSourceRevision))
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation item '{item.TicketKey}' is missing its contract-v{PreparedTicketPublicationReconciliationContract.CurrentVersion} publication corpus coordinate.");
+            }
+            string selectedSourceRevision =
+                item.Disposition ==
+                    PreparedTicketPublicationReconciliationDispositionValues
+                        .CarryForward
+                    ? item.BaselineSourceRevision
+                    : item.CurrentSourceRevision;
+            if (!string.Equals(
+                    item.ExpectedSourceRevision,
+                    selectedSourceRevision,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation item '{item.TicketKey}' does not retain its selected source revision.");
+            }
+        }
+    }
 
     private static bool UnaffectedFingerprintsEqual(
         PreparedTicketPublicationUnaffectedFingerprint left,
@@ -9314,7 +9418,8 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             command.CommandText =
                 """
                 SELECT state.GraphHash, state.RunId, state.RunItemId,
-                       item.AcceptedReceiptId
+                       item.AcceptedReceiptId, item.ItemKind,
+                       item.ExpectedSourceRevision
                 FROM prepared_ticket_authoring_state state
                 INNER JOIN authoring_run_items item
                     ON item.Id = state.RunItemId
@@ -9342,6 +9447,14 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 !string.Equals(
                     reader.GetString(3),
                     decision.BaselineReceiptId,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    reader.GetString(4),
+                    decision.ItemKind,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    reader.GetString(5),
+                    decision.ExpectedSourceRevision,
                     StringComparison.Ordinal))
             {
                 throw new InvalidOperationException(
@@ -9373,10 +9486,11 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         return new PreparedTicketPublicationCorpusTicket(
             decision.TicketKey,
             decision.Disposition,
-            decision.CurrentSourceRevision,
             decision.BaselineReceiptId,
             decision.BaselineRunItemId,
             decision.BaselineContributingRunId,
+            decision.ItemKind!,
+            decision.ExpectedSourceRevision!,
             decision.BaselineAuthoredFingerprint,
             payload,
             hydration);
@@ -9395,7 +9509,8 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             SELECT graph.RunItemId, graph.OperationId, graph.SourceRevision,
                    graph.AuthoredFingerprint, graph.PayloadJson,
                    hydration.HydrationFingerprint, hydration.HydrationJson,
-                   receipt.ReceiptId
+                   receipt.ReceiptId, item.ItemKind,
+                   item.ExpectedSourceRevision
             FROM prepared_ticket_publication_staged_graphs graph
             INNER JOIN prepared_ticket_publication_staged_hydration hydration
                 ON hydration.RunId = graph.RunId
@@ -9406,6 +9521,10 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                AND receipt.RunItemId = graph.RunItemId
                AND receipt.OperationId = graph.OperationId
                AND receipt.AuthoredFingerprint = graph.AuthoredFingerprint
+            INNER JOIN authoring_run_items item
+                ON item.RunId = graph.RunId
+               AND item.Id = graph.RunItemId
+               AND item.BusinessKey = graph.TicketKey COLLATE NOCASE
             WHERE graph.RunId = @runId
               AND graph.TicketKey = @ticketKey COLLATE NOCASE
             """;
@@ -9425,10 +9544,20 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         string hydrationFingerprint = reader.GetString(5);
         string hydrationJson = reader.GetString(6);
         string receiptId = reader.GetString(7);
+        string itemKind = reader.GetString(8);
+        string expectedSourceRevision = reader.GetString(9);
         if (!string.Equals(
                 AuthoringSourceRevision.CanonicalizeTimestamp(sourceRevision),
                 AuthoringSourceRevision.CanonicalizeTimestamp(
                     decision.CurrentSourceRevision),
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                itemKind,
+                decision.ItemKind,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                expectedSourceRevision,
+                decision.ExpectedSourceRevision,
                 StringComparison.Ordinal) ||
             !string.Equals(
                 hydrationFingerprint,
@@ -9460,10 +9589,11 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         return new PreparedTicketPublicationCorpusTicket(
             decision.TicketKey,
             decision.Disposition,
-            decision.CurrentSourceRevision,
             receiptId,
             runItemId,
             runId,
+            itemKind,
+            expectedSourceRevision,
             authoredFingerprint,
             payload,
             hydration);

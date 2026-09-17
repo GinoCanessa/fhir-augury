@@ -158,7 +158,9 @@ public sealed class PreparerDatabaseTests
                     "old-item",
                     "old-run",
                     "old-graph",
-                    "old-grouping"),
+                    "old-grouping",
+                    "fhir",
+                    "revision-1"),
             ]);
         AuthoringRunRecord run =
             await database.Database.CreatePublicationReconciliationAsync(
@@ -205,7 +207,12 @@ public sealed class PreparerDatabaseTests
             Assert.Single(overlay.Tickets);
         Assert.Equal("FHIR-1", ticket.TicketKey);
         Assert.Equal("graph-1", ticket.AuthoredFingerprint);
-        Assert.Equal("corpus-fingerprint", overlay.CorpusFingerprint);
+        Assert.Equal("fhir", ticket.ItemKind);
+        Assert.Equal("revision-1", ticket.ExpectedSourceRevision);
+        Assert.Equal(
+            PreparedTicketPublicationContract.ComputeCorpusFingerprint(
+                [ticket.ToPublicationCorpusItem()]),
+            overlay.CorpusFingerprint);
         Assert.Equal(
             1,
             Count(

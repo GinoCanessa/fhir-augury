@@ -209,11 +209,12 @@ public sealed class PreparedTicketPublicationReconciliationPlanner(
                                 candidate.TicketKey,
                                 item.TicketKey,
                                 StringComparison.OrdinalIgnoreCase)));
+                bool carryForward = JiraSourceRevision.AreEquivalent(
+                    item.ExpectedSourceRevision,
+                    observed.Revision);
                 return new PreparedTicketPublicationReconciliationItemDecision(
                     item.TicketKey,
-                    JiraSourceRevision.AreEquivalent(
-                        item.ExpectedSourceRevision,
-                        observed.Revision)
+                    carryForward
                         ? PreparedTicketPublicationReconciliationDispositionValues
                             .CarryForward
                         : PreparedTicketPublicationReconciliationDispositionValues
@@ -224,7 +225,11 @@ public sealed class PreparedTicketPublicationReconciliationPlanner(
                     item.RunItemId,
                     item.ContributingRunId,
                     authoredFingerprint,
-                    grouping.Fingerprint.OutputFingerprint);
+                    grouping.Fingerprint.OutputFingerprint,
+                    carryForward ? item.ItemKind : "fhir",
+                    carryForward
+                        ? item.ExpectedSourceRevision
+                        : observed.Revision);
             })
             .OrderBy(item => item.TicketKey, StringComparer.OrdinalIgnoreCase)
             .ThenBy(item => item.TicketKey, StringComparer.Ordinal)

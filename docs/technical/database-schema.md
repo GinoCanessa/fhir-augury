@@ -875,6 +875,12 @@ public snapshot's `authoring_snapshot_provenance` table. Likewise, the live
 boundary, so schema v3 remains an additive people-policy revision of the v2
 snapshot catalog rather than a copy of every live maintenance table.
 
+The descriptor's `contractVersion` is the independent generic
+`PreparedTicketPublicationContract` version (currently 1), including for a
+reconciliation publication. Private reconciliation comparison/proof JSON is
+contract v2; promotion does not copy that private version number into the
+generic descriptor contract.
+
 ### Preparer public snapshot schemas v2 and v3
 
 Preparer schema v2 extends the unchanged v1 table catalog:
@@ -929,7 +935,7 @@ public boundary is the sanitized snapshot plus its descriptor proof.
 | `SourceSnapshotSha256` | TEXT | Baseline database digest |
 | `StableJiraGeneration` | TEXT | One generation shared by the complete Jira observation |
 | `CorpusFingerprint` | TEXT | Frozen accepted baseline corpus |
-| `ComparisonJson` | TEXT | Contract-v1 complete per-ticket decisions and coordinates |
+| `ComparisonJson` | TEXT | Contract-v2 complete per-ticket decisions and coordinates |
 | `PromotionState` | TEXT | `staged`, `snapshot-publish-pending`, `ready`, or `canonical-unpublished` |
 | `CapturedAt` | TEXT | UTC comparison capture time |
 | `AbandonedAt` | TEXT? | Audited explicit abandonment time |
@@ -939,7 +945,11 @@ public boundary is the sanitized snapshot plus its descriptor proof.
 that comparison. Its primary key is `(RunId, TicketKey)`; ticket keys use
 case-insensitive collation. Each row stores `Disposition` (`carry-forward` or
 `re-author`), baseline/current source revisions, baseline receipt ID, run-item
-ID, contributing run ID, authored fingerprint, and grouping fingerprint.
+ID, contributing run ID, authored fingerprint, grouping fingerprint, and the
+selected `ItemKind` and `ExpectedSourceRevision`. The latter two columns are
+nullable only so existing contract-v1 rows remain readable; every v2 row
+requires them. Carry-forward rows retain the accepted baseline item values,
+while re-authored rows retain the accepted reconciliation item values.
 Admission writes these rows, the reconciliation record, mixed
 `authoring_run_items`, both fences, and the initial journal through one
 caller-owned immediate transaction after repeating the Jira observation.
@@ -959,7 +969,13 @@ authoring item transition on the same SQLite connection. Canonical ticket and
 hydration rows are not changed at acceptance. Overlay reads resolve
 carry-forward decisions from their frozen canonical receipts and changed
 decisions from matching complete staging tuples; duplicate, missing, or
-fingerprint-divergent children are rejected.
+fingerprint-divergent children are rejected. The overlay fingerprint is the
+SHA-256 of canonical JSON produced by
+`PreparedTicketPublicationContract.ComputeCorpusFingerprint` over exactly
+`TicketKey`, `ReceiptId`, `RunItemId`, `ContributingRunId`, `ItemKind`, and
+`ExpectedSourceRevision`, sorted by the shared contract. The same value flows
+through grouping stages, the candidate descriptor, the private proof, and the
+promoted public proof.
 
 #### Grouping impact and unaffected fingerprints
 
@@ -1001,7 +1017,7 @@ and remain exact.
 | Table | Key | Durable contents |
 |-------|-----|------------------|
 | `prepared_ticket_publication_snapshot_descriptors` | `RunId` | Verified temporary candidate descriptor JSON, candidate SHA-256, and persistence time |
-| `prepared_ticket_publication_reconciliation_proofs` | `RunId` | Contract-v1 proof JSON and capture time |
+| `prepared_ticket_publication_reconciliation_proofs` | `RunId` | Contract-v2 proof JSON and capture time |
 | `prepared_ticket_publication_reconciliation_fences` | `RunId` | Reconciliation lease ID and acquisition time, paired with the processor-wide `authoring_mutation_fences` row |
 | `prepared_ticket_publication_reconciliation_journal` | `RunId` UNIQUE | State, nullable promotion descriptor JSON, last recovery attempt, stable failure code/detail, and update time |
 
@@ -1041,6 +1057,11 @@ releases the fences, then idempotently removes graph/hydration/receipt impact
 workspace and the candidate descriptor. Proof, comparison, item decisions,
 unaffected fingerprint, and journal remain auditable. Startup and the explicit
 retry endpoint use the same pending-journal protocol.
+
+Contract-v1 comparison and proof rows remain deserializable for these audit
+views, including null v2-only item coordinates. They are execution-inert:
+grouping dispatch, candidate materialization, pending recovery, and promotion
+require contract v2 and refuse rather than reinterpret a v1 corpus.
 
 Explicit abandonment is valid only from `snapshot-publish-pending`. It writes
 `canonical-unpublished`, `AbandonedAt`, and `AbandonmentReason`, records the

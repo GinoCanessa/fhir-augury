@@ -348,14 +348,18 @@ newer revisions become decisions rather than a first-mismatch exception, and
 source failures are accumulated. Every successful observation must have
 stable source provenance and the same Jira content generation.
 
-The resulting version-1 comparison records baseline snapshot identity and
-digest, stable Jira generation, corpus fingerprint, and for every ticket:
-baseline/current source revision, `carry-forward` or `re-author`, baseline
-receipt/run-item/contributing-run coordinates, authored graph fingerprint,
-and baseline grouping fingerprint. While holding an immediate Preparer
-transaction and the mutation fence, admission revalidates the baseline and
-repeats the complete Jira observation. Any generation/revision race aborts
-with `unstable-jira-generation`. Only then are the comparison,
+The resulting reconciliation contract-v2 comparison records baseline
+snapshot identity and digest, stable Jira generation, corpus fingerprint, and
+for every ticket: baseline/current source revision, `carry-forward` or
+`re-author`, baseline receipt/run-item/contributing-run coordinates, authored
+graph fingerprint, baseline grouping fingerprint, and the selected `ItemKind`
+and `ExpectedSourceRevision`. A carried decision freezes those two values
+from the accepted baseline item. A re-authored decision freezes them from the
+reconciliation item that will accept the replacement receipt. While holding
+an immediate Preparer transaction and the mutation fence, admission
+revalidates the baseline and repeats the complete Jira observation. Any
+generation/revision race aborts with `unstable-jira-generation`. Only then
+are the comparison,
 `purpose:"publication-reconciliation"` run, mixed carried/pending item set,
 reconciliation fence, and source lineage committed together.
 
@@ -372,7 +376,13 @@ reported as `revision-invalidation` and blocks finalization.
 frozen canonical receipt and each changed ticket from one complete staged
 graph/hydration/receipt tuple. Missing, duplicated, or fingerprint-divergent
 children make the overlay invalid; reads never silently combine old and new
-children.
+children. Every resolved ticket is projected to the shared
+`PreparedTicketPublicationCorpusItem(TicketKey, ReceiptId, RunItemId,
+ContributingRunId, ItemKind, ExpectedSourceRevision)` coordinate. The
+Preparer and publisher both use
+`PreparedTicketPublicationContract.ComputeCorpusFingerprint`; no
+reconciliation-specific text hash or authored-content field substitutes for
+that canonical membership coordinate.
 
 The grouping delta compares every changed ticket's old baseline membership
 with its staged self-Jira partition. Its impact closure includes both sides of
@@ -426,6 +436,15 @@ checked, sized, and SHA-256 hashed before canonical promotion. Its proof binds
 purpose `publication-reconciliation`, source run/snapshot, stable Jira
 generation, accepted/carried/re-authored counts, overlay corpus fingerprint,
 grouping-impact fingerprint, and capture time.
+
+The private comparison and reconciliation proof use reconciliation contract
+version 2. Version-1 comparison/proof JSON remains deserializable for status
+and audit, but cannot dispatch grouping, materialize a candidate, recover a
+pending publication, or promote. Missing version-1 item coordinates are never
+inferred. This version is independent of
+`PreparedTicketPublicationContract.CurrentVersion`: the promoted public
+snapshot descriptor continues to use generic publication-proof contract v1
+while retaining the canonical v2 reconciliation corpus fingerprint.
 
 #### Database-first promotion journal
 
