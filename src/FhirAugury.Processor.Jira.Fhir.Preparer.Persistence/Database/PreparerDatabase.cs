@@ -35,6 +35,8 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         "grouping-certification";
     public const string PublicationReconciliationGroupingStageName =
         "publication-reconciliation-grouping";
+    private const string PublicationReconciliationSnapshotReservationKind =
+        "snapshot-reservation-v1";
     public const string CurrentSnapshotReceiptBackedTicketsTable =
         "current_prepared_receipt_backed_tickets";
     private static readonly string MaintenanceOwnerGeneration = Guid.NewGuid().ToString("N");
@@ -7414,6 +7416,279 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         }
     }
 
+    public async Task<PublicationReconciliationSnapshotReservation>
+        ReservePublicationReconciliationSnapshotAsync(
+            string runId,
+            string temporaryPath,
+            string finalPath,
+            int schemaVersion,
+            CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(temporaryPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(finalPath);
+        if (schemaVersion != PreparedTicketSnapshotSchemaV3.Version)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(schemaVersion),
+                "Publication reconciliation requires snapshot schema v3.");
+        }
+
+        temporaryPath = Path.GetFullPath(temporaryPath);
+        finalPath = Path.GetFullPath(finalPath);
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteTransaction transaction =
+            connection.BeginTransaction(deferred: false);
+        try
+        {
+            string promotionState;
+            string runStatus;
+            string processorKind;
+            long authoringEpoch;
+            int itemCount;
+            int receiptCount;
+            PreparedTicketPublicationReconciliationComparison comparison;
+            await using (SqliteCommand read = connection.CreateCommand())
+            {
+                read.Transaction = transaction;
+                read.CommandText =
+                    """
+                    SELECT reconciliation.PromotionState,
+                           reconciliation.ComparisonJson,
+                           run.Status,
+                           run.ProcessorKind,
+                           run.AuthoringEpoch,
+                           (SELECT COUNT(*)
+                            FROM authoring_run_items
+                            WHERE RunId = run.Id),
+                           (SELECT COUNT(*)
+                            FROM prepared_ticket_publication_reconciliation_items
+                            WHERE RunId = run.Id)
+                    FROM prepared_ticket_publication_reconciliations
+                        reconciliation
+                    INNER JOIN authoring_runs run
+                      ON run.Id = reconciliation.RunId
+                    WHERE reconciliation.RunId = @runId
+                    """;
+                read.Parameters.AddWithValue("@runId", runId);
+                await using SqliteDataReader reader =
+                    await read.ExecuteReaderAsync(ct);
+                if (!await reader.ReadAsync(ct))
+                {
+                    throw new KeyNotFoundException(
+                        $"Publication reconciliation '{runId}' was not found.");
+                }
+                promotionState = reader.GetString(0);
+                comparison = JsonSerializer.Deserialize<
+                    PreparedTicketPublicationReconciliationComparison>(
+                        reader.GetString(1))
+                    ?? throw new InvalidOperationException(
+                        $"Reconciliation '{runId}' has an invalid comparison.");
+                runStatus = reader.GetString(2);
+                processorKind = reader.GetString(3);
+                authoringEpoch = reader.GetInt64(4);
+                itemCount = reader.GetInt32(5);
+                receiptCount = reader.GetInt32(6);
+            }
+            EnsureCurrentPublicationReconciliationComparison(comparison);
+            if (promotionState !=
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .Staged ||
+                runStatus is not (
+                    AuthoringStatusValues.Runs.Running or
+                    AuthoringStatusValues.Runs.Finalizing) ||
+                !string.Equals(
+                    processorKind,
+                    AuthoringProcessorKind,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{runId}' cannot reserve a snapshot from its current state.");
+            }
+
+            await EnsurePublicationSnapshotReservationPreconditionsAsync(
+                connection,
+                transaction,
+                runId,
+                ct);
+            await using (SqliteCommand snapshotCheck =
+                         connection.CreateCommand())
+            {
+                snapshotCheck.Transaction = transaction;
+                snapshotCheck.CommandText =
+                    """
+                    SELECT COUNT(*)
+                    FROM authoring_review_snapshots
+                    WHERE RunId = @runId
+                    """;
+                snapshotCheck.Parameters.AddWithValue("@runId", runId);
+                if (Convert.ToInt32(
+                        await snapshotCheck.ExecuteScalarAsync(ct),
+                        CultureInfo.InvariantCulture) != 0)
+                {
+                    throw new InvalidOperationException(
+                        $"Reconciliation '{runId}' has a snapshot record before database promotion.");
+                }
+            }
+            (string DescriptorJson, string Sha256)? descriptor =
+                await ReadPublicationCandidateDescriptorAsync(
+                    connection,
+                    transaction,
+                    runId,
+                    ct);
+            string? journalDescriptor =
+                await ReadPublicationJournalDescriptorAsync(
+                    connection,
+                    transaction,
+                    runId,
+                    ct);
+            long sequence;
+            await using (SqliteCommand sequenceCommand =
+                         connection.CreateCommand())
+            {
+                sequenceCommand.Transaction = transaction;
+                sequenceCommand.CommandText =
+                    """
+                    SELECT COALESCE(MAX(Sequence), 0) + 1
+                    FROM authoring_review_snapshots
+                    WHERE ProcessorKind = @processorKind
+                    """;
+                sequenceCommand.Parameters.AddWithValue(
+                    "@processorKind",
+                    processorKind);
+                sequence = Convert.ToInt64(
+                    await sequenceCommand.ExecuteScalarAsync(ct),
+                    CultureInfo.InvariantCulture);
+            }
+            if (descriptor is not null)
+            {
+                PreparedTicketPublicationCandidateSnapshot candidate =
+                    JsonSerializer.Deserialize<
+                        PreparedTicketPublicationCandidateSnapshot>(
+                            descriptor.Value.DescriptorJson)
+                    ?? throw new InvalidOperationException(
+                        $"Reconciliation '{runId}' has an invalid candidate descriptor.");
+                if (!string.Equals(
+                        descriptor.Value.Sha256,
+                        candidate.Sha256,
+                        StringComparison.Ordinal) ||
+                    !string.Equals(
+                        candidate.RunId,
+                        runId,
+                        StringComparison.Ordinal) ||
+                    !string.Equals(
+                        candidate.ProcessorKind,
+                        processorKind,
+                        StringComparison.Ordinal) ||
+                    !PathsEqual(
+                        candidate.TemporaryPath,
+                        temporaryPath) ||
+                    !PathsEqual(candidate.FinalPath, finalPath) ||
+                    candidate.SchemaVersion != schemaVersion ||
+                    candidate.Sequence != sequence ||
+                    candidate.AuthoringEpoch != authoringEpoch ||
+                    candidate.ItemCount != itemCount ||
+                    candidate.ReceiptCount != receiptCount)
+                {
+                    throw new InvalidOperationException(
+                        $"Reconciliation '{runId}' has conflicting candidate reservation evidence.");
+                }
+                ValidatePublicationCandidate(candidate);
+                if (!string.Equals(
+                        journalDescriptor,
+                        descriptor.Value.DescriptorJson,
+                        StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        $"Reconciliation '{runId}' candidate does not match its staged journal.");
+                }
+                await transaction.CommitAsync(ct);
+                return new(
+                    PublicationReconciliationSnapshotReservationKind,
+                    runId,
+                    candidate.SnapshotId,
+                    processorKind,
+                    temporaryPath,
+                    finalPath,
+                    schemaVersion,
+                    sequence,
+                    authoringEpoch,
+                    itemCount,
+                    receiptCount,
+                    candidate.CreatedAt,
+                    candidate);
+            }
+
+            PublicationReconciliationSnapshotReservation reservation;
+            if (journalDescriptor is not null)
+            {
+                reservation = JsonSerializer.Deserialize<
+                    PublicationReconciliationSnapshotReservation>(
+                        journalDescriptor)
+                    ?? throw new InvalidOperationException(
+                        $"Reconciliation '{runId}' has an invalid snapshot reservation.");
+                EnsureReservationMatchesCurrent(
+                    reservation,
+                    runId,
+                    processorKind,
+                    temporaryPath,
+                    finalPath,
+                    schemaVersion,
+                    sequence,
+                    authoringEpoch,
+                    itemCount,
+                    receiptCount);
+            }
+            else
+            {
+                reservation = new(
+                    PublicationReconciliationSnapshotReservationKind,
+                    runId,
+                    Guid.NewGuid().ToString("N"),
+                    processorKind,
+                    temporaryPath,
+                    finalPath,
+                    schemaVersion,
+                    sequence,
+                    authoringEpoch,
+                    itemCount,
+                    receiptCount,
+                    DateTimeOffset.UtcNow,
+                    null);
+                int reserved = await ExecuteInTransactionAsync(
+                    connection,
+                    transaction,
+                    """
+                    UPDATE prepared_ticket_publication_reconciliation_journal
+                    SET SnapshotDescriptorJson = @descriptor,
+                        UpdatedAt = @updatedAt
+                    WHERE RunId = @runId
+                      AND State = @staged
+                      AND SnapshotDescriptorJson IS NULL
+                    """,
+                    ct,
+                    ("@descriptor", JsonSerializer.Serialize(reservation)),
+                    ("@updatedAt", Format(reservation.CreatedAt)),
+                    ("@runId", runId),
+                    ("@staged",
+                        PreparedTicketPublicationReconciliationPromotionStateValues
+                            .Staged));
+                if (reserved != 1)
+                {
+                    throw new InvalidOperationException(
+                        $"Reconciliation '{runId}' changed before snapshot reservation.");
+                }
+            }
+            await transaction.CommitAsync(ct);
+            return reservation;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
     public async Task SavePublicationReconciliationCandidateEvidenceAsync(
         PreparedTicketPublicationCandidateSnapshot candidate,
         PreparedTicketPublicationReconciliationProof proof,
@@ -7423,6 +7698,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         ArgumentNullException.ThrowIfNull(proof);
         ArgumentException.ThrowIfNullOrWhiteSpace(candidate.RunId);
         ArgumentException.ThrowIfNullOrWhiteSpace(candidate.Sha256);
+        ValidatePublicationCandidate(candidate);
         if (proof.ContractVersion !=
                 PreparedTicketPublicationReconciliationContract
                     .CurrentVersion ||
@@ -7436,6 +7712,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
 
         string descriptorJson = JsonSerializer.Serialize(candidate);
         string proofJson = JsonSerializer.Serialize(proof);
+        DateTimeOffset persistedAt = DateTimeOffset.UtcNow;
         await using SqliteConnection connection = OpenConnection();
         await using SqliteTransaction transaction =
             connection.BeginTransaction(deferred: false);
@@ -7443,6 +7720,12 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         {
             string promotionState;
             string runStatus;
+            string processorKind;
+            long authoringEpoch;
+            int itemCount;
+            int receiptCount;
+            long sequence;
+            int snapshotCount;
             PreparedTicketPublicationReconciliationComparison comparison;
             await using (SqliteCommand read = connection.CreateCommand())
             {
@@ -7451,7 +7734,20 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                     """
                     SELECT reconciliation.PromotionState,
                            reconciliation.ComparisonJson,
-                           run.Status
+                           run.Status,
+                           run.ProcessorKind,
+                           run.AuthoringEpoch,
+                           (SELECT COUNT(*) FROM authoring_run_items
+                            WHERE RunId = run.Id),
+                           (SELECT COUNT(*)
+                            FROM prepared_ticket_publication_reconciliation_items
+                            WHERE RunId = run.Id),
+                           (SELECT COALESCE(MAX(Sequence), 0) + 1
+                            FROM authoring_review_snapshots
+                            WHERE ProcessorKind = run.ProcessorKind),
+                           (SELECT COUNT(*)
+                            FROM authoring_review_snapshots
+                            WHERE RunId = run.Id OR Id = @snapshotId)
                     FROM prepared_ticket_publication_reconciliations
                         reconciliation
                     INNER JOIN authoring_runs run
@@ -7459,6 +7755,9 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                     WHERE reconciliation.RunId = @runId
                     """;
                 read.Parameters.AddWithValue("@runId", candidate.RunId);
+                read.Parameters.AddWithValue(
+                    "@snapshotId",
+                    candidate.SnapshotId);
                 await using SqliteDataReader reader =
                     await read.ExecuteReaderAsync(ct);
                 if (!await reader.ReadAsync(ct))
@@ -7473,6 +7772,12 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                     ?? throw new InvalidOperationException(
                         $"Reconciliation '{candidate.RunId}' has an invalid comparison.");
                 runStatus = reader.GetString(2);
+                processorKind = reader.GetString(3);
+                authoringEpoch = reader.GetInt64(4);
+                itemCount = reader.GetInt32(5);
+                receiptCount = reader.GetInt32(6);
+                sequence = reader.GetInt64(7);
+                snapshotCount = reader.GetInt32(8);
             }
             EnsureCurrentPublicationReconciliationComparison(comparison);
             if (promotionState !=
@@ -7482,6 +7787,24 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             {
                 throw new InvalidOperationException(
                     $"Reconciliation '{candidate.RunId}' can no longer persist finalizing candidate evidence.");
+            }
+            await EnsurePublicationSnapshotReservationPreconditionsAsync(
+                connection,
+                transaction,
+                candidate.RunId,
+                ct);
+            if (snapshotCount != 0 ||
+                !string.Equals(
+                    candidate.ProcessorKind,
+                    processorKind,
+                    StringComparison.Ordinal) ||
+                candidate.AuthoringEpoch != authoringEpoch ||
+                candidate.Sequence != sequence ||
+                candidate.ItemCount != itemCount ||
+                candidate.ReceiptCount != receiptCount)
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{candidate.RunId}' candidate no longer matches its reserved coordinates.");
             }
             if (!string.Equals(
                     proof.SourceRunId,
@@ -7516,6 +7839,27 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 throw new InvalidOperationException(
                     "The reconciliation candidate evidence does not match the frozen comparison.");
             }
+            string journalDescriptor =
+                await ReadPublicationJournalDescriptorAsync(
+                    connection,
+                    transaction,
+                    candidate.RunId,
+                    ct)
+                ?? throw new InvalidOperationException(
+                    $"Reconciliation '{candidate.RunId}' has no snapshot reservation.");
+            if (!string.Equals(
+                    journalDescriptor,
+                    descriptorJson,
+                    StringComparison.Ordinal))
+            {
+                PublicationReconciliationSnapshotReservation reservation =
+                    JsonSerializer.Deserialize<
+                        PublicationReconciliationSnapshotReservation>(
+                            journalDescriptor)
+                    ?? throw new InvalidOperationException(
+                        $"Reconciliation '{candidate.RunId}' has invalid snapshot reservation evidence.");
+                EnsureReservationMatchesCandidate(reservation, candidate);
+            }
 
             _ = await ExecuteInTransactionAsync(
                 connection,
@@ -7524,16 +7868,32 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 INSERT INTO prepared_ticket_publication_snapshot_descriptors(
                     RunId, DescriptorJson, Sha256, PersistedAt)
                 VALUES(@runId, @json, @sha256, @persistedAt)
-                ON CONFLICT(RunId) DO UPDATE SET
-                    DescriptorJson = excluded.DescriptorJson,
-                    Sha256 = excluded.Sha256,
-                    PersistedAt = excluded.PersistedAt
+                ON CONFLICT(RunId) DO NOTHING
                 """,
                 ct,
                 ("@runId", candidate.RunId),
                 ("@json", descriptorJson),
                 ("@sha256", candidate.Sha256),
-                ("@persistedAt", Format(candidate.CapturedAt)));
+                ("@persistedAt", Format(persistedAt)));
+            (string DescriptorJson, string Sha256)? savedDescriptor =
+                await ReadPublicationCandidateDescriptorAsync(
+                    connection,
+                    transaction,
+                    candidate.RunId,
+                    ct);
+            if (savedDescriptor is null ||
+                !string.Equals(
+                    savedDescriptor.Value.DescriptorJson,
+                    descriptorJson,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    savedDescriptor.Value.Sha256,
+                    candidate.Sha256,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{candidate.RunId}' already has different trusted candidate evidence.");
+            }
             _ = await ExecuteInTransactionAsync(
                 connection,
                 transaction,
@@ -7553,28 +7913,24 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 connection,
                 transaction,
                 """
-                INSERT INTO prepared_ticket_publication_reconciliation_journal(
-                    RunId, State, SnapshotDescriptorJson,
-                    LastRecoveryAttemptAt, FailureCode, FailureDetail,
-                    UpdatedAt)
-                VALUES(
-                    @runId, @staged, NULL, NULL, NULL, NULL, @updatedAt)
-                ON CONFLICT(RunId) DO UPDATE SET
-                    State = excluded.State,
-                    SnapshotDescriptorJson = NULL,
+                UPDATE prepared_ticket_publication_reconciliation_journal
+                SET SnapshotDescriptorJson = @descriptor,
                     LastRecoveryAttemptAt = NULL,
                     FailureCode = NULL,
                     FailureDetail = NULL,
-                    UpdatedAt = excluded.UpdatedAt
-                WHERE prepared_ticket_publication_reconciliation_journal.State
-                    = @staged
+                    UpdatedAt = @updatedAt
+                WHERE RunId = @runId
+                  AND State = @staged
+                  AND SnapshotDescriptorJson = @expectedDescriptor
                 """,
                 ct,
                 ("@runId", candidate.RunId),
+                ("@descriptor", descriptorJson),
+                ("@expectedDescriptor", journalDescriptor),
                 ("@staged",
                     PreparedTicketPublicationReconciliationPromotionStateValues
                         .Staged),
-                ("@updatedAt", Format(candidate.CapturedAt)));
+                ("@updatedAt", Format(persistedAt)));
             if (journalSaved != 1)
             {
                 throw new InvalidOperationException(
@@ -7768,12 +8124,29 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         }
     }
 
+    public sealed record PublicationReconciliationSnapshotReservation(
+        string ReservationKind,
+        string RunId,
+        string SnapshotId,
+        string ProcessorKind,
+        string TemporaryPath,
+        string FinalPath,
+        int SchemaVersion,
+        long Sequence,
+        long AuthoringEpoch,
+        int ItemCount,
+        int ReceiptCount,
+        DateTimeOffset CreatedAt,
+        PreparedTicketPublicationCandidateSnapshot? Candidate);
+
     public sealed record PublicationReconciliationPromotion(
         string RunId,
         string SnapshotId,
+        string ProcessorKind,
         string TemporaryPath,
         string FinalPath,
         string CandidateSha256,
+        long CandidateSizeBytes,
         int SchemaVersion,
         long Sequence,
         long AuthoringEpoch,
@@ -7781,6 +8154,11 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         int ReceiptCount,
         IReadOnlyDictionary<string, long> TableCounts,
         DateTimeOffset CreatedAt);
+
+    public sealed record PublicationReconciliationRecoveryEvidence(
+        string State,
+        PublicationReconciliationPromotion Promotion,
+        PreparedTicketPublicationCandidateSnapshot? Candidate);
 
     public async Task<PublicationReconciliationPromotion?>
         GetPendingPublicationReconciliationAsync(
@@ -7814,6 +8192,73 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 json)
               ?? throw new InvalidOperationException(
                   $"Reconciliation '{runId}' has an invalid promotion journal.");
+    }
+
+    public async Task<PublicationReconciliationRecoveryEvidence?>
+        GetRecoverablePublicationReconciliationAsync(
+            string runId,
+            CancellationToken ct = default)
+    {
+        PreparedTicketPublicationReconciliationComparison? comparison =
+            await GetPublicationReconciliationComparisonAsync(runId, ct);
+        if (comparison is null)
+        {
+            return null;
+        }
+        EnsureCurrentPublicationReconciliationComparison(comparison);
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT journal.State,
+                   journal.SnapshotDescriptorJson,
+                   candidate.DescriptorJson,
+                   candidate.Sha256
+            FROM prepared_ticket_publication_reconciliation_journal journal
+            LEFT JOIN prepared_ticket_publication_snapshot_descriptors
+                candidate ON candidate.RunId = journal.RunId
+            WHERE journal.RunId = @runId
+              AND journal.State IN (@pending, @ready)
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue(
+            "@pending",
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .SnapshotPublishPending);
+        command.Parameters.AddWithValue(
+            "@ready",
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .Ready);
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+        {
+            return null;
+        }
+        string state = reader.GetString(0);
+        PublicationReconciliationPromotion promotion =
+            JsonSerializer.Deserialize<PublicationReconciliationPromotion>(
+                reader.GetString(1))
+            ?? throw new InvalidOperationException(
+                $"Reconciliation '{runId}' has an invalid recovery journal.");
+        PreparedTicketPublicationCandidateSnapshot? candidate =
+            reader.IsDBNull(2)
+                ? null
+                : JsonSerializer.Deserialize<
+                    PreparedTicketPublicationCandidateSnapshot>(
+                        reader.GetString(2))
+                  ?? throw new InvalidOperationException(
+                      $"Reconciliation '{runId}' has an invalid trusted candidate descriptor.");
+        if (candidate is not null &&
+            !string.Equals(
+                candidate.Sha256,
+                reader.GetString(3),
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Reconciliation '{runId}' has conflicting candidate digest evidence.");
+        }
+        return new(state, promotion, candidate);
     }
 
     public async Task<IReadOnlyList<string>>
@@ -7851,6 +8296,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(runId);
         ArgumentException.ThrowIfNullOrWhiteSpace(finalPath);
+        finalPath = Path.GetFullPath(finalPath);
         PreparedTicketPublicationReconciliationComparison comparison =
             await GetPublicationReconciliationComparisonAsync(runId, ct)
             ?? throw new KeyNotFoundException(
@@ -7863,13 +8309,15 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         {
             string state;
             string descriptorJson;
+            string descriptorSha256;
             await using (SqliteCommand read = connection.CreateCommand())
             {
                 read.Transaction = transaction;
                 read.CommandText =
                     """
                     SELECT reconciliation.PromotionState,
-                           descriptor.DescriptorJson
+                           descriptor.DescriptorJson,
+                           descriptor.Sha256
                     FROM prepared_ticket_publication_reconciliations reconciliation
                     INNER JOIN prepared_ticket_publication_snapshot_descriptors descriptor
                       ON descriptor.RunId = reconciliation.RunId
@@ -7885,6 +8333,7 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 }
                 state = reader.GetString(0);
                 descriptorJson = reader.GetString(1);
+                descriptorSha256 = reader.GetString(2);
             }
             if (state ==
                 PreparedTicketPublicationReconciliationPromotionStateValues
@@ -7911,18 +8360,19 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                     descriptorJson)
                 ?? throw new InvalidOperationException(
                     $"Reconciliation '{runId}' has an invalid candidate snapshot.");
-            if (!File.Exists(candidate.TemporaryPath) ||
-                new FileInfo(candidate.TemporaryPath).Length !=
-                    candidate.SizeBytes ||
+            ValidatePublicationCandidate(candidate);
+            if (!string.Equals(
+                    candidate.RunId,
+                    runId,
+                    StringComparison.Ordinal) ||
+                !PathsEqual(candidate.FinalPath, finalPath) ||
                 !string.Equals(
-                    await SqliteReviewSnapshotWriter.ComputeSha256Async(
-                        candidate.TemporaryPath,
-                        ct),
+                    descriptorSha256,
                     candidate.Sha256,
                     StringComparison.Ordinal))
             {
                 throw new InvalidOperationException(
-                    "The verified reconciliation candidate is missing or corrupt.");
+                    "The verified reconciliation candidate descriptor conflicts with promotion.");
             }
 
             await EnsurePublicationPromotionPreconditionsAsync(
@@ -7930,115 +8380,96 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 transaction,
                 runId,
                 ct);
-            await ApplyPublicationReconciliationOverlayAsync(
+            await EnsurePublicationCandidateReservationCurrentAsync(
                 connection,
-                runId,
+                transaction,
+                candidate,
                 ct);
-
-            string snapshotId = Guid.NewGuid().ToString("N");
-            DateTimeOffset createdAt = DateTimeOffset.UtcNow;
-            long sequence;
-            long authoringEpoch;
-            int itemCount;
-            int receiptCount;
-            await using (SqliteCommand coordinates = connection.CreateCommand())
-            {
-                coordinates.Transaction = transaction;
-                coordinates.CommandText =
-                    """
-                    SELECT run.AuthoringEpoch,
-                           (SELECT COALESCE(MAX(Sequence), 0) + 1
-                            FROM authoring_review_snapshots
-                            WHERE ProcessorKind = run.ProcessorKind),
-                           (SELECT COUNT(*) FROM authoring_run_items
-                            WHERE RunId = run.Id),
-                           (SELECT COUNT(*)
-                            FROM prepared_ticket_publication_reconciliation_items
-                            WHERE RunId = run.Id)
-                    FROM authoring_runs run
-                    WHERE run.Id = @runId
-                    """;
-                coordinates.Parameters.AddWithValue("@runId", runId);
-                await using SqliteDataReader reader =
-                    await coordinates.ExecuteReaderAsync(ct);
-                if (!await reader.ReadAsync(ct))
-                {
-                    throw new KeyNotFoundException(
-                        $"Authoring run '{runId}' was not found.");
-                }
-                authoringEpoch = reader.GetInt64(0);
-                sequence = reader.GetInt64(1);
-                itemCount = reader.GetInt32(2);
-                receiptCount = reader.GetInt32(3);
-            }
-            PublicationReconciliationPromotion promotion = new(
-                runId,
-                snapshotId,
-                candidate.TemporaryPath,
-                Path.GetFullPath(finalPath),
-                candidate.Sha256,
-                candidate.SchemaVersion,
-                sequence,
-                authoringEpoch,
-                itemCount,
-                receiptCount,
-                candidate.TableCounts,
-                createdAt);
             PreparedTicketPublicationReconciliationProof proof =
                 await ReadPublicationReconciliationProofAsync(
                     connection,
                     transaction,
                     runId,
                     ct);
-            AuthoringSnapshotPublicationProof snapshotProof = new(
-                PreparedTicketPublicationContract.CurrentVersion,
-                proof.Purpose,
-                proof.SourceRunId,
-                PreparedTicketPublicationContract.JiraSourceName,
-                proof.CapturedAt,
-                long.TryParse(
-                    proof.StableJiraGeneration,
-                    CultureInfo.InvariantCulture,
-                    out long generation)
-                    ? generation
-                    : 0,
-                0,
-                proof.CorpusFingerprint,
-                proof.GroupingImpactFingerprint,
-                proof.CapturedAt);
+            string snapshotProofJson = JsonSerializer.Serialize(
+                CreateSnapshotPublicationProof(proof),
+                JsonSerializerOptions.Web);
+            AuthoringReviewSnapshotRecord snapshot =
+                CreateCandidateSnapshotRecord(
+                    candidate,
+                    snapshotProofJson);
+            SqliteReviewSnapshotValidationResult validation =
+                await SqliteReviewSnapshotValidator.ValidateAsync(
+                    snapshot,
+                    candidate.TemporaryPath,
+                    ct: ct);
+            if (!validation.IsValid ||
+                validation.SizeBytes != candidate.SizeBytes ||
+                !string.Equals(
+                    validation.ChecksumSha256,
+                    candidate.Sha256,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"The verified reconciliation candidate is missing or corrupt: {validation.Error ?? "digest or size mismatch"}");
+            }
+
+            await ApplyPublicationReconciliationOverlayAsync(
+                connection,
+                runId,
+                ct);
             await ExecuteInTransactionAsync(
                 connection,
                 transaction,
                 """
                 INSERT INTO authoring_review_snapshots(
                     Id, ProcessorKind, RunId, AuthoringEpoch, Sequence,
-                    SchemaVersion, Status, TempPath, Path, SizeBytes,
-                    ItemCount, ReceiptCount, TableCountsJson,
+                    SchemaVersion, Status, TempPath, Path, ChecksumSha256,
+                    SizeBytes, ItemCount, ReceiptCount, TableCountsJson,
                     PublicationProofJson, CreatedAt)
                 VALUES(
-                    @snapshotId, @processorKind, @runId, @epoch, @sequence,
-                    @schemaVersion, @status, @tempPath, @path, 0,
-                    @itemCount, @receiptCount, @counts, @proof, @createdAt)
+                    @snapshotId, @processorKind, @runId, @authoringEpoch,
+                    @sequence, @schemaVersion, @status, @temporaryPath,
+                    @finalPath, @sha256, @sizeBytes, @itemCount,
+                    @receiptCount, @tableCounts, @proof, @createdAt)
                 """,
                 ct,
-                ("@snapshotId", snapshotId),
-                ("@processorKind", AuthoringProcessorKind),
-                ("@runId", runId),
-                ("@epoch", authoringEpoch),
-                ("@sequence", sequence),
+                ("@snapshotId", candidate.SnapshotId),
+                ("@processorKind", candidate.ProcessorKind),
+                ("@runId", candidate.RunId),
+                ("@authoringEpoch", candidate.AuthoringEpoch),
+                ("@sequence", candidate.Sequence),
                 ("@schemaVersion", candidate.SchemaVersion),
                 ("@status", AuthoringStatusValues.Snapshots.Creating),
-                ("@tempPath", candidate.TemporaryPath),
-                ("@path", promotion.FinalPath),
-                ("@itemCount", itemCount),
-                ("@receiptCount", receiptCount),
-                ("@counts", JsonSerializer.Serialize(candidate.TableCounts)),
-                ("@proof", JsonSerializer.Serialize(
-                    snapshotProof,
-                    JsonSerializerOptions.Web)),
-                ("@createdAt", Format(createdAt)));
+                ("@temporaryPath", candidate.TemporaryPath),
+                ("@finalPath", candidate.FinalPath),
+                ("@sha256", candidate.Sha256),
+                ("@sizeBytes", candidate.SizeBytes),
+                ("@itemCount", candidate.ItemCount),
+                ("@receiptCount", candidate.ReceiptCount),
+                ("@tableCounts",
+                    JsonSerializer.Serialize(candidate.TableCounts)),
+                ("@proof", snapshotProofJson),
+                ("@createdAt", Format(candidate.CreatedAt)));
+
+            PublicationReconciliationPromotion promotion = new(
+                runId,
+                candidate.SnapshotId,
+                candidate.ProcessorKind,
+                candidate.TemporaryPath,
+                candidate.FinalPath,
+                candidate.Sha256,
+                candidate.SizeBytes,
+                candidate.SchemaVersion,
+                candidate.Sequence,
+                candidate.AuthoringEpoch,
+                candidate.ItemCount,
+                candidate.ReceiptCount,
+                candidate.TableCounts,
+                candidate.CreatedAt);
             string promotionJson = JsonSerializer.Serialize(promotion);
-            await ExecuteInTransactionAsync(
+            DateTimeOffset promotedAt = DateTimeOffset.UtcNow;
+            int journalUpdated = await ExecuteInTransactionAsync(
                 connection,
                 transaction,
                 """
@@ -8046,19 +8477,27 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 SET State = @pending, SnapshotDescriptorJson = @descriptor,
                     FailureCode = NULL, FailureDetail = NULL,
                     UpdatedAt = @updatedAt
-                WHERE RunId = @runId AND State = @staged
+                WHERE RunId = @runId
+                  AND State = @staged
+                  AND SnapshotDescriptorJson = @candidateDescriptor
                 """,
                 ct,
                 ("@pending",
                     PreparedTicketPublicationReconciliationPromotionStateValues
                         .SnapshotPublishPending),
                 ("@descriptor", promotionJson),
-                ("@updatedAt", Format(createdAt)),
+                ("@candidateDescriptor", descriptorJson),
+                ("@updatedAt", Format(promotedAt)),
                 ("@runId", runId),
                 ("@staged",
                     PreparedTicketPublicationReconciliationPromotionStateValues
                         .Staged));
-            await ExecuteInTransactionAsync(
+            if (journalUpdated != 1)
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{runId}' lost its exact candidate journal before promotion.");
+            }
+            int reconciliationUpdated = await ExecuteInTransactionAsync(
                 connection,
                 transaction,
                 """
@@ -8074,6 +8513,11 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 ("@staged",
                     PreparedTicketPublicationReconciliationPromotionStateValues
                         .Staged));
+            if (reconciliationUpdated != 1)
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{runId}' changed before promotion.");
+            }
             await transaction.CommitAsync(ct);
             return promotion;
         }
@@ -8172,6 +8616,24 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
                 throw new InvalidOperationException(
                     $"Reconciliation '{runId}' journal changed during recovery.");
             }
+            foreach (string table in new[]
+            {
+                "prepared_ticket_publication_staged_graphs",
+                "prepared_ticket_publication_staged_hydration",
+                "prepared_ticket_publication_staged_receipts",
+                "prepared_ticket_publication_grouping_impacts",
+                "prepared_ticket_publication_staged_grouping",
+                "prepared_ticket_publication_grouping_stage_receipts",
+                "prepared_ticket_publication_snapshot_descriptors",
+            })
+            {
+                await ExecuteInTransactionAsync(
+                    connection,
+                    transaction,
+                    $"DELETE FROM {table} WHERE RunId = @runId",
+                    ct,
+                    ("@runId", runId));
+            }
             await ExecuteInTransactionAsync(
                 connection,
                 transaction,
@@ -8189,6 +8651,333 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
             throw;
         }
     }
+
+    private static async Task
+        EnsurePublicationSnapshotReservationPreconditionsAsync(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            string runId,
+            CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT COUNT(*)
+            FROM authoring_runs run
+            INNER JOIN prepared_ticket_publication_reconciliations
+                reconciliation ON reconciliation.RunId = run.Id
+            INNER JOIN prepared_ticket_publication_reconciliation_journal
+                journal ON journal.RunId = run.Id
+            WHERE run.Id = @runId
+              AND run.Status IN (@running, @finalizing)
+              AND run.Purpose = @purpose
+              AND reconciliation.PromotionState = @staged
+              AND journal.State = @staged
+              AND NOT EXISTS(
+                  SELECT 1 FROM authoring_run_items item
+                  WHERE item.RunId = run.Id
+                    AND item.Status NOT IN (@complete, @superseded))
+              AND NOT EXISTS(
+                  SELECT 1 FROM authoring_run_stages stage
+                  WHERE stage.RunId = run.Id
+                    AND stage.Status <> @complete)
+              AND EXISTS(
+                  SELECT 1 FROM authoring_mutation_fences fence
+                  WHERE fence.ProcessorKind = run.ProcessorKind
+                    AND fence.RunId = run.Id)
+              AND EXISTS(
+                  SELECT 1
+                  FROM prepared_ticket_publication_reconciliation_fences fence
+                  WHERE fence.RunId = run.Id)
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue(
+            "@running",
+            AuthoringStatusValues.Runs.Running);
+        command.Parameters.AddWithValue(
+            "@finalizing",
+            AuthoringStatusValues.Runs.Finalizing);
+        command.Parameters.AddWithValue(
+            "@purpose",
+            PreparedTicketPublicationReconciliationContract.Purpose);
+        command.Parameters.AddWithValue(
+            "@staged",
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .Staged);
+        command.Parameters.AddWithValue(
+            "@complete",
+            AuthoringStatusValues.Items.Complete);
+        command.Parameters.AddWithValue(
+            "@superseded",
+            AuthoringStatusValues.Items.Superseded);
+        if (Convert.ToInt32(
+                await command.ExecuteScalarAsync(ct),
+                CultureInfo.InvariantCulture) != 1)
+        {
+            throw new InvalidOperationException(
+                $"Reconciliation '{runId}' is incomplete or lost its mutation fence before snapshot reservation.");
+        }
+    }
+
+    private static async Task
+        EnsurePublicationCandidateReservationCurrentAsync(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            PreparedTicketPublicationCandidateSnapshot candidate,
+            CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT run.ProcessorKind,
+                   run.AuthoringEpoch,
+                   (SELECT COUNT(*) FROM authoring_run_items
+                    WHERE RunId = run.Id),
+                   (SELECT COUNT(*)
+                    FROM prepared_ticket_publication_reconciliation_items
+                    WHERE RunId = run.Id),
+                   (SELECT COALESCE(MAX(Sequence), 0) + 1
+                    FROM authoring_review_snapshots
+                    WHERE ProcessorKind = run.ProcessorKind),
+                   (SELECT COUNT(*)
+                    FROM authoring_review_snapshots
+                    WHERE RunId = run.Id OR Id = @snapshotId)
+            FROM authoring_runs run
+            WHERE run.Id = @runId
+            """;
+        command.Parameters.AddWithValue("@runId", candidate.RunId);
+        command.Parameters.AddWithValue(
+            "@snapshotId",
+            candidate.SnapshotId);
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+        {
+            throw new KeyNotFoundException(
+                $"Authoring run '{candidate.RunId}' was not found.");
+        }
+        bool matches =
+            string.Equals(
+                reader.GetString(0),
+                candidate.ProcessorKind,
+                StringComparison.Ordinal) &&
+            reader.GetInt64(1) == candidate.AuthoringEpoch &&
+            reader.GetInt32(2) == candidate.ItemCount &&
+            reader.GetInt32(3) == candidate.ReceiptCount &&
+            reader.GetInt64(4) == candidate.Sequence &&
+            reader.GetInt32(5) == 0;
+        if (!matches)
+        {
+            throw new InvalidOperationException(
+                $"Reconciliation '{candidate.RunId}' reserved snapshot coordinates are no longer current.");
+        }
+    }
+
+    private static AuthoringReviewSnapshotRecord CreateCandidateSnapshotRecord(
+        PreparedTicketPublicationCandidateSnapshot candidate,
+        string publicationProofJson)
+        => new()
+        {
+            Id = candidate.SnapshotId,
+            ProcessorKind = candidate.ProcessorKind,
+            RunId = candidate.RunId,
+            AuthoringEpoch = candidate.AuthoringEpoch,
+            Sequence = candidate.Sequence,
+            SchemaVersion = candidate.SchemaVersion,
+            Status = AuthoringStatusValues.Snapshots.Creating,
+            TempPath = candidate.TemporaryPath,
+            Path = candidate.FinalPath,
+            ChecksumSha256 = candidate.Sha256,
+            SizeBytes = candidate.SizeBytes,
+            ItemCount = candidate.ItemCount,
+            ReceiptCount = candidate.ReceiptCount,
+            TableCountsJson = JsonSerializer.Serialize(candidate.TableCounts),
+            PublicationProofJson = publicationProofJson,
+            CreatedAt = candidate.CreatedAt,
+        };
+
+    private static async Task<(string DescriptorJson, string Sha256)?>
+        ReadPublicationCandidateDescriptorAsync(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            string runId,
+            CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT DescriptorJson, Sha256
+            FROM prepared_ticket_publication_snapshot_descriptors
+            WHERE RunId = @runId
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct)
+            ? (reader.GetString(0), reader.GetString(1))
+            : null;
+    }
+
+    private static async Task<string?>
+        ReadPublicationJournalDescriptorAsync(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            string runId,
+            CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT SnapshotDescriptorJson
+            FROM prepared_ticket_publication_reconciliation_journal
+            WHERE RunId = @runId AND State = @staged
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue(
+            "@staged",
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .Staged);
+        object? value = await command.ExecuteScalarAsync(ct);
+        return value is null or DBNull
+            ? null
+            : Convert.ToString(value, CultureInfo.InvariantCulture);
+    }
+
+    private static void EnsureReservationMatchesCurrent(
+        PublicationReconciliationSnapshotReservation reservation,
+        string runId,
+        string processorKind,
+        string temporaryPath,
+        string finalPath,
+        int schemaVersion,
+        long sequence,
+        long authoringEpoch,
+        int itemCount,
+        int receiptCount)
+    {
+        if (!string.Equals(
+                reservation.ReservationKind,
+                PublicationReconciliationSnapshotReservationKind,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                reservation.RunId,
+                runId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                reservation.ProcessorKind,
+                processorKind,
+                StringComparison.Ordinal) ||
+            !PathsEqual(reservation.TemporaryPath, temporaryPath) ||
+            !PathsEqual(reservation.FinalPath, finalPath) ||
+            reservation.SchemaVersion != schemaVersion ||
+            reservation.Sequence != sequence ||
+            reservation.AuthoringEpoch != authoringEpoch ||
+            reservation.ItemCount != itemCount ||
+            reservation.ReceiptCount != receiptCount ||
+            reservation.CreatedAt == default ||
+            reservation.Candidate is not null ||
+            string.IsNullOrWhiteSpace(reservation.SnapshotId))
+        {
+            throw new InvalidOperationException(
+                $"Reconciliation '{runId}' has conflicting snapshot reservation evidence.");
+        }
+    }
+
+    private static void EnsureReservationMatchesCandidate(
+        PublicationReconciliationSnapshotReservation reservation,
+        PreparedTicketPublicationCandidateSnapshot candidate)
+    {
+        EnsureReservationMatchesCurrent(
+            reservation,
+            candidate.RunId,
+            candidate.ProcessorKind,
+            candidate.TemporaryPath,
+            candidate.FinalPath,
+            candidate.SchemaVersion,
+            candidate.Sequence,
+            candidate.AuthoringEpoch,
+            candidate.ItemCount,
+            candidate.ReceiptCount);
+        if (!string.Equals(
+                reservation.SnapshotId,
+                candidate.SnapshotId,
+                StringComparison.Ordinal) ||
+            reservation.CreatedAt != candidate.CreatedAt)
+        {
+            throw new InvalidOperationException(
+                $"Reconciliation '{candidate.RunId}' candidate does not match its snapshot reservation.");
+        }
+    }
+
+    private static void ValidatePublicationCandidate(
+        PreparedTicketPublicationCandidateSnapshot candidate)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(candidate.RunId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(candidate.SnapshotId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(candidate.ProcessorKind);
+        ArgumentException.ThrowIfNullOrWhiteSpace(candidate.TemporaryPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(candidate.FinalPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(candidate.Sha256);
+        ArgumentNullException.ThrowIfNull(candidate.TableCounts);
+        if (!string.Equals(
+                candidate.ProcessorKind,
+                AuthoringProcessorKind,
+                StringComparison.Ordinal) ||
+            candidate.SchemaVersion != PreparedTicketSnapshotSchemaV3.Version ||
+            candidate.Sequence < 1 ||
+            candidate.AuthoringEpoch < 0 ||
+            candidate.ItemCount < 0 ||
+            candidate.ReceiptCount < 0 ||
+            candidate.SizeBytes < 1 ||
+            candidate.CreatedAt == default ||
+            candidate.Sha256.Length != 64 ||
+            candidate.Sha256.Any(character => !Uri.IsHexDigit(character)) ||
+            candidate.TableCounts.Any(pair =>
+                string.IsNullOrWhiteSpace(pair.Key) || pair.Value < 0) ||
+            !candidate.TableCounts.Keys
+                .ToHashSet(StringComparer.Ordinal)
+                .SetEquals(PreparedTicketSnapshotSchemaV3.CountedTables) ||
+            !Path.IsPathFullyQualified(candidate.TemporaryPath) ||
+            !Path.IsPathFullyQualified(candidate.FinalPath) ||
+            PathsEqual(candidate.TemporaryPath, candidate.FinalPath))
+        {
+            throw new ArgumentException(
+                "The reconciliation candidate has invalid immutable snapshot coordinates.",
+                nameof(candidate));
+        }
+    }
+
+    private static bool PathsEqual(string left, string right)
+        => string.Equals(
+            Path.GetFullPath(left),
+            Path.GetFullPath(right),
+            OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal);
+
+    private static AuthoringSnapshotPublicationProof
+        CreateSnapshotPublicationProof(
+            PreparedTicketPublicationReconciliationProof proof)
+        => new(
+            PreparedTicketPublicationContract.CurrentVersion,
+            proof.Purpose,
+            proof.SourceRunId,
+            PreparedTicketPublicationContract.JiraSourceName,
+            proof.CapturedAt,
+            long.TryParse(
+                proof.StableJiraGeneration,
+                CultureInfo.InvariantCulture,
+                out long generation)
+                ? generation
+                : 0,
+            0,
+            proof.CorpusFingerprint,
+            proof.GroupingImpactFingerprint,
+            proof.CapturedAt);
 
     private static async Task EnsurePublicationPromotionPreconditionsAsync(
         SqliteConnection connection,

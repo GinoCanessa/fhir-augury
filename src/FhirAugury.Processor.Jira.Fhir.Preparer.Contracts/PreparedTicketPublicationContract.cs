@@ -53,15 +53,22 @@ public sealed record PreparedTicketPublicationGroupingDelta(
 
 public sealed record PreparedTicketPublicationCandidateSnapshot(
     string RunId,
+    string SnapshotId,
+    string ProcessorKind,
     string TemporaryPath,
+    string FinalPath,
     int SchemaVersion,
+    long Sequence,
+    long AuthoringEpoch,
+    int ItemCount,
+    int ReceiptCount,
     string Sha256,
     long SizeBytes,
     IReadOnlyDictionary<string, long> TableCounts,
     string OverlayCorpusFingerprint,
     string GroupingFingerprint,
     string GroupingImpactFingerprint,
-    DateTimeOffset CapturedAt);
+    DateTimeOffset CreatedAt);
 
 /// <summary>
 /// Canonical publication-proof serialization shared by the Preparer and every

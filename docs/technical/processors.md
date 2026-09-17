@@ -430,11 +430,19 @@ fingerprints remain separate and exact. Any other drift fails with
 
 Only after every durable grouping stage and matching receipt is complete does
 finalization check closure completeness and unaffected canonical rows. It
-then rechecks frozen Jira revisions and builds a sanitized schema-v3 temporary
-snapshot from the carried-plus-staged overlay. The candidate is integrity
-checked, sized, and SHA-256 hashed before canonical promotion. Its proof binds
-purpose `publication-reconciliation`, source run/snapshot, stable Jira
-generation, accepted/carried/re-authored counts, overlay corpus fingerprint,
+then rechecks frozen Jira revisions and durably reserves snapshot coordinates
+in the `staged` journal. The reservation fixes the snapshot ID, processor/run,
+monotonic sequence, authoring epoch, schema, item/receipt counts, temporary
+and final paths, and creation time before any candidate digest exists. The
+Preparer builds the schema-v3 temporary snapshot from the
+carried-plus-staged overlay, sanitizes it, writes exactly one
+`authoring_snapshot_provenance` row with those reserved coordinates and actual
+public table counts, checkpoints SQLite, and validates integrity and counts.
+Only those final self-contained bytes are sized and SHA-256 hashed. The
+candidate descriptor contains both the reserved coordinates and that
+post-provenance digest. Its proof binds purpose
+`publication-reconciliation`, source run/snapshot, stable Jira generation,
+accepted/carried/re-authored counts, overlay corpus fingerprint,
 grouping-impact fingerprint, and capture time.
 
 The private comparison and reconciliation proof use reconciliation contract
@@ -451,19 +459,25 @@ while retaining the canonical v2 reconciliation corpus fingerprint.
 Promotion is intentionally database-first and resumable. It does **not** claim
 physical atomicity between SQLite and the filesystem.
 
-1. In `staged`, the complete workspace and verified temporary candidate exist,
+1. In `staged`, the complete workspace, durable snapshot-coordinate
+   reservation, and post-provenance authenticated temporary candidate exist,
    while canonical rows and the prior immutable publication are unchanged.
 2. One immediate transaction on one connection revalidates the run/fences and
-   staged/unaffected fingerprints, replaces each revised canonical graph and
-   hydration batch, advances its receipt-backed authoring state, replaces
-   every impacted grouping partition, creates the new snapshot record, writes
-   the durable promotion descriptor, and moves both reconciliation and journal
-   to `snapshot-publish-pending`.
-3. After commit, recovery writes/validates snapshot provenance in the
-   temporary candidate, moves it once to the immutable final path, validates
-   the final bytes, advances the snapshot record from creating/promoted to
-   ready, completes the same run, marks the journal/reconciliation `ready`,
-   releases the mutation fence, and finally removes staging.
+   staged/unaffected fingerprints and the exact candidate digest, size,
+   provenance, counts, descriptor, and reserved coordinates. It then
+   replaces each revised canonical graph and hydration batch, advances its
+   receipt-backed authoring state, replaces every impacted grouping partition,
+   creates the snapshot record from the reserved coordinates,
+   writes the durable promotion descriptor using the same reserved identity,
+   and moves both reconciliation and journal to
+   `snapshot-publish-pending`.
+3. After commit, recovery opens candidate/final databases read-only, moves an
+   exact candidate once to the immutable final path without overwrite, and
+   revalidates the journaled post-provenance digest and every reserved
+   coordinate. It advances the same snapshot record from creating/promoted to
+   ready, completes the same run, then atomically marks the
+   journal/reconciliation `ready`, removes staging, and releases the
+   reconciliation fence.
 
 The pending journal is the cross-resource handoff. While it exists, every
 competing Preparer mutation returns `recovery-in-progress`. Startup invokes
@@ -476,22 +490,28 @@ Recovery handles each evidence combination explicitly:
 | Evidence at restart | Required action |
 |---------------------|-----------------|
 | State `staged`; graph/group staging missing or divergent | Refuse before canonical promotion with `staging-mismatch` or `grouping-impact-mismatch`; preserve prior publication. |
-| Pending; final absent; temporary candidate matches journal | Add matching promotion provenance if needed, validate it, then move it to the final path. |
-| Pending; final absent; temporary missing/corrupt/checksum-divergent | Record `promotion-recovery-failure`, retain journal/workspace/fence, and stop. |
-| Pending; final present and matching | Reuse it and continue, regardless of whether the crash occurred immediately after the file move. |
-| Pending; final present but conflicting/corrupt | Record `promotion-recovery-failure`, do not overwrite it, and retain the fence. |
-| Pending snapshot record absent or inconsistent | Record `promotion-recovery-failure`; filesystem evidence alone is not adopted. |
+| Pending; final absent; temporary candidate matches the post-provenance journal, candidate descriptor, and snapshot record | Validate read-only, move without overwrite, validate the same bytes at the final path, and continue. |
+| Pending; final absent; temporary missing, corrupt, wrong-sized, or checksum-divergent | Record `promotion-recovery-failure`, retain journal/workspace/fence, and stop. |
+| Pending; final present and matching the journaled digest and all coordinates | Reuse it and continue, regardless of whether the crash occurred immediately after the file move. |
+| Pending; final present but conflicting, corrupt, or accompanied by contradictory descriptor/record evidence | Record `promotion-recovery-failure`, do not overwrite it, and retain the fence. |
+| Pending snapshot record absent or inconsistent in identity, paths, sequence/epoch/schema, counts, digest, size, or creation time | Record `promotion-recovery-failure`; filesystem evidence alone is not adopted. |
 | Snapshot record creating | Validate final bytes and mark it promoted, then ready. |
 | Snapshot record promoted | Mark the same record ready after validation. |
 | Snapshot record already ready; run incomplete | Reuse its descriptor and complete the same run. |
 | Run complete; journal still pending | Mark reconciliation/journal ready, release the fence, and clean workspace. |
+| Staging missing after the database promotion commit | Do not reconstruct or replay the overlay; recover from the exact journal, descriptor, snapshot record, and authenticated file. |
+| Recovery is cancelled while pending | Record `promotion-recovery-failure` with the journal still pending and retain the fence. |
+| Recovery attempts compete | Serialize attempts per run; a filesystem-race winner is accepted only after exact final-byte validation, and later attempts return the same ready descriptor. |
 | Reconciliation `ready` | No canonical replay; the verified replacement is terminal success and cleanup is idempotent. |
 
 Missing staging after the database promotion commit is not a reason to replay
 the overlay: pending recovery is driven by the journal, snapshot record, and
 verified file evidence. Conversely, no pending journal means recovery cannot
 infer that canonical promotion occurred merely from an unclaimed temporary
-file.
+file. Recovery never creates, replaces, or repairs
+`authoring_snapshot_provenance`, and it never adopts a checksum calculated
+from unjournaled bytes; every promoted checksum is the one frozen before
+canonical promotion.
 
 #### Audited unpublished canonical state
 

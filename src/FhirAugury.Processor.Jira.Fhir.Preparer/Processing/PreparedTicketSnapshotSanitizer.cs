@@ -15,6 +15,7 @@ public sealed class PreparedTicketSnapshotSanitizer
     private readonly bool _retainsInputProvenance;
     private readonly bool _retainsInPersonRequesters;
     private readonly bool _enforcesTrustedPeople;
+    private readonly bool _clearsSnapshotProvenance;
     private readonly string? _sourceRunId;
     private readonly IReadOnlyList<
         PreparedTicketGroupingCertificationEvidence>?
@@ -34,7 +35,8 @@ public sealed class PreparedTicketSnapshotSanitizer
         AuthoringSnapshotSchemaCatalog catalog,
         string? sourceRunId = null,
         IReadOnlyList<PreparedTicketGroupingCertificationEvidence>?
-            groupingCertifications = null)
+            groupingCertifications = null,
+        bool clearSnapshotProvenance = false)
         : base(catalog)
     {
         _runId = runId;
@@ -76,12 +78,30 @@ public sealed class PreparedTicketSnapshotSanitizer
                 StringComparison.OrdinalIgnoreCase));
         _enforcesTrustedPeople =
             catalog.Version == PreparedTicketSnapshotSchemaV3.Version;
+        _clearsSnapshotProvenance = clearSnapshotProvenance;
+        if (_clearsSnapshotProvenance &&
+            catalog.Tables.All(table => !string.Equals(
+                table.Name,
+                "authoring_snapshot_provenance",
+                StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new ArgumentException(
+                "Reconciliation snapshots require public snapshot provenance.",
+                nameof(catalog));
+        }
     }
 
     public override async Task SanitizeAsync(
         SqliteConnection connection,
         CancellationToken ct = default)
     {
+        if (_clearsSnapshotProvenance)
+        {
+            await ExecuteAsync(
+                connection,
+                "DELETE FROM authoring_snapshot_provenance",
+                ct);
+        }
         await PreparerDatabase.CreateCurrentSnapshotReceiptBackedTicketsAsync(
             connection,
             ct);

@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.Json;
 using FhirAugury.Common.Text;
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
@@ -146,10 +148,52 @@ public sealed class PreparedTicketSnapshotMaterializer(
                         $"{impact.PartitionKey}:{impact.StagedOutputFingerprint}")));
         string directory = Path.GetFullPath(_options.SnapshotDirectory);
         Directory.CreateDirectory(directory);
+        string safeProcessor = string.Concat(
+            run.ProcessorKind.Select(character =>
+                char.IsLetterOrDigit(character) || character is '-' or '_'
+                    ? character
+                    : '-'));
         string temporaryPath = Path.Combine(
             directory,
-            $"{run.ProcessorKind}-{run.Id}.reconciliation.tmp");
+            $"{safeProcessor}-{run.Id}.reconciliation.tmp");
+        string finalPath = Path.Combine(
+            directory,
+            $"{safeProcessor}-{run.Id}.db");
+        PreparerDatabase.PublicationReconciliationSnapshotReservation
+            reservation =
+                await database.ReservePublicationReconciliationSnapshotAsync(
+                    run.Id,
+                    temporaryPath,
+                    finalPath,
+                    snapshotSchema.Version,
+                    ct);
+        if (reservation.Candidate is not null)
+        {
+            PreparedTicketPublicationCandidateSnapshot existing =
+                reservation.Candidate;
+            EnsureCandidateMatchesReservation(existing, reservation);
+            if (!string.Equals(
+                    existing.OverlayCorpusFingerprint,
+                    delta.OverlayCorpusFingerprint,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    existing.GroupingFingerprint,
+                    groupingFingerprint,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    existing.GroupingImpactFingerprint,
+                    impactFingerprint,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "The reserved reconciliation candidate no longer matches the verified overlay.");
+            }
+            await ValidateCandidateSnapshotAsync(existing, ct);
+            return existing;
+        }
+
         DeleteCandidateArtifacts(temporaryPath);
+        IReadOnlyDictionary<string, long> counts;
         await using (SqliteConnection source = database.OpenConnection())
         await using (SqliteConnection destination = new(
             new SqliteConnectionStringBuilder
@@ -165,36 +209,57 @@ public sealed class PreparedTicketSnapshotMaterializer(
                 destination,
                 run.Id,
                 ct);
+            await CreateSnapshotProvenanceTableAsync(destination, ct);
             PreparedTicketSnapshotSanitizer sanitizer = new(
                 run.Id,
                 snapshotSchema,
-                comparison.SourceRunId);
+                comparison.SourceRunId,
+                clearSnapshotProvenance: true);
             await sanitizer.SanitizeAsync(destination, ct);
-            await VerifyIntegrityAsync(destination, ct);
-        }
-
-        IReadOnlyDictionary<string, long> counts =
-            await ReadTableCountsAsync(
-                temporaryPath,
+            counts = await ReadTableCountsAsync(
+                destination,
                 snapshotSchema.CountedTables,
                 ct);
+            await WriteSnapshotProvenanceAsync(
+                destination,
+                reservation,
+                counts,
+                ct);
+            await CheckpointAsync(destination, ct);
+            await VerifyIntegrityAsync(destination, ct);
+            await VerifyTableCountsAsync(destination, counts, ct);
+            await VerifySnapshotProvenanceAsync(
+                destination,
+                reservation,
+                counts,
+                ct);
+        }
+
         string sha256 = await SqliteReviewSnapshotWriter
             .ComputeSha256Async(temporaryPath, ct);
         PreparedTicketPublicationCandidateSnapshot candidate = new(
             run.Id,
+            reservation.SnapshotId,
+            reservation.ProcessorKind,
             temporaryPath,
+            finalPath,
             snapshotSchema.Version,
+            reservation.Sequence,
+            reservation.AuthoringEpoch,
+            reservation.ItemCount,
+            reservation.ReceiptCount,
             sha256,
             new FileInfo(temporaryPath).Length,
             counts,
             delta.OverlayCorpusFingerprint,
             groupingFingerprint,
             impactFingerprint,
-            DateTimeOffset.UtcNow);
+            reservation.CreatedAt);
+        await ValidateCandidateSnapshotAsync(candidate, ct);
         return candidate;
     }
 
-    public Task PersistTrustedReconciliationCandidateAsync(
+    public async Task PersistTrustedReconciliationCandidateAsync(
         PreparedTicketPublicationCandidateSnapshot candidate,
         PreparedTicketPublicationReconciliationProof proof,
         CancellationToken ct = default)
@@ -213,7 +278,8 @@ public sealed class PreparedTicketSnapshotMaterializer(
             throw new InvalidOperationException(
                 "The provisional reconciliation candidate does not match its publication proof.");
         }
-        return database.SavePublicationReconciliationCandidateEvidenceAsync(
+        await ValidateCandidateSnapshotAsync(candidate, ct);
+        await database.SavePublicationReconciliationCandidateEvidenceAsync(
             candidate,
             proof,
             ct);
@@ -564,21 +630,174 @@ public sealed class PreparedTicketSnapshotMaterializer(
         }
     }
 
+    private static async Task CreateSnapshotProvenanceTableAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            DROP TABLE IF EXISTS authoring_snapshot_provenance;
+            CREATE TABLE authoring_snapshot_provenance(
+                SnapshotId TEXT NOT NULL,
+                ProcessorKind TEXT NOT NULL,
+                RunId TEXT NOT NULL,
+                AuthoringEpoch INTEGER NOT NULL,
+                Sequence INTEGER NOT NULL,
+                SchemaVersion INTEGER NOT NULL,
+                ItemCount INTEGER NOT NULL,
+                ReceiptCount INTEGER NOT NULL,
+                TableCountsJson TEXT NOT NULL,
+                CreatedAt TEXT NOT NULL
+            );
+            """;
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
+    private static async Task WriteSnapshotProvenanceAsync(
+        SqliteConnection connection,
+        PreparerDatabase.PublicationReconciliationSnapshotReservation
+            reservation,
+        IReadOnlyDictionary<string, long> tableCounts,
+        CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            INSERT INTO authoring_snapshot_provenance(
+                SnapshotId, ProcessorKind, RunId, AuthoringEpoch, Sequence,
+                SchemaVersion, ItemCount, ReceiptCount, TableCountsJson,
+                CreatedAt)
+            VALUES(
+                @snapshotId, @processorKind, @runId, @authoringEpoch,
+                @sequence, @schemaVersion, @itemCount, @receiptCount,
+                @tableCountsJson, @createdAt)
+            """;
+        command.Parameters.AddWithValue(
+            "@snapshotId",
+            reservation.SnapshotId);
+        command.Parameters.AddWithValue(
+            "@processorKind",
+            reservation.ProcessorKind);
+        command.Parameters.AddWithValue("@runId", reservation.RunId);
+        command.Parameters.AddWithValue(
+            "@authoringEpoch",
+            reservation.AuthoringEpoch);
+        command.Parameters.AddWithValue("@sequence", reservation.Sequence);
+        command.Parameters.AddWithValue(
+            "@schemaVersion",
+            reservation.SchemaVersion);
+        command.Parameters.AddWithValue("@itemCount", reservation.ItemCount);
+        command.Parameters.AddWithValue(
+            "@receiptCount",
+            reservation.ReceiptCount);
+        command.Parameters.AddWithValue(
+            "@tableCountsJson",
+            JsonSerializer.Serialize(tableCounts));
+        command.Parameters.AddWithValue(
+            "@createdAt",
+            reservation.CreatedAt.ToString(
+                "O",
+                CultureInfo.InvariantCulture));
+        if (await command.ExecuteNonQueryAsync(ct) != 1)
+        {
+            throw new InvalidOperationException(
+                "Snapshot provenance was not written exactly once.");
+        }
+    }
+
+    private static async Task CheckpointAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct) || reader.GetInt32(0) != 0)
+        {
+            throw new InvalidOperationException(
+                "Snapshot WAL checkpoint did not complete.");
+        }
+    }
+
+    private static async Task VerifyTableCountsAsync(
+        SqliteConnection connection,
+        IReadOnlyDictionary<string, long> expected,
+        CancellationToken ct)
+    {
+        IReadOnlyDictionary<string, long> actual =
+            await ReadTableCountsAsync(connection, expected.Keys, ct);
+        if (actual.Count != expected.Count ||
+            expected.Any(pair =>
+                !actual.TryGetValue(pair.Key, out long value) ||
+                value != pair.Value))
+        {
+            throw new InvalidOperationException(
+                "Snapshot table counts changed before hashing.");
+        }
+    }
+
+    private static async Task VerifySnapshotProvenanceAsync(
+        SqliteConnection connection,
+        PreparerDatabase.PublicationReconciliationSnapshotReservation
+            reservation,
+        IReadOnlyDictionary<string, long> tableCounts,
+        CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT SnapshotId, ProcessorKind, RunId, AuthoringEpoch, Sequence,
+                   SchemaVersion, ItemCount, ReceiptCount, TableCountsJson,
+                   CreatedAt
+            FROM authoring_snapshot_provenance
+            """;
+        await using SqliteDataReader reader =
+            await command.ExecuteReaderAsync(ct);
+        bool matches = await reader.ReadAsync(ct) &&
+            !Enumerable.Range(0, reader.FieldCount).Any(reader.IsDBNull) &&
+            string.Equals(
+                reader.GetString(0),
+                reservation.SnapshotId,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                reader.GetString(1),
+                reservation.ProcessorKind,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                reader.GetString(2),
+                reservation.RunId,
+                StringComparison.Ordinal) &&
+            reader.GetInt64(3) == reservation.AuthoringEpoch &&
+            reader.GetInt64(4) == reservation.Sequence &&
+            reader.GetInt32(5) == reservation.SchemaVersion &&
+            reader.GetInt32(6) == reservation.ItemCount &&
+            reader.GetInt32(7) == reservation.ReceiptCount &&
+            string.Equals(
+                reader.GetString(8),
+                JsonSerializer.Serialize(tableCounts),
+                StringComparison.Ordinal) &&
+            string.Equals(
+                reader.GetString(9),
+                reservation.CreatedAt.ToString(
+                    "O",
+                    CultureInfo.InvariantCulture),
+                StringComparison.Ordinal);
+        if (!matches || await reader.ReadAsync(ct))
+        {
+            throw new InvalidOperationException(
+                "Snapshot provenance does not match the reserved coordinates.");
+        }
+    }
+
     private static async Task<IReadOnlyDictionary<string, long>>
         ReadTableCountsAsync(
-            string path,
+            SqliteConnection connection,
             IEnumerable<string> tables,
             CancellationToken ct)
     {
         Dictionary<string, long> counts = new(StringComparer.Ordinal);
-        await using SqliteConnection connection = new(
-            new SqliteConnectionStringBuilder
-            {
-                DataSource = path,
-                Mode = SqliteOpenMode.ReadOnly,
-                Pooling = false,
-            }.ToString());
-        await connection.OpenAsync(ct);
         foreach (string table in tables.Distinct(StringComparer.Ordinal))
         {
             await using SqliteCommand command = connection.CreateCommand();
@@ -589,6 +808,82 @@ public sealed class PreparedTicketSnapshotMaterializer(
                 await command.ExecuteScalarAsync(ct));
         }
         return counts;
+    }
+
+    private static void EnsureCandidateMatchesReservation(
+        PreparedTicketPublicationCandidateSnapshot candidate,
+        PreparerDatabase.PublicationReconciliationSnapshotReservation
+            reservation)
+    {
+        if (!string.Equals(
+                candidate.RunId,
+                reservation.RunId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                candidate.SnapshotId,
+                reservation.SnapshotId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                candidate.ProcessorKind,
+                reservation.ProcessorKind,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                Path.GetFullPath(candidate.TemporaryPath),
+                reservation.TemporaryPath,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                Path.GetFullPath(candidate.FinalPath),
+                reservation.FinalPath,
+                StringComparison.Ordinal) ||
+            candidate.SchemaVersion != reservation.SchemaVersion ||
+            candidate.Sequence != reservation.Sequence ||
+            candidate.AuthoringEpoch != reservation.AuthoringEpoch ||
+            candidate.ItemCount != reservation.ItemCount ||
+            candidate.ReceiptCount != reservation.ReceiptCount ||
+            candidate.CreatedAt != reservation.CreatedAt)
+        {
+            throw new InvalidOperationException(
+                "The trusted reconciliation candidate does not match its reserved snapshot coordinates.");
+        }
+    }
+
+    private static async Task ValidateCandidateSnapshotAsync(
+        PreparedTicketPublicationCandidateSnapshot candidate,
+        CancellationToken ct)
+    {
+        AuthoringReviewSnapshotRecord expected = new()
+        {
+            Id = candidate.SnapshotId,
+            ProcessorKind = candidate.ProcessorKind,
+            RunId = candidate.RunId,
+            AuthoringEpoch = candidate.AuthoringEpoch,
+            Sequence = candidate.Sequence,
+            SchemaVersion = candidate.SchemaVersion,
+            Status = AuthoringStatusValues.Snapshots.Creating,
+            TempPath = candidate.TemporaryPath,
+            Path = candidate.FinalPath,
+            ChecksumSha256 = candidate.Sha256,
+            SizeBytes = candidate.SizeBytes,
+            ItemCount = candidate.ItemCount,
+            ReceiptCount = candidate.ReceiptCount,
+            TableCountsJson = JsonSerializer.Serialize(candidate.TableCounts),
+            CreatedAt = candidate.CreatedAt,
+        };
+        SqliteReviewSnapshotValidationResult validation =
+            await SqliteReviewSnapshotValidator.ValidateAsync(
+                expected,
+                candidate.TemporaryPath,
+                ct: ct);
+        if (!validation.IsValid ||
+            validation.SizeBytes != candidate.SizeBytes ||
+            !string.Equals(
+                validation.ChecksumSha256,
+                candidate.Sha256,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Reconciliation candidate validation failed: {validation.Error ?? "digest or size mismatch"}");
+        }
     }
 
     private static void DeleteCandidateArtifacts(string path)

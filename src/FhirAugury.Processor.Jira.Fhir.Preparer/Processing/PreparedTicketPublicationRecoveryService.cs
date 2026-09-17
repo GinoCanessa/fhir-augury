@@ -1,4 +1,4 @@
-using System.Globalization;
+using System.Collections.Concurrent;
 using System.Text.Json;
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
@@ -6,7 +6,6 @@ using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
-using Microsoft.Data.Sqlite;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
 
@@ -15,6 +14,9 @@ public sealed class PreparedTicketPublicationRecoveryService(
     AuthoringRunStore authoringStore,
     ILogger<PreparedTicketPublicationRecoveryService> logger)
 {
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim>
+        RecoveryLocks = new(StringComparer.Ordinal);
+
     public async Task RecoverPendingAsync(CancellationToken ct = default)
     {
         foreach (string runId in
@@ -38,258 +40,314 @@ public sealed class PreparedTicketPublicationRecoveryService(
         string runId,
         CancellationToken ct = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        SemaphoreSlim recoveryLock = RecoveryLocks.GetOrAdd(
+            runId,
+            static _ => new SemaphoreSlim(1, 1));
+        bool lockTaken = false;
         try
         {
-            PreparerDatabase.PublicationReconciliationPromotion promotion =
-                await database.GetPendingPublicationReconciliationAsync(
-                    runId,
-                    ct)
-                ?? throw new InvalidOperationException(
-                    $"Reconciliation '{runId}' is not awaiting recovery.");
-            AuthoringReviewSnapshotRecord snapshot = (
-                    await authoringStore.GetSnapshotRecordsAsync(ct))
-                .SingleOrDefault(value =>
-                    string.Equals(
-                        value.Id,
-                        promotion.SnapshotId,
-                        StringComparison.Ordinal) &&
-                    string.Equals(
-                        value.RunId,
-                        runId,
-                        StringComparison.Ordinal))
-                ?? throw new InvalidOperationException(
-                    $"Pending snapshot '{promotion.SnapshotId}' has no database record.");
-
-            if (!File.Exists(promotion.FinalPath))
-            {
-                await PrepareTemporarySnapshotAsync(
-                    promotion,
-                    snapshot,
-                    ct);
-                try
-                {
-                    File.Move(
-                        promotion.TemporaryPath,
-                        promotion.FinalPath,
-                        overwrite: false);
-                }
-                catch (IOException) when (File.Exists(promotion.FinalPath))
-                {
-                    // Another recovery attempt won the immutable publication
-                    // race. Validate its bytes below; never overwrite it.
-                }
-            }
-
-            SqliteReviewSnapshotValidationResult validation =
-                await SqliteReviewSnapshotValidator.ValidateAsync(
-                    snapshot,
-                    promotion.FinalPath,
-                    ct: ct);
-            if (!validation.IsValid)
-            {
-                throw new InvalidOperationException(
-                    $"Conflicting or corrupt final snapshot evidence: {validation.Error}");
-            }
-
-            if (snapshot.Status == AuthoringStatusValues.Snapshots.Creating)
-            {
-                await authoringStore.MarkSnapshotPromotedAsync(
-                    snapshot.Id,
-                    validation.ChecksumSha256
-                        ?? throw new InvalidOperationException(
-                            "The verified snapshot has no checksum."),
-                    validation.SizeBytes,
-                    ct: ct);
-                snapshot.Status = AuthoringStatusValues.Snapshots.Promoted;
-            }
-            AuthoringSnapshotDescriptor descriptor =
-                snapshot.Status == AuthoringStatusValues.Snapshots.Ready
-                    ? await authoringStore.GetSnapshotDescriptorAsync(
-                        snapshot.Id,
-                        ct)
-                      ?? throw new InvalidOperationException(
-                          $"Ready snapshot '{snapshot.Id}' has no descriptor.")
-                    : await authoringStore.MarkSnapshotReadyAsync(
-                        snapshot.Id,
-                        ct: ct);
-
-            AuthoringRunRecord run =
-                await authoringStore.GetRunAsync(runId, ct)
-                ?? throw new KeyNotFoundException(
-                    $"Authoring run '{runId}' was not found.");
-            if (run.Status is not (
-                    AuthoringStatusValues.Runs.Completed or
-                    AuthoringStatusValues.Runs.CompletedDatabaseOnly))
-            {
-                await authoringStore.MarkRunFinalizingAsync(runId, ct: ct);
-                await authoringStore.CompleteRunAsync(
-                    runId,
-                    snapshot.Id,
-                    ct: ct);
-            }
-            await database.MarkPublicationReconciliationReadyAsync(
-                runId,
-                ct);
-            await database.CleanupPublicationReconciliationWorkspaceAsync(
-                runId,
-                ct);
-            return descriptor;
+            await recoveryLock.WaitAsync(ct);
+            lockTaken = true;
+            return await RecoverCoreAsync(runId, ct);
         }
         catch (Exception ex)
         {
-            await database.RecordPublicationReconciliationRecoveryFailureAsync(
-                runId,
-                ex.Message,
-                CancellationToken.None);
+            string detail = ex.Message;
+            try
+            {
+                await database
+                    .RecordPublicationReconciliationRecoveryFailureAsync(
+                        runId,
+                        detail,
+                        CancellationToken.None);
+            }
+            catch (Exception recordFailure)
+            {
+                logger.LogError(
+                    recordFailure,
+                    "Could not persist publication reconciliation recovery failure for {RunId}",
+                    runId);
+                detail =
+                    $"{detail} Recovery failure persistence also failed: {recordFailure.Message}";
+            }
             throw new PreparedTicketPublicationReconciliationException(
                 PreparedTicketPublicationReconciliationFailureCodes
                     .PromotionRecoveryFailure,
-                ex.Message);
+                detail);
+        }
+        finally
+        {
+            if (lockTaken)
+            {
+                recoveryLock.Release();
+            }
         }
     }
 
-    private static async Task PrepareTemporarySnapshotAsync(
-        PreparerDatabase.PublicationReconciliationPromotion promotion,
-        AuthoringReviewSnapshotRecord snapshot,
+    private async Task<AuthoringSnapshotDescriptor> RecoverCoreAsync(
+        string runId,
         CancellationToken ct)
     {
-        if (!File.Exists(promotion.TemporaryPath))
-        {
-            throw new FileNotFoundException(
-                "The pending reconciliation has neither a temporary nor a final snapshot.",
-                promotion.TemporaryPath);
-        }
-        string checksum =
-            await SqliteReviewSnapshotWriter.ComputeSha256Async(
-                promotion.TemporaryPath,
-                ct);
-        bool hasPromotionProvenance =
-            await HasMatchingProvenanceAsync(
-                promotion.TemporaryPath,
-                snapshot.Id,
-                ct);
-        if (!hasPromotionProvenance &&
-            !string.Equals(
-                checksum,
-                promotion.CandidateSha256,
-                StringComparison.Ordinal))
+        PreparerDatabase.PublicationReconciliationRecoveryEvidence evidence =
+            await database.GetRecoverablePublicationReconciliationAsync(
+                runId,
+                ct)
+            ?? throw new InvalidOperationException(
+                $"Reconciliation '{runId}' is not awaiting recovery.");
+        PreparerDatabase.PublicationReconciliationPromotion promotion =
+            evidence.Promotion;
+        if (evidence.State ==
+                PreparedTicketPublicationReconciliationPromotionStateValues
+                    .SnapshotPublishPending &&
+            evidence.Candidate is null)
         {
             throw new InvalidOperationException(
-                "The temporary reconciliation snapshot checksum does not match the journal.");
+                $"Pending reconciliation '{runId}' has no trusted candidate descriptor.");
         }
-        if (!hasPromotionProvenance)
+        if (evidence.Candidate is not null)
         {
-            await WriteProvenanceAsync(
-                promotion.TemporaryPath,
+            EnsureCandidateMatchesPromotion(
+                evidence.Candidate,
+                promotion);
+        }
+
+        AuthoringReviewSnapshotRecord snapshot = (
+                await authoringStore.GetSnapshotRecordsAsync(ct))
+            .SingleOrDefault(value =>
+                string.Equals(
+                    value.Id,
+                    promotion.SnapshotId,
+                    StringComparison.Ordinal) &&
+                string.Equals(
+                    value.RunId,
+                    runId,
+                    StringComparison.Ordinal))
+            ?? throw new InvalidOperationException(
+                $"Pending snapshot '{promotion.SnapshotId}' has no database record.");
+        EnsurePromotionMatchesSnapshot(promotion, snapshot);
+
+        if (!File.Exists(promotion.FinalPath))
+        {
+            await ValidateSnapshotFileAsync(
                 promotion,
+                snapshot,
+                promotion.TemporaryPath,
+                "temporary",
                 ct);
+            try
+            {
+                File.Move(
+                    promotion.TemporaryPath,
+                    promotion.FinalPath,
+                    overwrite: false);
+            }
+            catch (IOException) when (File.Exists(promotion.FinalPath))
+            {
+                // Another process may have won the immutable move. Its exact
+                // bytes are independently validated below.
+            }
+        }
+
+        await ValidateSnapshotFileAsync(
+            promotion,
+            snapshot,
+            promotion.FinalPath,
+            "final",
+            ct);
+        if (snapshot.Status == AuthoringStatusValues.Snapshots.Creating)
+        {
+            await authoringStore.MarkSnapshotPromotedAsync(
+                snapshot.Id,
+                promotion.CandidateSha256,
+                promotion.CandidateSizeBytes,
+                ct: ct);
+            snapshot.Status = AuthoringStatusValues.Snapshots.Promoted;
+        }
+        AuthoringSnapshotDescriptor descriptor =
+            snapshot.Status == AuthoringStatusValues.Snapshots.Ready
+                ? await authoringStore.GetSnapshotDescriptorAsync(
+                    snapshot.Id,
+                    ct)
+                  ?? throw new InvalidOperationException(
+                      $"Ready snapshot '{snapshot.Id}' has no descriptor.")
+                : await authoringStore.MarkSnapshotReadyAsync(
+                    snapshot.Id,
+                    ct: ct);
+
+        AuthoringRunRecord run =
+            await authoringStore.GetRunAsync(runId, ct)
+            ?? throw new KeyNotFoundException(
+                $"Authoring run '{runId}' was not found.");
+        if (run.Status is not (
+                AuthoringStatusValues.Runs.Completed or
+                AuthoringStatusValues.Runs.CompletedDatabaseOnly))
+        {
+            await authoringStore.MarkRunFinalizingAsync(runId, ct: ct);
+            await authoringStore.CompleteRunAsync(
+                runId,
+                snapshot.Id,
+                ct: ct);
+        }
+        await database.MarkPublicationReconciliationReadyAsync(
+            runId,
+            ct);
+        return descriptor;
+    }
+
+    private static async Task ValidateSnapshotFileAsync(
+        PreparerDatabase.PublicationReconciliationPromotion promotion,
+        AuthoringReviewSnapshotRecord snapshot,
+        string path,
+        string evidenceName,
+        CancellationToken ct)
+    {
+        if (!File.Exists(path))
+        {
+            throw new FileNotFoundException(
+                $"The pending reconciliation {evidenceName} snapshot is missing.",
+                path);
+        }
+        if (new FileInfo(path).Length != promotion.CandidateSizeBytes)
+        {
+            throw new InvalidOperationException(
+                $"The {evidenceName} reconciliation snapshot size does not match the journal.");
         }
         SqliteReviewSnapshotValidationResult validation =
             await SqliteReviewSnapshotValidator.ValidateAsync(
                 snapshot,
-                promotion.TemporaryPath,
+                path,
                 ct: ct);
-        if (!validation.IsValid)
+        if (!validation.IsValid ||
+            validation.SizeBytes != promotion.CandidateSizeBytes ||
+            !string.Equals(
+                validation.ChecksumSha256,
+                promotion.CandidateSha256,
+                StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
-                $"Temporary reconciliation snapshot validation failed: {validation.Error}");
+                $"{evidenceName} reconciliation snapshot validation failed: {validation.Error ?? "digest or size mismatch"}");
         }
     }
 
-    private static async Task<bool> HasMatchingProvenanceAsync(
-        string path,
-        string snapshotId,
-        CancellationToken ct)
+    private static void EnsureCandidateMatchesPromotion(
+        PreparedTicketPublicationCandidateSnapshot candidate,
+        PreparerDatabase.PublicationReconciliationPromotion promotion)
     {
-        await using SqliteConnection connection =
-            await OpenReadWriteAsync(path, ct);
-        await using SqliteCommand command = connection.CreateCommand();
-        command.CommandText =
-            """
-            SELECT SnapshotId
-            FROM authoring_snapshot_provenance
-            LIMIT 1
-            """;
-        try
+        if (!string.Equals(
+                candidate.RunId,
+                promotion.RunId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                candidate.SnapshotId,
+                promotion.SnapshotId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                candidate.ProcessorKind,
+                promotion.ProcessorKind,
+                StringComparison.Ordinal) ||
+            !PathsEqual(
+                candidate.TemporaryPath,
+                promotion.TemporaryPath) ||
+            !PathsEqual(candidate.FinalPath, promotion.FinalPath) ||
+            !string.Equals(
+                candidate.Sha256,
+                promotion.CandidateSha256,
+                StringComparison.Ordinal) ||
+            candidate.SizeBytes != promotion.CandidateSizeBytes ||
+            candidate.SchemaVersion != promotion.SchemaVersion ||
+            candidate.Sequence != promotion.Sequence ||
+            candidate.AuthoringEpoch != promotion.AuthoringEpoch ||
+            candidate.ItemCount != promotion.ItemCount ||
+            candidate.ReceiptCount != promotion.ReceiptCount ||
+            candidate.CreatedAt != promotion.CreatedAt ||
+            !TableCountsEqual(candidate.TableCounts, promotion.TableCounts))
         {
-            return string.Equals(
-                (string?)await command.ExecuteScalarAsync(ct),
-                snapshotId,
-                StringComparison.Ordinal);
-        }
-        catch (SqliteException ex) when (ex.SqliteErrorCode == 1)
-        {
-            return false;
+            throw new InvalidOperationException(
+                $"Reconciliation '{promotion.RunId}' candidate descriptor conflicts with its promotion journal.");
         }
     }
 
-    private static async Task WriteProvenanceAsync(
-        string path,
+    private static void EnsurePromotionMatchesSnapshot(
         PreparerDatabase.PublicationReconciliationPromotion promotion,
-        CancellationToken ct)
+        AuthoringReviewSnapshotRecord snapshot)
     {
-        await using SqliteConnection connection =
-            await OpenReadWriteAsync(path, ct);
-        await using SqliteCommand command = connection.CreateCommand();
-        command.CommandText =
-            """
-            DROP TABLE IF EXISTS authoring_snapshot_provenance;
-            CREATE TABLE authoring_snapshot_provenance(
-                SnapshotId TEXT NOT NULL,
-                ProcessorKind TEXT NOT NULL,
-                RunId TEXT NOT NULL,
-                AuthoringEpoch INTEGER NOT NULL,
-                Sequence INTEGER NOT NULL,
-                SchemaVersion INTEGER NOT NULL,
-                ItemCount INTEGER NOT NULL,
-                ReceiptCount INTEGER NOT NULL,
-                TableCountsJson TEXT NOT NULL,
-                CreatedAt TEXT NOT NULL
-            );
-            INSERT INTO authoring_snapshot_provenance(
-                SnapshotId, ProcessorKind, RunId, AuthoringEpoch, Sequence,
-                SchemaVersion, ItemCount, ReceiptCount, TableCountsJson,
-                CreatedAt)
-            VALUES(
-                @snapshotId, 'jira-fhir', @runId, @epoch, @sequence,
-                @schemaVersion, @itemCount, @receiptCount, @counts,
-                @createdAt);
-            PRAGMA wal_checkpoint(TRUNCATE);
-            """;
-        command.Parameters.AddWithValue("@snapshotId", promotion.SnapshotId);
-        command.Parameters.AddWithValue("@runId", promotion.RunId);
-        command.Parameters.AddWithValue("@epoch", promotion.AuthoringEpoch);
-        command.Parameters.AddWithValue("@sequence", promotion.Sequence);
-        command.Parameters.AddWithValue(
-            "@schemaVersion",
-            promotion.SchemaVersion);
-        command.Parameters.AddWithValue("@itemCount", promotion.ItemCount);
-        command.Parameters.AddWithValue(
-            "@receiptCount",
-            promotion.ReceiptCount);
-        command.Parameters.AddWithValue(
-            "@counts",
-            JsonSerializer.Serialize(promotion.TableCounts));
-        command.Parameters.AddWithValue(
-            "@createdAt",
-            promotion.CreatedAt.ToString(
-                "O",
-                CultureInfo.InvariantCulture));
-        await command.ExecuteNonQueryAsync(ct);
+        IReadOnlyDictionary<string, long> snapshotCounts =
+            JsonSerializer.Deserialize<Dictionary<string, long>>(
+                snapshot.TableCountsJson)
+            ?? throw new InvalidOperationException(
+                $"Snapshot '{snapshot.Id}' has empty table-count evidence.");
+        bool matches =
+            !string.IsNullOrWhiteSpace(promotion.SnapshotId) &&
+            !string.IsNullOrWhiteSpace(promotion.RunId) &&
+            string.Equals(
+                promotion.ProcessorKind,
+                "jira-fhir",
+                StringComparison.Ordinal) &&
+            !string.IsNullOrWhiteSpace(promotion.CandidateSha256) &&
+            promotion.CandidateSha256.Length == 64 &&
+            promotion.CandidateSha256.All(Uri.IsHexDigit) &&
+            promotion.CandidateSizeBytes > 0 &&
+            promotion.SchemaVersion ==
+                PreparedTicketSnapshotSchemaV3.Version &&
+            promotion.Sequence > 0 &&
+            promotion.AuthoringEpoch >= 0 &&
+            promotion.ItemCount >= 0 &&
+            promotion.ReceiptCount >= 0 &&
+            promotion.CreatedAt != default &&
+            promotion.TableCounts.Keys
+                .ToHashSet(StringComparer.Ordinal)
+                .SetEquals(PreparedTicketSnapshotSchemaV3.CountedTables) &&
+            string.Equals(
+                promotion.SnapshotId,
+                snapshot.Id,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                promotion.ProcessorKind,
+                snapshot.ProcessorKind,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                promotion.RunId,
+                snapshot.RunId,
+                StringComparison.Ordinal) &&
+            promotion.AuthoringEpoch == snapshot.AuthoringEpoch &&
+            promotion.Sequence == snapshot.Sequence &&
+            promotion.SchemaVersion == snapshot.SchemaVersion &&
+            promotion.ItemCount == snapshot.ItemCount &&
+            promotion.ReceiptCount == snapshot.ReceiptCount &&
+            promotion.CreatedAt == snapshot.CreatedAt &&
+            PathsEqual(promotion.TemporaryPath, snapshot.TempPath) &&
+            PathsEqual(promotion.FinalPath, snapshot.Path) &&
+            string.Equals(
+                promotion.CandidateSha256,
+                snapshot.ChecksumSha256,
+                StringComparison.Ordinal) &&
+            promotion.CandidateSizeBytes == snapshot.SizeBytes &&
+            TableCountsEqual(promotion.TableCounts, snapshotCounts) &&
+            snapshot.Status is
+                AuthoringStatusValues.Snapshots.Creating or
+                AuthoringStatusValues.Snapshots.Promoted or
+                AuthoringStatusValues.Snapshots.Ready;
+        if (!matches)
+        {
+            throw new InvalidOperationException(
+                $"Pending snapshot '{promotion.SnapshotId}' conflicts with its promotion journal.");
+        }
     }
 
-    private static async Task<SqliteConnection> OpenReadWriteAsync(
-        string path,
-        CancellationToken ct)
-    {
-        SqliteConnection connection = new(
-            new SqliteConnectionStringBuilder
-            {
-                DataSource = path,
-                Mode = SqliteOpenMode.ReadWrite,
-                Pooling = false,
-            }.ToString());
-        await connection.OpenAsync(ct);
-        return connection;
-    }
+    private static bool TableCountsEqual(
+        IReadOnlyDictionary<string, long> left,
+        IReadOnlyDictionary<string, long> right)
+        => left.Count == right.Count &&
+           left.All(pair =>
+               right.TryGetValue(pair.Key, out long value) &&
+               value == pair.Value);
+
+    private static bool PathsEqual(string left, string right)
+        => string.Equals(
+            Path.GetFullPath(left),
+            Path.GetFullPath(right),
+            OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal);
 }

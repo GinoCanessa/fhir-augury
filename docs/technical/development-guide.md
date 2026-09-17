@@ -334,22 +334,34 @@ boundaries when changing it:
   `authoring_runs` lifecycle row is excluded from the authored-output
   fingerprint; no canonical ticket, receipt coordinate, or unaffected
   grouping row is excluded.
-- **Immutable output:** build, sanitize, integrity-check, size, and hash a
-  temporary schema-v3 snapshot from the overlay before promotion. A successful
-  reconciliation creates a new run/snapshot/sequence/file pair and never edits
-  the source publication.
+- **Immutable output:** while reconciliation is still staged, reserve the
+  snapshot ID, processor/run, sequence, authoring epoch, schema, item/receipt
+  counts, temporary/final paths, and creation time. Build and sanitize the
+  schema-v3 overlay, write exactly one matching provenance row, checkpoint,
+  integrity/count-check, and only then size and hash those exact bytes. Freeze
+  all coordinates and the post-provenance digest in the candidate descriptor.
+  A successful reconciliation creates a new run/snapshot/sequence/file pair
+  and never edits the source publication.
 - **Database-first, not cross-resource atomic:** one immediate transaction on
-  one connection applies revised canonical graphs and complete impacted
-  grouping, creates the snapshot record, and journals
-  `snapshot-publish-pending`. Filesystem publication occurs after commit. The
-  journal and mutation fence make that gap durable; never describe it as a
-  physical atomic transaction.
+  one connection revalidates the exact candidate digest and durable coordinate
+  reservation, applies revised canonical graphs and complete impacted
+  grouping, creates the snapshot record from those coordinates, and journals
+  `snapshot-publish-pending` with the same identity. Promotion must not
+  generate a new snapshot ID or sequence after hashing. Filesystem publication
+  occurs after commit. The journal and mutation fence make that gap durable;
+  never describe it as a physical atomic transaction.
 - **Idempotent recovery:** startup and explicit retry must handle absent,
   matching, or conflicting final files; missing/corrupt temporary candidates;
   creating/promoted/ready or missing snapshot rows; missing staging;
   checksum/provenance mismatch; ready-before-run-complete; and
-  run-complete-before-journal-ready. Never reapply a promoted canonical
-  fingerprint or overwrite a conflicting final file.
+  run-complete-before-journal-ready. Candidate and final databases are
+  read-only evidence: never create/replace provenance or adopt a checksum
+  calculated from unjournaled bytes. Require the exact journaled digest, size,
+  candidate/promotion coordinates, table counts, and snapshot record on every
+  accepted path. Cancellation or contradictory evidence returns
+  `promotion-recovery-failure` and retains the fence; competing attempts may
+  converge only on the same validated bytes. Never reapply a promoted
+  canonical fingerprint or overwrite a conflicting final file.
 - **Audited abandonment:** only a database-promoted pending reconciliation may
   enter `canonical-unpublished`, and only with a non-blank operator reason.
   It releases the fence without rollback or publication. Database-only

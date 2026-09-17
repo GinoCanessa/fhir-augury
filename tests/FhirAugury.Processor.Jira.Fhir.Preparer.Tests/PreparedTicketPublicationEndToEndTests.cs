@@ -883,6 +883,215 @@ public sealed class PreparedTicketPublicationEndToEndTests
     }
 
     [Fact]
+    public async Task Recovery_WithMatchingProvenanceButModifiedCandidate_FailsAndRetainsFence()
+    {
+        using Fixture fixture = new(richGraph: true);
+        PendingReconciliation pending =
+            await CreatePendingReconciliationAsync(fixture);
+        PreparerDatabase.PublicationReconciliationPromotion promotion =
+            pending.Promotion;
+        long originalSize = new FileInfo(promotion.TemporaryPath).Length;
+        string originalProvenance = await ReadSnapshotProvenanceIdAsync(
+            promotion.TemporaryPath);
+
+        await MutateSnapshotAsync(
+            promotion.TemporaryPath,
+            """
+            UPDATE prepared_tickets
+            SET RequestSummary = 'Xeconciled request FHIR-10028'
+            WHERE Key = 'FHIR-10028'
+            """);
+
+        Assert.Equal(promotion.SnapshotId, originalProvenance);
+        Assert.Equal(
+            promotion.SnapshotId,
+            await ReadSnapshotProvenanceIdAsync(
+                promotion.TemporaryPath));
+        Assert.Equal(
+            1,
+            await ReadSnapshotProvenanceCountAsync(
+                promotion.TemporaryPath));
+        Assert.Equal(originalSize, new FileInfo(promotion.TemporaryPath).Length);
+        Assert.NotEqual(
+            promotion.CandidateSha256,
+            await SqliteReviewSnapshotWriter.ComputeSha256Async(
+                promotion.TemporaryPath));
+        PreparedTicketPublicationRecoveryService recovery =
+            CreateRecoveryService(fixture);
+
+        PreparedTicketPublicationReconciliationException error =
+            await Assert.ThrowsAsync<
+                PreparedTicketPublicationReconciliationException>(
+                () => recovery.RecoverAsync(pending.RunId));
+
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationFailureCodes
+                .PromotionRecoveryFailure,
+            error.FailureCode);
+        Assert.True(File.Exists(promotion.TemporaryPath));
+        Assert.False(File.Exists(promotion.FinalPath));
+        Assert.Equal(
+            promotion.SnapshotId,
+            await ReadSnapshotProvenanceIdAsync(
+                promotion.TemporaryPath));
+        await AssertRecoveryFailureRetainsFenceAsync(
+            fixture,
+            pending.RunId);
+    }
+
+    [Theory]
+    [InlineData("missing-candidate", false)]
+    [InlineData("corrupt-candidate", false)]
+    [InlineData("missing-provenance", false)]
+    [InlineData("conflicting-final", false)]
+    [InlineData("missing-snapshot-record", false)]
+    [InlineData("snapshot-record-conflict", false)]
+    [InlineData("checksum-mismatch", false)]
+    [InlineData("missing-staging", true)]
+    [InlineData("cancellation", false)]
+    [InlineData("competing-recovery", true)]
+    public async Task Recovery_AdverseEvidenceMatrix_UsesOnlyJournaledBytes(
+        string scenario,
+        bool recovers)
+    {
+        using Fixture fixture = new(richGraph: true);
+        PendingReconciliation pending =
+            await CreatePendingReconciliationAsync(fixture);
+        PreparerDatabase.PublicationReconciliationPromotion promotion =
+            pending.Promotion;
+        PreparedTicketPublicationRecoveryService recovery =
+            CreateRecoveryService(fixture);
+        CancellationToken recoveryToken = CancellationToken.None;
+        using CancellationTokenSource cancellation = new();
+
+        switch (scenario)
+        {
+            case "missing-candidate":
+                File.Delete(promotion.TemporaryPath);
+                break;
+            case "corrupt-candidate":
+                await File.WriteAllBytesAsync(
+                    promotion.TemporaryPath,
+                    [0x53, 0x51, 0x4c, 0x69, 0x74, 0x65]);
+                break;
+            case "missing-provenance":
+                await MutateSnapshotAsync(
+                    promotion.TemporaryPath,
+                    "DELETE FROM authoring_snapshot_provenance");
+                break;
+            case "conflicting-final":
+                File.Copy(
+                    promotion.TemporaryPath,
+                    promotion.FinalPath,
+                    overwrite: false);
+                await MutateSnapshotAsync(
+                    promotion.FinalPath,
+                    """
+                    UPDATE prepared_tickets
+                    SET RequestSummary = 'Xeconciled request FHIR-10028'
+                    WHERE Key = 'FHIR-10028'
+                    """);
+                break;
+            case "missing-snapshot-record":
+                await ExecuteDatabaseAsync(
+                    fixture,
+                    """
+                    DELETE FROM authoring_review_snapshots
+                    WHERE Id = @snapshotId
+                    """,
+                    ("@snapshotId", promotion.SnapshotId));
+                break;
+            case "snapshot-record-conflict":
+                await ExecuteDatabaseAsync(
+                    fixture,
+                    """
+                    UPDATE authoring_review_snapshots
+                    SET Sequence = Sequence + 10000
+                    WHERE Id = @snapshotId
+                    """,
+                    ("@snapshotId", promotion.SnapshotId));
+                break;
+            case "checksum-mismatch":
+                await ExecuteDatabaseAsync(
+                    fixture,
+                    """
+                    UPDATE authoring_review_snapshots
+                    SET ChecksumSha256 = @checksum
+                    WHERE Id = @snapshotId
+                    """,
+                    ("@checksum", new string('0', 64)),
+                    ("@snapshotId", promotion.SnapshotId));
+                break;
+            case "missing-staging":
+                await DeleteReconciliationStagingAsync(
+                    fixture,
+                    pending.RunId);
+                break;
+            case "cancellation":
+                cancellation.Cancel();
+                recoveryToken = cancellation.Token;
+                break;
+            case "competing-recovery":
+                PreparedTicketPublicationRecoveryService competitor =
+                    CreateRecoveryService(fixture);
+                AuthoringSnapshotDescriptor[] descriptors =
+                    await Task.WhenAll(
+                        recovery.RecoverAsync(pending.RunId),
+                        competitor.RecoverAsync(pending.RunId));
+                Assert.All(
+                    descriptors,
+                    descriptor => Assert.Equal(
+                        promotion.SnapshotId,
+                        descriptor.SnapshotId));
+                await AssertRecoverySucceededAsync(
+                    fixture,
+                    pending.RunId,
+                    promotion);
+                return;
+            default:
+                throw new ArgumentOutOfRangeException(
+                    nameof(scenario),
+                    scenario,
+                    "Unknown recovery evidence scenario.");
+        }
+
+        if (recovers)
+        {
+            AuthoringSnapshotDescriptor descriptor =
+                await recovery.RecoverAsync(
+                    pending.RunId,
+                    recoveryToken);
+            Assert.Equal(promotion.SnapshotId, descriptor.SnapshotId);
+            await AssertRecoverySucceededAsync(
+                fixture,
+                pending.RunId,
+                promotion);
+            return;
+        }
+
+        PreparedTicketPublicationReconciliationException error =
+            await Assert.ThrowsAsync<
+                PreparedTicketPublicationReconciliationException>(
+                () => recovery.RecoverAsync(
+                    pending.RunId,
+                    recoveryToken));
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationFailureCodes
+                .PromotionRecoveryFailure,
+            error.FailureCode);
+        await AssertRecoveryFailureRetainsFenceAsync(
+            fixture,
+            pending.RunId);
+        if (scenario == "missing-provenance")
+        {
+            Assert.Equal(
+                0,
+                await ReadSnapshotProvenanceCountAsync(
+                    promotion.TemporaryPath));
+        }
+    }
+
+    [Fact]
     public async Task CanonicalUnpublishedAbandonmentIsAuditedAndRestrictsSnapshotWorkflows()
     {
         using Fixture fixture = new(richGraph: true);
@@ -1002,6 +1211,9 @@ public sealed class PreparedTicketPublicationEndToEndTests
         PreparedTicketPublicationReconciliationComparison Comparison,
         PreparedTicketPublicationReconciliationPlanner Planner,
         string CorpusFingerprint);
+    private sealed record PendingReconciliation(
+        string RunId,
+        PreparerDatabase.PublicationReconciliationPromotion Promotion);
 
     private sealed class CandidateGenerationAdvancingFetcher(
         IReadOnlyDictionary<string, string> revisions,
@@ -1512,6 +1724,30 @@ public sealed class PreparedTicketPublicationEndToEndTests
             delta.OverlayCorpusFingerprint,
             candidate.OverlayCorpusFingerprint);
         Assert.Equal(
+            JsonSerializer.Serialize(candidate),
+            fixture.Scalar<string>(
+                $"""
+                SELECT SnapshotDescriptorJson
+                FROM prepared_ticket_publication_reconciliation_journal
+                WHERE RunId = '{start.Run.RunId}'
+                """));
+        Assert.Equal(
+            candidate.Sha256,
+            fixture.Scalar<string>(
+                $"""
+                SELECT Sha256
+                FROM prepared_ticket_publication_snapshot_descriptors
+                WHERE RunId = '{start.Run.RunId}'
+                """));
+        Assert.Equal(
+            0,
+            fixture.Scalar<long>(
+                $"""
+                SELECT COUNT(*)
+                FROM authoring_review_snapshots
+                WHERE RunId = '{start.Run.RunId}'
+                """));
+        Assert.Equal(
             PreparedTicketPublicationContract.PublicationReconciliationPurpose,
             proof.Purpose);
 
@@ -1887,6 +2123,255 @@ public sealed class PreparedTicketPublicationEndToEndTests
                 """,
                 ("@specification", specification))));
 
+    private static async Task<PendingReconciliation>
+        CreatePendingReconciliationAsync(Fixture fixture)
+    {
+        Corpus corpus = await CreateCorpusAsync(fixture);
+        PublicationHttpHandler handler = new(fixture, corpus.Updates);
+        using HttpClient http = handler.CreateClient();
+        AuthoringControlClient client = new(http);
+        _ = await PublishAsync(
+            fixture,
+            client,
+            corpus.Source.Descriptor);
+        StagedReconciliation staged =
+            await StageChangedTicketReconciliationAsync(
+                fixture,
+                corpus,
+                handler,
+                http);
+        PreparerDatabase.PublicationReconciliationPromotion promotion =
+            await fixture.Database.PromotePublicationReconciliationAsync(
+                staged.RunId,
+                Path.Combine(
+                    fixture.SnapshotDirectory,
+                    $"jira-fhir-{staged.RunId}.db"));
+        PreparedTicketPublicationCandidateSnapshot candidate =
+            JsonSerializer.Deserialize<
+                PreparedTicketPublicationCandidateSnapshot>(
+                    fixture.Scalar<string>(
+                        $"""
+                        SELECT DescriptorJson
+                        FROM prepared_ticket_publication_snapshot_descriptors
+                        WHERE RunId = '{staged.RunId}'
+                        """))
+            ?? throw new InvalidOperationException(
+                "The pending reconciliation candidate descriptor is invalid.");
+        Assert.Equal(promotion.SnapshotId, candidate.SnapshotId);
+        Assert.Equal(promotion.Sequence, candidate.Sequence);
+        Assert.Equal(promotion.AuthoringEpoch, candidate.AuthoringEpoch);
+        Assert.Equal(promotion.ItemCount, candidate.ItemCount);
+        Assert.Equal(promotion.ReceiptCount, candidate.ReceiptCount);
+        Assert.Equal(promotion.SchemaVersion, candidate.SchemaVersion);
+        Assert.Equal(promotion.FinalPath, candidate.FinalPath);
+        Assert.Equal(promotion.CreatedAt, candidate.CreatedAt);
+        Assert.Equal(promotion.CandidateSha256, candidate.Sha256);
+        Assert.Equal(promotion.CandidateSizeBytes, candidate.SizeBytes);
+        Assert.Equal(
+            promotion.CandidateSha256,
+            fixture.Scalar<string>(
+                $"""
+                SELECT ChecksumSha256
+                FROM authoring_review_snapshots
+                WHERE Id = '{promotion.SnapshotId}'
+                """));
+        Assert.Equal(
+            promotion.SnapshotId,
+            await ReadSnapshotProvenanceIdAsync(
+                promotion.TemporaryPath));
+        Assert.Equal(
+            promotion.CandidateSha256,
+            await SqliteReviewSnapshotWriter.ComputeSha256Async(
+                promotion.TemporaryPath));
+        return new(staged.RunId, promotion);
+    }
+
+    private static PreparedTicketPublicationRecoveryService
+        CreateRecoveryService(Fixture fixture)
+        => new(
+            fixture.Database,
+            fixture.Store,
+            NullLogger<PreparedTicketPublicationRecoveryService>.Instance);
+
+    private static async Task MutateSnapshotAsync(
+        string path,
+        string sql)
+    {
+        await using SqliteConnection connection = new(
+            new SqliteConnectionStringBuilder
+            {
+                DataSource = path,
+                Mode = SqliteOpenMode.ReadWrite,
+                Pooling = false,
+            }.ToString());
+        await connection.OpenAsync();
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = sql;
+            await command.ExecuteNonQueryAsync();
+        }
+        await using (SqliteCommand checkpoint = connection.CreateCommand())
+        {
+            checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+            await checkpoint.ExecuteNonQueryAsync();
+        }
+    }
+
+    private static async Task<string> ReadSnapshotProvenanceIdAsync(
+        string path)
+    {
+        await using SqliteConnection connection =
+            await SqliteReviewSnapshotValidator.OpenReadOnlyAsync(path);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT SnapshotId
+            FROM authoring_snapshot_provenance
+            """;
+        return Assert.IsType<string>(await command.ExecuteScalarAsync());
+    }
+
+    private static async Task<long> ReadSnapshotProvenanceCountAsync(
+        string path)
+    {
+        await using SqliteConnection connection =
+            await SqliteReviewSnapshotValidator.OpenReadOnlyAsync(path);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT COUNT(*) FROM authoring_snapshot_provenance";
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(),
+            CultureInfo.InvariantCulture);
+    }
+
+    private static async Task ExecuteDatabaseAsync(
+        Fixture fixture,
+        string sql,
+        params (string Name, object? Value)[] parameters)
+    {
+        await using SqliteConnection connection =
+            fixture.Database.OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = sql;
+        foreach ((string name, object? value) in parameters)
+        {
+            command.Parameters.AddWithValue(name, value ?? DBNull.Value);
+        }
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static Task DeleteReconciliationStagingAsync(
+        Fixture fixture,
+        string runId)
+        => ExecuteDatabaseAsync(
+            fixture,
+            """
+            DELETE FROM prepared_ticket_publication_staged_graphs
+            WHERE RunId = @runId;
+            DELETE FROM prepared_ticket_publication_staged_hydration
+            WHERE RunId = @runId;
+            DELETE FROM prepared_ticket_publication_staged_receipts
+            WHERE RunId = @runId;
+            DELETE FROM prepared_ticket_publication_grouping_impacts
+            WHERE RunId = @runId;
+            DELETE FROM prepared_ticket_publication_staged_grouping
+            WHERE RunId = @runId;
+            DELETE FROM prepared_ticket_publication_grouping_stage_receipts
+            WHERE RunId = @runId;
+            """,
+            ("@runId", runId));
+
+    private static async Task AssertRecoveryFailureRetainsFenceAsync(
+        Fixture fixture,
+        string runId)
+    {
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .SnapshotPublishPending,
+            fixture.Scalar<string>(
+                $"""
+                SELECT PromotionState
+                FROM prepared_ticket_publication_reconciliations
+                WHERE RunId = '{runId}'
+                """));
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .SnapshotPublishPending,
+            fixture.Scalar<string>(
+                $"""
+                SELECT State
+                FROM prepared_ticket_publication_reconciliation_journal
+                WHERE RunId = '{runId}'
+                """));
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationFailureCodes
+                .PromotionRecoveryFailure,
+            fixture.Scalar<string>(
+                $"""
+                SELECT FailureCode
+                FROM prepared_ticket_publication_reconciliation_journal
+                WHERE RunId = '{runId}'
+                """));
+        Assert.NotNull(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+        Assert.Equal(
+            1,
+            fixture.Scalar<long>(
+                $"""
+                SELECT COUNT(*)
+                FROM prepared_ticket_publication_reconciliation_fences
+                WHERE RunId = '{runId}'
+                """));
+        Assert.Contains(
+            runId,
+            await fixture.Database
+                .ListPendingPublicationReconciliationsAsync());
+    }
+
+    private static async Task AssertRecoverySucceededAsync(
+        Fixture fixture,
+        string runId,
+        PreparerDatabase.PublicationReconciliationPromotion promotion)
+    {
+        Assert.True(File.Exists(promotion.FinalPath));
+        Assert.False(File.Exists(promotion.TemporaryPath));
+        Assert.Equal(
+            promotion.CandidateSizeBytes,
+            new FileInfo(promotion.FinalPath).Length);
+        Assert.Equal(
+            promotion.CandidateSha256,
+            await SqliteReviewSnapshotWriter.ComputeSha256Async(
+                promotion.FinalPath));
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationPromotionStateValues.Ready,
+            fixture.Scalar<string>(
+                $"""
+                SELECT PromotionState
+                FROM prepared_ticket_publication_reconciliations
+                WHERE RunId = '{runId}'
+                """));
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationPromotionStateValues.Ready,
+            fixture.Scalar<string>(
+                $"""
+                SELECT State
+                FROM prepared_ticket_publication_reconciliation_journal
+                WHERE RunId = '{runId}'
+                """));
+        Assert.Null(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+        Assert.Equal(
+            0,
+            fixture.Scalar<long>(
+                $"""
+                SELECT COUNT(*)
+                FROM prepared_ticket_publication_reconciliation_fences
+                WHERE RunId = '{runId}'
+                """));
+        Assert.DoesNotContain(
+            runId,
+            await fixture.Database
+                .ListPendingPublicationReconciliationsAsync());
+    }
+
     private static async Task<AuthoringSnapshotDescriptor>
         ResumeCandidateFinalizationAsync(
             Fixture fixture,
@@ -1981,70 +2466,13 @@ public sealed class PreparedTicketPublicationEndToEndTests
     {
         Assert.True(File.Exists(promotion.TemporaryPath));
         Assert.False(File.Exists(promotion.FinalPath));
-        await using (SqliteConnection connection = new(
-            new SqliteConnectionStringBuilder
-            {
-                DataSource = promotion.TemporaryPath,
-                Mode = SqliteOpenMode.ReadWrite,
-                Pooling = false,
-            }.ToString()))
-        {
-            await connection.OpenAsync();
-            await using SqliteCommand command = connection.CreateCommand();
-            command.CommandText =
-                """
-                DROP TABLE IF EXISTS authoring_snapshot_provenance;
-                CREATE TABLE authoring_snapshot_provenance(
-                    SnapshotId TEXT NOT NULL,
-                    ProcessorKind TEXT NOT NULL,
-                    RunId TEXT NOT NULL,
-                    AuthoringEpoch INTEGER NOT NULL,
-                    Sequence INTEGER NOT NULL,
-                    SchemaVersion INTEGER NOT NULL,
-                    ItemCount INTEGER NOT NULL,
-                    ReceiptCount INTEGER NOT NULL,
-                    TableCountsJson TEXT NOT NULL,
-                    CreatedAt TEXT NOT NULL
-                );
-                INSERT INTO authoring_snapshot_provenance(
-                    SnapshotId, ProcessorKind, RunId, AuthoringEpoch,
-                    Sequence, SchemaVersion, ItemCount, ReceiptCount,
-                    TableCountsJson, CreatedAt)
-                VALUES(
-                    @snapshotId, 'jira-fhir', @runId, @epoch, @sequence,
-                    @schemaVersion, @itemCount, @receiptCount, @counts,
-                    @createdAt);
-                PRAGMA wal_checkpoint(TRUNCATE);
-                """;
-            command.Parameters.AddWithValue(
-                "@snapshotId",
-                promotion.SnapshotId);
-            command.Parameters.AddWithValue("@runId", promotion.RunId);
-            command.Parameters.AddWithValue(
-                "@epoch",
-                promotion.AuthoringEpoch);
-            command.Parameters.AddWithValue(
-                "@sequence",
-                promotion.Sequence);
-            command.Parameters.AddWithValue(
-                "@schemaVersion",
-                promotion.SchemaVersion);
-            command.Parameters.AddWithValue(
-                "@itemCount",
-                promotion.ItemCount);
-            command.Parameters.AddWithValue(
-                "@receiptCount",
-                promotion.ReceiptCount);
-            command.Parameters.AddWithValue(
-                "@counts",
-                JsonSerializer.Serialize(promotion.TableCounts));
-            command.Parameters.AddWithValue(
-                "@createdAt",
-                promotion.CreatedAt.ToString(
-                    "O",
-                    CultureInfo.InvariantCulture));
-            await command.ExecuteNonQueryAsync();
-        }
+        Assert.Equal(
+            promotion.CandidateSizeBytes,
+            new FileInfo(promotion.TemporaryPath).Length);
+        Assert.Equal(
+            promotion.CandidateSha256,
+            await SqliteReviewSnapshotWriter.ComputeSha256Async(
+                promotion.TemporaryPath));
         Directory.CreateDirectory(
             Assert.IsType<string>(
                 Path.GetDirectoryName(promotion.FinalPath)));

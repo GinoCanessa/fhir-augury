@@ -1016,47 +1016,66 @@ and remain exact.
 
 | Table | Key | Durable contents |
 |-------|-----|------------------|
-| `prepared_ticket_publication_snapshot_descriptors` | `RunId` | Verified temporary candidate descriptor JSON, candidate SHA-256, and persistence time |
+| `prepared_ticket_publication_snapshot_descriptors` | `RunId` | Immutable candidate descriptor JSON containing reserved snapshot/provenance coordinates plus the exact post-provenance SHA-256, size, table counts, and persistence time |
 | `prepared_ticket_publication_reconciliation_proofs` | `RunId` | Contract-v2 proof JSON and capture time |
 | `prepared_ticket_publication_reconciliation_fences` | `RunId` | Reconciliation lease ID and acquisition time, paired with the processor-wide `authoring_mutation_fences` row |
-| `prepared_ticket_publication_reconciliation_journal` | `RunId` UNIQUE | State, nullable promotion descriptor JSON, last recovery attempt, stable failure code/detail, and update time |
+| `prepared_ticket_publication_reconciliation_journal` | `RunId` UNIQUE | State, typed staged reservation/candidate or pending promotion descriptor JSON, last recovery attempt, stable failure code/detail, and update time |
 
 The proof JSON binds source run/snapshot, stable Jira generation,
 accepted/carried/re-authored counts, overlay corpus fingerprint,
 grouping-impact fingerprint, and capture time. The candidate descriptor binds
-the temporary path, schema version, checksum, size, table counts, and the same
-overlay/grouping evidence. A restarted finalizer may replace the candidate
-descriptor and proof while `PromotionState = 'staged'` after rematerializing
-from the same validated workspace. Neither row is replaceable after promotion
-becomes pending.
+snapshot ID, processor/run, temporary and final paths, schema, sequence,
+authoring epoch, item/receipt counts, creation time, checksum, size, public
+table counts, and the same overlay/grouping evidence. Before materialization,
+the Preparer writes those identity coordinates as a typed reservation in the
+staged journal while `PromotionState = 'staged'`. After sanitization it writes
+one matching
+`authoring_snapshot_provenance` row, checkpoints and validates SQLite, then
+hashes the resulting bytes. Candidate persistence writes the exact
+post-provenance descriptor and proof, replacing only its matching reservation
+in the staged journal. A restarted finalizer may reuse that already
+authenticated candidate but cannot replace it with different bytes.
 
 The journal starts at `staged`. The database-first promotion transaction
-revalidates the candidate/workspace/fingerprints, applies every revised graph
-and complete impacted grouping replacement, creates an
-`authoring_review_snapshots` row in creating state, and stores a promotion
-descriptor while moving both state rows to `snapshot-publish-pending`. That
-descriptor binds run/snapshot IDs, temporary and immutable final paths,
-candidate digest, sequence/epoch/schema, counts, and creation time. This
-transaction does not claim to atomically move a filesystem file.
+revalidates the candidate's exact post-provenance digest and size, every
+descriptor coordinate, the durable reservation, workspace, and fingerprints.
+It applies every revised graph and complete impacted grouping replacement,
+creates the `authoring_review_snapshots` row from the already reserved
+identity, and stores a promotion descriptor while moving both state rows to
+`snapshot-publish-pending`. It does not generate a new snapshot ID or sequence
+after hashing, and it does not claim to atomically move a filesystem file.
 
 Pending recovery uses the journal plus the snapshot row:
 
-- absent final + valid temporary: write/verify snapshot provenance, validate,
-  then move without overwrite;
-- matching final: validate and reuse it;
+- absent final + valid temporary: validate the exact journaled
+  post-provenance bytes read-only, move without overwrite, then validate the
+  same digest at the final path;
+- matching final: validate its digest, size, provenance, coordinates, and
+  counts against both descriptors and the snapshot record, then reuse it;
 - conflicting/corrupt final, missing/corrupt temporary when no final is
-  usable, checksum/provenance divergence, or missing/inconsistent snapshot
-  row: persist `promotion-recovery-failure` and retain the fence;
+  usable, checksum/provenance/count divergence, contradictory candidate or
+  promotion descriptors, or a missing/inconsistent snapshot row: persist
+  `promotion-recovery-failure` and retain the fence;
 - creating/promoted/ready snapshot rows: advance only the missing transitions;
 - ready snapshot with incomplete run, or complete run with pending journal:
   finish the same run/journal/fence transitions without replaying canonical
-  replacement.
+  replacement;
+- missing staging after canonical commit: rely only on authenticated
+  journal/descriptor/record/file evidence; never reconstruct the overlay;
+- cancellation: retain pending state and fences with
+  `promotion-recovery-failure`;
+- competing attempts: serialize per run and accept a race winner only when
+  the immutable final bytes match the same journaled evidence.
 
 Successful recovery sets snapshot, run, reconciliation, and journal ready,
-releases the fences, then idempotently removes graph/hydration/receipt impact
-workspace and the candidate descriptor. Proof, comparison, item decisions,
-unaffected fingerprint, and journal remain auditable. Startup and the explicit
-retry endpoint use the same pending-journal protocol.
+then removes graph/hydration/receipt impact workspace and the candidate
+descriptor in the same transaction that releases the reconciliation fence.
+Proof, comparison, item decisions, unaffected fingerprint, and journal remain
+auditable. Recovery never opens candidate/final SQLite files for writing,
+never creates or replaces provenance, and marks the snapshot promoted with
+the previously journaled digest rather than a checksum discovered during
+recovery. Startup and the explicit retry endpoint use the same
+pending-journal protocol.
 
 Contract-v1 comparison and proof rows remain deserializable for these audit
 views, including null v2-only item coordinates. They are execution-inert:
