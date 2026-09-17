@@ -1,4 +1,3 @@
-using System.Text.Json;
 using FhirAugury.Common.Text;
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
@@ -24,6 +23,26 @@ public sealed class PreparedTicketSnapshotMaterializer(
 
     public async Task<PreparedTicketPublicationCandidateSnapshot>
         MaterializeReconciliationCandidateAsync(
+            AuthoringRunRecord run,
+            PreparedTicketPublicationReconciliationProof proof,
+            AuthoringSnapshotSchemaCatalog? snapshotSchema = null,
+            CancellationToken ct = default)
+    {
+        PreparedTicketPublicationCandidateSnapshot candidate =
+            await MaterializeProvisionalReconciliationCandidateAsync(
+                run,
+                proof,
+                snapshotSchema,
+                ct);
+        await PersistTrustedReconciliationCandidateAsync(
+            candidate,
+            proof,
+            ct);
+        return candidate;
+    }
+
+    public async Task<PreparedTicketPublicationCandidateSnapshot>
+        MaterializeProvisionalReconciliationCandidateAsync(
             AuthoringRunRecord run,
             PreparedTicketPublicationReconciliationProof proof,
             AuthoringSnapshotSchemaCatalog? snapshotSchema = null,
@@ -172,18 +191,39 @@ public sealed class PreparedTicketSnapshotMaterializer(
             groupingFingerprint,
             impactFingerprint,
             DateTimeOffset.UtcNow);
-        await database.SavePublicationReconciliationSnapshotDescriptorAsync(
-            new(
-                run.Id,
-                JsonSerializer.Serialize(candidate),
-                candidate.Sha256,
-                candidate.CapturedAt),
-            ct);
-        await database.SavePublicationReconciliationProofAsync(
-            run.Id,
+        return candidate;
+    }
+
+    public Task PersistTrustedReconciliationCandidateAsync(
+        PreparedTicketPublicationCandidateSnapshot candidate,
+        PreparedTicketPublicationReconciliationProof proof,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        ArgumentNullException.ThrowIfNull(proof);
+        if (!string.Equals(
+                candidate.OverlayCorpusFingerprint,
+                proof.CorpusFingerprint,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                candidate.GroupingImpactFingerprint,
+                proof.GroupingImpactFingerprint,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The provisional reconciliation candidate does not match its publication proof.");
+        }
+        return database.SavePublicationReconciliationCandidateEvidenceAsync(
+            candidate,
             proof,
             ct);
-        return candidate;
+    }
+
+    public void DiscardProvisionalReconciliationCandidate(
+        PreparedTicketPublicationCandidateSnapshot candidate)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        DeleteCandidateArtifacts(candidate.TemporaryPath);
     }
 
     public async Task<AuthoringSnapshotDescriptor> MaterializeAsync(

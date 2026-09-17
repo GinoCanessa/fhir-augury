@@ -39,27 +39,8 @@ public sealed class PreparedTicketPublicationReconciliationTests
                         .ToString("O"),
             };
         ObservationFetcher fetcher = new(revisions, generation: 42);
-        AuthoringRetryPolicy retryPolicy = new(
-            Options.Create(new ProcessingServiceOptions()));
-        JiraAuthoringRunCoordinator coordinator = new(
-            fixture.Store,
-            new JiraProcessingSourceTicketStore(
-                fixture.Database.DatabasePath),
-            new JiraProcessingFilterResolver(),
-            Options.Create(new JiraProcessingOptions
-            {
-                AgentCliCommand = "agent {ticketKey}",
-                JiraSourceAddress = "http://source",
-                SourceTicketShape = "fhir",
-                TicketStatusesToProcess = ["Triaged"],
-            }));
-        PreparedTicketPublicationReconciliationPlanner planner = new(
-            fixture.CreateBaselineReader(),
-            fetcher,
-            fixture.Database,
-            new AuthoringRunControlService(fixture.Store, retryPolicy),
-            coordinator,
-            new AuthoringRunSchedulerWakeSignal());
+        PreparedTicketPublicationReconciliationPlanner planner =
+            CreatePlanner(fixture, fetcher);
 
         PreparedTicketPublicationReconciliationStartResult result =
             await planner.StartAsync(source.Run.Id);
@@ -99,6 +80,185 @@ public sealed class PreparedTicketPublicationReconciliationTests
             AuthoringConflictCode.MutationFenceUnavailable,
             conflict.Code);
         Assert.Equal(6, fetcher.CallCount);
+    }
+
+    [Fact]
+    public async Task AllCarryForwardReconciliation_RejectsGenerationAdvanceBeforePromotion()
+    {
+        using Fixture fixture = new();
+        SourceResult source =
+            await fixture.CreateSourceRunAsync("FHIR-13055", "FHIR-13054");
+        ObservationFetcher fetcher = new(
+            new Dictionary<string, string>(
+                source.ExpectedRevisions,
+                StringComparer.OrdinalIgnoreCase),
+            generation: 42);
+        PreparedTicketPublicationReconciliationPlanner planner =
+            CreatePlanner(fixture, fetcher);
+        PreparedTicketPublicationReconciliationStartResult start =
+            await planner.StartAsync(source.Run.Id);
+        Assert.All(
+            start.Comparison.Items,
+            item => Assert.Equal(
+                PreparedTicketPublicationReconciliationDispositionValues
+                    .CarryForward,
+                item.Disposition));
+
+        string[] expected =
+            ["FHIR-13054", "FHIR-13055"];
+        int callsBeforeStatus = fetcher.CallCount;
+        fetcher.Generation = 43;
+
+        PreparedTicketPublicationReconciliationStatusResult status =
+            await planner.GetStatusAsync(start.Run.RunId);
+
+        Assert.Equal(expected, status.InvalidatedTicketKeys);
+        Assert.Equal(expected.Length, status.Counts.InvalidatedTicketCount);
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationFailureCodes
+                .RevisionInvalidation,
+            status.FailureCode);
+        Assert.Equal(
+            expected,
+            fetcher.RequestedTicketKeys
+                .Skip(callsBeforeStatus)
+                .ToArray());
+        PreparedTicketGroupingDeltaDispatcher grouping = new(
+            fixture.Database);
+        IOptions<PreparerServiceOptions> options =
+            Options.Create(new PreparerServiceOptions
+            {
+                SnapshotDirectory = fixture.SnapshotDirectory,
+                SnapshotSchemaVersion =
+                    PreparedTicketSnapshotSchemaV3.Version,
+            });
+        PreparedTicketSnapshotMaterializer materializer = new(
+            fixture.Database,
+            fixture.Store,
+            new SqliteReviewSnapshotReconciler(fixture.Store),
+            options);
+        PreparedTicketRunWorkflowRegistry workflows = new(
+            fixture.Store,
+            fixture.Database,
+            fetcher,
+            planner,
+            grouping,
+            materializer,
+            new PreparedTicketPublicationRecoveryService(
+                fixture.Database,
+                fixture.Store,
+                NullLogger<PreparedTicketPublicationRecoveryService>.Instance),
+            options,
+            NullLogger<PreparedTicketRunWorkflowRegistry>.Instance);
+        AuthoringRunRecord run = Assert.IsType<AuthoringRunRecord>(
+            await fixture.Store.GetRunAsync(start.Run.RunId));
+        PreparedTicketPublicationReconciliationException error =
+            await Assert.ThrowsAsync<
+                PreparedTicketPublicationReconciliationException>(
+                () => workflows.FinalizeReconciliationAsync(run));
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationFailureCodes
+                .RevisionInvalidation,
+            error.FailureCode);
+        Assert.Equal(expected, error.TicketKeys);
+        Assert.Equal(
+            expected,
+            fetcher.RequestedTicketKeys
+                .Skip(callsBeforeStatus + expected.Length)
+                .ToArray());
+        string temporaryPath = Path.Combine(
+            fixture.SnapshotDirectory,
+            $"jira-fhir-{start.Run.RunId}.reconciliation.tmp");
+        string finalPath = Path.Combine(
+            fixture.SnapshotDirectory,
+            $"jira-fhir-{start.Run.RunId}.db");
+        Assert.False(File.Exists(temporaryPath));
+        Assert.False(File.Exists(finalPath));
+        Assert.All(
+            new[]
+            {
+                "prepared_ticket_publication_snapshot_descriptors",
+                "prepared_ticket_publication_reconciliation_proofs",
+                "authoring_review_snapshots",
+            },
+            table => Assert.Equal(
+                0,
+                fixture.Scalar<long>(
+                    $"SELECT COUNT(*) FROM {table} WHERE RunId = '{start.Run.RunId}'")));
+        Assert.Equal(
+            0,
+            fixture.Scalar<long>(
+                $"""
+                SELECT COUNT(*)
+                FROM prepared_ticket_authoring_state
+                WHERE RunId = '{start.Run.RunId}'
+                """));
+        Assert.Equal(
+            AuthoringStatusValues.Runs.Running,
+            Assert.IsType<AuthoringRunRecord>(
+                await fixture.Store.GetRunAsync(start.Run.RunId)).Status);
+        Assert.NotNull(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+    }
+
+    [Fact]
+    public async Task MixedReconciliation_RejectsGenerationAdvanceBeforePromotion()
+    {
+        using Fixture fixture = new();
+        SourceResult source =
+            await fixture.CreateSourceRunAsync("FHIR-13055", "FHIR-13054");
+        Dictionary<string, string> revisions =
+            new(source.ExpectedRevisions, StringComparer.OrdinalIgnoreCase)
+            {
+                ["FHIR-13055"] =
+                    new DateTimeOffset(2026, 9, 3, 0, 0, 0, TimeSpan.Zero)
+                        .ToString("O"),
+            };
+        ObservationFetcher fetcher = new(revisions, generation: 42);
+        PreparedTicketPublicationReconciliationPlanner planner =
+            CreatePlanner(fixture, fetcher);
+        PreparedTicketPublicationReconciliationStartResult start =
+            await planner.StartAsync(source.Run.Id);
+        Assert.Equal(1, start.Counts.CarryForwardTicketCount);
+        Assert.Equal(1, start.Counts.ReAuthorTicketCount);
+
+        revisions["FHIR-13054"] =
+            new DateTimeOffset(2026, 9, 4, 0, 0, 0, TimeSpan.Zero)
+                .ToString("O");
+        fetcher.MissingTicketKeys.Add("FHIR-13055");
+        fetcher.Generation = 43;
+        string[] expected =
+            ["FHIR-13054", "FHIR-13055"];
+        int callsBeforeStatus = fetcher.CallCount;
+
+        PreparedTicketPublicationReconciliationStatusResult status =
+            await planner.GetStatusAsync(start.Run.RunId);
+
+        Assert.Equal(expected, status.InvalidatedTicketKeys);
+        Assert.Equal(expected.Length, status.Counts.InvalidatedTicketCount);
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationFailureCodes
+                .RevisionInvalidation,
+            status.FailureCode);
+        Assert.Equal(
+            expected,
+            fetcher.RequestedTicketKeys
+                .Skip(callsBeforeStatus)
+                .ToArray());
+        PreparedTicketPublicationReconciliationException error =
+            await Assert.ThrowsAsync<
+                PreparedTicketPublicationReconciliationException>(
+                () => planner.EnsureFrozenCorpusCurrentAsync(
+                    start.Run.RunId));
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationFailureCodes
+                .RevisionInvalidation,
+            error.FailureCode);
+        Assert.Equal(expected, error.TicketKeys);
+        Assert.Equal(
+            expected,
+            fetcher.RequestedTicketKeys
+                .Skip(callsBeforeStatus + expected.Length)
+                .ToArray());
     }
 
     [Fact]
@@ -630,6 +790,34 @@ public sealed class PreparedTicketPublicationReconciliationTests
                 "abandoned"));
     }
 
+    private static PreparedTicketPublicationReconciliationPlanner
+        CreatePlanner(
+            Fixture fixture,
+            OrchestratorHydrationFetcher fetcher)
+    {
+        AuthoringRetryPolicy retryPolicy = new(
+            Options.Create(new ProcessingServiceOptions()));
+        JiraAuthoringRunCoordinator coordinator = new(
+            fixture.Store,
+            new JiraProcessingSourceTicketStore(
+                fixture.Database.DatabasePath),
+            new JiraProcessingFilterResolver(),
+            Options.Create(new JiraProcessingOptions
+            {
+                AgentCliCommand = "agent {ticketKey}",
+                JiraSourceAddress = "http://source",
+                SourceTicketShape = "fhir",
+                TicketStatusesToProcess = ["Triaged"],
+            }));
+        return new(
+            fixture.CreateBaselineReader(),
+            fetcher,
+            fixture.Database,
+            new AuthoringRunControlService(fixture.Store, retryPolicy),
+            coordinator,
+            new AuthoringRunSchedulerWakeSignal());
+    }
+
     private static string Hash(char value) => new(value, 64);
 
     private static PreparedTicketPayload Payload(string key, string summary)
@@ -674,6 +862,10 @@ public sealed class PreparedTicketPublicationReconciliationTests
             NullLogger.Instance)
     {
         public int CallCount { get; private set; }
+        public long Generation { get; set; } = generation;
+        public HashSet<string> MissingTicketKeys { get; } =
+            new(StringComparer.OrdinalIgnoreCase);
+        public List<string> RequestedTicketKeys { get; } = [];
 
         public override Task<PublicationMetadataFetchResult>
             FetchPublicationMetadataAsync(
@@ -682,6 +874,25 @@ public sealed class PreparedTicketPublicationReconciliationTests
                 CancellationToken ct)
         {
             CallCount++;
+            RequestedTicketKeys.Add(ticketKey);
+            if (MissingTicketKeys.Contains(ticketKey))
+            {
+                return Task.FromResult(new PublicationMetadataFetchResult(
+                    ticketKey,
+                    hydratedAt,
+                    null,
+                    null,
+                    null,
+                    [],
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    new(
+                        PublicationMetadataFetchFailureReason.TicketNotFound,
+                        "Synthetic missing ticket.")));
+            }
             return Task.FromResult(new PublicationMetadataFetchResult(
                 ticketKey,
                 hydratedAt,
@@ -691,7 +902,7 @@ public sealed class PreparedTicketPublicationReconciliationTests
                 [],
                 "FHIR",
                 hydratedAt,
-                generation,
+                Generation,
                 true,
                 1,
                 Failure: null,

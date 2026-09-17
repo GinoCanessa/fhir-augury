@@ -7414,6 +7414,240 @@ public sealed class PreparerDatabase(string dbPath, ILogger<PreparerDatabase> lo
         }
     }
 
+    public async Task SavePublicationReconciliationCandidateEvidenceAsync(
+        PreparedTicketPublicationCandidateSnapshot candidate,
+        PreparedTicketPublicationReconciliationProof proof,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        ArgumentNullException.ThrowIfNull(proof);
+        ArgumentException.ThrowIfNullOrWhiteSpace(candidate.RunId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(candidate.Sha256);
+        if (proof.ContractVersion !=
+                PreparedTicketPublicationReconciliationContract
+                    .CurrentVersion ||
+            proof.Purpose !=
+                PreparedTicketPublicationReconciliationContract.Purpose)
+        {
+            throw new ArgumentException(
+                "The publication proof is not a current reconciliation proof.",
+                nameof(proof));
+        }
+
+        string descriptorJson = JsonSerializer.Serialize(candidate);
+        string proofJson = JsonSerializer.Serialize(proof);
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteTransaction transaction =
+            connection.BeginTransaction(deferred: false);
+        try
+        {
+            string promotionState;
+            string runStatus;
+            PreparedTicketPublicationReconciliationComparison comparison;
+            await using (SqliteCommand read = connection.CreateCommand())
+            {
+                read.Transaction = transaction;
+                read.CommandText =
+                    """
+                    SELECT reconciliation.PromotionState,
+                           reconciliation.ComparisonJson,
+                           run.Status
+                    FROM prepared_ticket_publication_reconciliations
+                        reconciliation
+                    INNER JOIN authoring_runs run
+                      ON run.Id = reconciliation.RunId
+                    WHERE reconciliation.RunId = @runId
+                    """;
+                read.Parameters.AddWithValue("@runId", candidate.RunId);
+                await using SqliteDataReader reader =
+                    await read.ExecuteReaderAsync(ct);
+                if (!await reader.ReadAsync(ct))
+                {
+                    throw new KeyNotFoundException(
+                        $"Publication reconciliation '{candidate.RunId}' was not found.");
+                }
+                promotionState = reader.GetString(0);
+                comparison = JsonSerializer.Deserialize<
+                    PreparedTicketPublicationReconciliationComparison>(
+                        reader.GetString(1))
+                    ?? throw new InvalidOperationException(
+                        $"Reconciliation '{candidate.RunId}' has an invalid comparison.");
+                runStatus = reader.GetString(2);
+            }
+            EnsureCurrentPublicationReconciliationComparison(comparison);
+            if (promotionState !=
+                PreparedTicketPublicationReconciliationPromotionStateValues
+                    .Staged ||
+                runStatus != AuthoringStatusValues.Runs.Finalizing)
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{candidate.RunId}' can no longer persist finalizing candidate evidence.");
+            }
+            if (!string.Equals(
+                    proof.SourceRunId,
+                    comparison.SourceRunId,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    proof.SourceSnapshotId,
+                    comparison.SourceSnapshotId,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    proof.StableJiraGeneration,
+                    comparison.StableJiraGeneration,
+                    StringComparison.Ordinal) ||
+                proof.AcceptedTicketCount != comparison.Items.Count ||
+                proof.CarryForwardTicketCount != comparison.Items.Count(
+                    item => item.Disposition ==
+                        PreparedTicketPublicationReconciliationDispositionValues
+                            .CarryForward) ||
+                proof.ReAuthorTicketCount != comparison.Items.Count(
+                    item => item.Disposition ==
+                        PreparedTicketPublicationReconciliationDispositionValues
+                            .ReAuthor) ||
+                !string.Equals(
+                    candidate.OverlayCorpusFingerprint,
+                    proof.CorpusFingerprint,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    candidate.GroupingImpactFingerprint,
+                    proof.GroupingImpactFingerprint,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "The reconciliation candidate evidence does not match the frozen comparison.");
+            }
+
+            _ = await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                INSERT INTO prepared_ticket_publication_snapshot_descriptors(
+                    RunId, DescriptorJson, Sha256, PersistedAt)
+                VALUES(@runId, @json, @sha256, @persistedAt)
+                ON CONFLICT(RunId) DO UPDATE SET
+                    DescriptorJson = excluded.DescriptorJson,
+                    Sha256 = excluded.Sha256,
+                    PersistedAt = excluded.PersistedAt
+                """,
+                ct,
+                ("@runId", candidate.RunId),
+                ("@json", descriptorJson),
+                ("@sha256", candidate.Sha256),
+                ("@persistedAt", Format(candidate.CapturedAt)));
+            _ = await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                INSERT INTO prepared_ticket_publication_reconciliation_proofs(
+                    RunId, ProofJson, CapturedAt)
+                VALUES(@runId, @json, @capturedAt)
+                ON CONFLICT(RunId) DO UPDATE SET
+                    ProofJson = excluded.ProofJson,
+                    CapturedAt = excluded.CapturedAt
+                """,
+                ct,
+                ("@runId", candidate.RunId),
+                ("@json", proofJson),
+                ("@capturedAt", Format(proof.CapturedAt)));
+            int journalSaved = await ExecuteInTransactionAsync(
+                connection,
+                transaction,
+                """
+                INSERT INTO prepared_ticket_publication_reconciliation_journal(
+                    RunId, State, SnapshotDescriptorJson,
+                    LastRecoveryAttemptAt, FailureCode, FailureDetail,
+                    UpdatedAt)
+                VALUES(
+                    @runId, @staged, NULL, NULL, NULL, NULL, @updatedAt)
+                ON CONFLICT(RunId) DO UPDATE SET
+                    State = excluded.State,
+                    SnapshotDescriptorJson = NULL,
+                    LastRecoveryAttemptAt = NULL,
+                    FailureCode = NULL,
+                    FailureDetail = NULL,
+                    UpdatedAt = excluded.UpdatedAt
+                WHERE prepared_ticket_publication_reconciliation_journal.State
+                    = @staged
+                """,
+                ct,
+                ("@runId", candidate.RunId),
+                ("@staged",
+                    PreparedTicketPublicationReconciliationPromotionStateValues
+                        .Staged),
+                ("@updatedAt", Format(candidate.CapturedAt)));
+            if (journalSaved != 1)
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{candidate.RunId}' can no longer replace its staged promotion journal.");
+            }
+            await transaction.CommitAsync(ct);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
+    public async Task DiscardPublicationReconciliationCandidateEvidenceAsync(
+        string runId,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteTransaction transaction =
+            connection.BeginTransaction(deferred: false);
+        try
+        {
+            string? promotionState;
+            await using (SqliteCommand read = connection.CreateCommand())
+            {
+                read.Transaction = transaction;
+                read.CommandText =
+                    """
+                    SELECT PromotionState
+                    FROM prepared_ticket_publication_reconciliations
+                    WHERE RunId = @runId
+                    """;
+                read.Parameters.AddWithValue("@runId", runId);
+                promotionState =
+                    (string?)await read.ExecuteScalarAsync(ct);
+            }
+            if (promotionState is null)
+            {
+                throw new KeyNotFoundException(
+                    $"Publication reconciliation '{runId}' was not found.");
+            }
+            if (promotionState !=
+                PreparedTicketPublicationReconciliationPromotionStateValues
+                    .Staged)
+            {
+                throw new InvalidOperationException(
+                    $"Reconciliation '{runId}' can no longer discard provisional candidate evidence.");
+            }
+            foreach (string table in new[]
+            {
+                "prepared_ticket_publication_snapshot_descriptors",
+                "prepared_ticket_publication_reconciliation_proofs",
+                "prepared_ticket_publication_reconciliation_journal",
+            })
+            {
+                _ = await ExecuteInTransactionAsync(
+                    connection,
+                    transaction,
+                    $"DELETE FROM {table} WHERE RunId = @runId",
+                    ct,
+                    ("@runId", runId));
+            }
+            await transaction.CommitAsync(ct);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
     public async Task SavePublicationReconciliationProofAsync(
         string runId,
         PreparedTicketPublicationReconciliationProof proof,

@@ -66,16 +66,6 @@ public sealed class PreparedTicketRunWorkflowRegistry(
             return await recoveryService.RecoverAsync(run.Id, ct);
         }
 
-        PreparedTicketPublicationReconciliationStatusResult status =
-            await reconciliationPlanner.GetStatusAsync(run.Id, ct);
-        if (status.InvalidatedTicketKeys.Count != 0)
-        {
-            throw new PreparedTicketPublicationReconciliationException(
-                PreparedTicketPublicationReconciliationFailureCodes
-                    .RevisionInvalidation,
-                $"Frozen Jira revisions changed: {string.Join(", ", status.InvalidatedTicketKeys)}",
-                status.InvalidatedTicketKeys);
-        }
         if (!await authoringStore.AllItemsCompleteAsync(run.Id, ct))
         {
             throw new PreparedTicketPublicationReconciliationException(
@@ -86,7 +76,6 @@ public sealed class PreparedTicketRunWorkflowRegistry(
         PreparedTicketPublicationGroupingDelta delta =
             await groupingDeltaDispatcher.PrepareAsync(run.Id, ct);
 
-        await authoringStore.MarkRunFinalizingAsync(run.Id, ct: ct);
         await ExecuteGroupingStagesAsync(run.Id, delta, ct);
         delta = await groupingDeltaDispatcher.PrepareAsync(run.Id, ct);
         if (delta.Impacts.Any(impact => !impact.Complete))
@@ -101,11 +90,6 @@ public sealed class PreparedTicketRunWorkflowRegistry(
             await groupingDeltaDispatcher.CreateProofAsync(
                 run.Id,
                 ct: ct);
-        PreparedTicketPublicationCandidateSnapshot candidate =
-            await snapshotMaterializer.MaterializeReconciliationCandidateAsync(
-                run,
-                proof,
-                ct: ct);
         string safeProcessor = string.Concat(
             run.ProcessorKind.Select(character =>
                 char.IsLetterOrDigit(character) || character is '-' or '_'
@@ -114,6 +98,44 @@ public sealed class PreparedTicketRunWorkflowRegistry(
         string finalPath = Path.Combine(
             Path.GetFullPath(_options.SnapshotDirectory),
             $"{safeProcessor}-{run.Id}.db");
+        await reconciliationPlanner.EnsureFrozenCorpusCurrentAsync(
+            run.Id,
+            ct);
+        PreparedTicketPublicationCandidateSnapshot candidate =
+            await snapshotMaterializer
+                .MaterializeProvisionalReconciliationCandidateAsync(
+                    run,
+                    proof,
+                    ct: ct);
+        try
+        {
+            await reconciliationPlanner.EnsureFrozenCorpusCurrentAsync(
+                run.Id,
+                ct);
+        }
+        catch
+        {
+            try
+            {
+                await database
+                    .DiscardPublicationReconciliationCandidateEvidenceAsync(
+                        run.Id,
+                        CancellationToken.None);
+            }
+            finally
+            {
+                snapshotMaterializer
+                    .DiscardProvisionalReconciliationCandidate(candidate);
+            }
+            throw;
+        }
+
+        await authoringStore.MarkRunFinalizingAsync(run.Id, ct: ct);
+        await snapshotMaterializer
+            .PersistTrustedReconciliationCandidateAsync(
+                candidate,
+                proof,
+                ct);
         _ = await database.PromotePublicationReconciliationAsync(
             run.Id,
             finalPath,

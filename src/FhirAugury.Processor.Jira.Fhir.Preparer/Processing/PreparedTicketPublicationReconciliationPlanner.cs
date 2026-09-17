@@ -122,7 +122,39 @@ public sealed class PreparedTicketPublicationReconciliationPlanner(
                     .RevisionInvalidation,
             invalidated.Count == 0
                 ? null
-                : "One or more frozen Jira revisions changed.");
+                : CreateRevisionInvalidationDetail(
+                    comparison,
+                    invalidated));
+    }
+
+    public async Task EnsureFrozenCorpusCurrentAsync(
+        string runId,
+        CancellationToken ct = default)
+    {
+        PreparedTicketPublicationReconciliationComparison comparison =
+            await database.GetPublicationReconciliationComparisonAsync(
+                runId,
+                ct)
+            ?? throw new KeyNotFoundException(
+                $"Publication reconciliation '{runId}' was not found.");
+        if (comparison.ContractVersion !=
+            PreparedTicketPublicationReconciliationContract.CurrentVersion)
+        {
+            throw new NotSupportedException(
+                $"Reconciliation contract version {comparison.ContractVersion} cannot be revalidated.");
+        }
+        IReadOnlyList<string> invalidated =
+            await FindInvalidatedTicketsAsync(comparison, ct);
+        if (invalidated.Count != 0)
+        {
+            throw new PreparedTicketPublicationReconciliationException(
+                PreparedTicketPublicationReconciliationFailureCodes
+                    .RevisionInvalidation,
+                CreateRevisionInvalidationDetail(
+                    comparison,
+                    invalidated),
+                invalidated);
+        }
     }
 
     private async Task<Observation> ObserveAsync(
@@ -315,10 +347,13 @@ public sealed class PreparedTicketPublicationReconciliationPlanner(
     {
         List<string> invalidated = [];
         foreach (PreparedTicketPublicationReconciliationItemDecision item in
-                 comparison.Items.Where(item =>
-                     item.Disposition ==
-                     PreparedTicketPublicationReconciliationDispositionValues
-                         .ReAuthor))
+                 comparison.Items
+                     .OrderBy(
+                         item => item.TicketKey,
+                         StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(
+                         item => item.TicketKey,
+                         StringComparer.Ordinal))
         {
             PublicationMetadataFetchResult result =
                 await fetcher.FetchPublicationMetadataAsync(
@@ -326,6 +361,10 @@ public sealed class PreparedTicketPublicationReconciliationPlanner(
                     DateTimeOffset.UtcNow,
                     ct);
             if (!result.IsSuccess ||
+                !string.Equals(
+                    result.TicketKey,
+                    item.TicketKey,
+                    StringComparison.OrdinalIgnoreCase) ||
                 result.SourceIsStable != true ||
                 result.SourceContentRevision?.ToString(
                     CultureInfo.InvariantCulture) !=
@@ -340,6 +379,11 @@ public sealed class PreparedTicketPublicationReconciliationPlanner(
         }
         return invalidated;
     }
+
+    private static string CreateRevisionInvalidationDetail(
+        PreparedTicketPublicationReconciliationComparison comparison,
+        IReadOnlyList<string> invalidated)
+        => $"Frozen Jira revisions changed or could not be observed at generation '{comparison.StableJiraGeneration}': {string.Join(", ", invalidated)}";
 
     private async Task<(
         IReadOnlyList<PreparedTicketPublicationReconciliationGroupingImpact>,

@@ -440,6 +440,201 @@ public sealed class PreparedTicketPublicationEndToEndTests
                 """));
     }
 
+    [Fact]
+    public async Task CarryForwardGenerationAdvanceDuringCandidateMaterialization_RejectsPromotion()
+    {
+        using Fixture fixture = new(richGraph: true);
+        Corpus corpus = await CreateCorpusAsync(fixture);
+        PublicationHttpHandler handler = new(fixture, corpus.Updates);
+        using HttpClient http = handler.CreateClient();
+        StagedReconciliation staged =
+            await StageChangedTicketReconciliationAsync(
+                fixture,
+                corpus,
+                handler,
+                http,
+                stageGroupingAndCandidate: false);
+        PreparedTicketGroupingDeltaDispatcher grouping = new(
+            fixture.Database);
+        InProcessReconciliationGroupingDispatcher worker = new(
+            fixture.Database,
+            fixture.Store,
+            grouping);
+        IOptions<PreparerServiceOptions> options =
+            Options.Create(new PreparerServiceOptions
+            {
+                SnapshotDirectory = fixture.SnapshotDirectory,
+                SnapshotSchemaVersion =
+                    PreparedTicketSnapshotSchemaV3.Version,
+            });
+        PreparedTicketSnapshotMaterializer materializer = new(
+            fixture.Database,
+            fixture.Store,
+            new SqliteReviewSnapshotReconciler(fixture.Store),
+            options);
+        string temporaryPath = Path.Combine(
+            fixture.SnapshotDirectory,
+            $"jira-fhir-{staged.RunId}.reconciliation.tmp");
+        CandidateGenerationAdvancingFetcher advancingFetcher = new(
+            staged.Comparison.Items.ToDictionary(
+                item => item.TicketKey,
+                item => item.CurrentSourceRevision,
+                StringComparer.OrdinalIgnoreCase),
+            long.Parse(
+                staged.Comparison.StableJiraGeneration,
+                CultureInfo.InvariantCulture),
+            temporaryPath);
+        AuthoringRetryPolicy retryPolicy = new(
+            Options.Create(new ProcessingServiceOptions()));
+        JiraAuthoringRunCoordinator coordinator =
+            CreateCoordinator(fixture);
+        PreparedTicketPublicationReconciliationPlanner planner = new(
+            fixture.CreateBaselineReader(),
+            advancingFetcher,
+            fixture.Database,
+            new AuthoringRunControlService(fixture.Store, retryPolicy),
+            coordinator,
+            new AuthoringRunSchedulerWakeSignal());
+        PreparedTicketPublicationRecoveryService recovery = new(
+            fixture.Database,
+            fixture.Store,
+            NullLogger<PreparedTicketPublicationRecoveryService>.Instance);
+        PreparedTicketRunWorkflowRegistry workflows = new(
+            fixture.Store,
+            fixture.Database,
+            new OrchestratorHydrationFetcher(http, NullLogger.Instance),
+            planner,
+            grouping,
+            materializer,
+            recovery,
+            options,
+            NullLogger<PreparedTicketRunWorkflowRegistry>.Instance,
+            new PreparedTicketReconciliationGroupingStageAdapter(worker));
+        AuthoringRunRecord run = Assert.IsType<AuthoringRunRecord>(
+            await fixture.Store.GetRunAsync(staged.RunId));
+        string[] expectedInvalidated = staged.Comparison.Items
+            .OrderBy(
+                item => item.TicketKey,
+                StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.TicketKey, StringComparer.Ordinal)
+            .Select(item => item.TicketKey)
+            .ToArray();
+
+        PreparedTicketPublicationReconciliationException error =
+            await Assert.ThrowsAsync<
+                PreparedTicketPublicationReconciliationException>(
+                () => workflows.FinalizeReconciliationAsync(run));
+
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationFailureCodes
+                .RevisionInvalidation,
+            error.FailureCode);
+        Assert.Equal(expectedInvalidated, error.TicketKeys);
+        Assert.True(
+            advancingFetcher
+                .CandidateWasPresentWhenGenerationAdvanced);
+        Assert.Equal(
+            expectedInvalidated.Concat(expectedInvalidated),
+            advancingFetcher.RequestedTicketKeys);
+        Assert.All(
+            new[]
+            {
+                temporaryPath,
+                temporaryPath + "-journal",
+                temporaryPath + "-wal",
+                temporaryPath + "-shm",
+            },
+            path => Assert.False(File.Exists(path)));
+        string finalPath = Path.Combine(
+            fixture.SnapshotDirectory,
+            $"jira-fhir-{staged.RunId}.db");
+        Assert.False(File.Exists(finalPath));
+        Assert.DoesNotContain(
+            Directory.EnumerateFiles(
+                fixture.SnapshotDirectory,
+                "*",
+                SearchOption.TopDirectoryOnly),
+            path => Path.GetFileName(path).Contains(
+                staged.RunId,
+                StringComparison.Ordinal));
+        Assert.All(
+            new[]
+            {
+                "prepared_ticket_publication_snapshot_descriptors",
+                "prepared_ticket_publication_reconciliation_proofs",
+                "prepared_ticket_publication_reconciliation_journal",
+                "authoring_review_snapshots",
+            },
+            table => Assert.Equal(
+                0,
+                fixture.Scalar<long>(
+                    $"SELECT COUNT(*) FROM {table} WHERE RunId = '{staged.RunId}'")));
+        Assert.Equal(
+            0,
+            fixture.Scalar<long>(
+                $"""
+                SELECT COUNT(*)
+                FROM prepared_ticket_authoring_state
+                WHERE RunId = '{staged.RunId}'
+                """));
+        Assert.Equal(
+            0,
+            fixture.Scalar<long>(
+                """
+                SELECT COUNT(*)
+                FROM prepared_ticket_topics
+                WHERE ShortDescription = 'Reconciled shared container'
+                """));
+        foreach (string key in RevisedKeys)
+        {
+            Assert.Equal(
+                $"Request {key}\n\nExact authored text: caf\u00e9.",
+                fixture.Scalar<string>(
+                    $"SELECT RequestSummary FROM prepared_tickets WHERE Key = '{key}'"));
+        }
+        AuthoringRunRecord retained = Assert.IsType<AuthoringRunRecord>(
+            await fixture.Store.GetRunAsync(staged.RunId));
+        Assert.Equal(AuthoringStatusValues.Runs.Running, retained.Status);
+        Assert.Null(retained.SnapshotId);
+        Assert.All(
+            await fixture.Store.GetRunItemsAsync(staged.RunId),
+            item => Assert.Equal(
+                AuthoringStatusValues.Items.Complete,
+                item.Status));
+        Assert.Equal(
+            PreparedTicketPublicationReconciliationPromotionStateValues
+                .Staged,
+            fixture.Scalar<string>(
+                $"""
+                SELECT PromotionState
+                FROM prepared_ticket_publication_reconciliations
+                WHERE RunId = '{staged.RunId}'
+                """));
+        Assert.NotNull(await fixture.Store.GetFencedRunAsync("jira-fhir"));
+        Assert.Equal(
+            1,
+            fixture.Scalar<long>(
+                $"""
+                SELECT COUNT(*)
+                FROM prepared_ticket_publication_reconciliation_fences
+                WHERE RunId = '{staged.RunId}'
+                """));
+        Assert.True(
+            fixture.Scalar<long>(
+                $"""
+                SELECT COUNT(*)
+                FROM prepared_ticket_publication_staged_graphs
+                WHERE RunId = '{staged.RunId}'
+                """) > 0);
+        Assert.True(
+            fixture.Scalar<long>(
+                $"""
+                SELECT COUNT(*)
+                FROM prepared_ticket_publication_staged_grouping
+                WHERE RunId = '{staged.RunId}'
+                """) > 0);
+    }
+
     [Theory]
     [InlineData("candidate-materialized")]
     [InlineData("database-promoted")]
@@ -807,6 +1002,50 @@ public sealed class PreparedTicketPublicationEndToEndTests
         PreparedTicketPublicationReconciliationComparison Comparison,
         PreparedTicketPublicationReconciliationPlanner Planner,
         string CorpusFingerprint);
+
+    private sealed class CandidateGenerationAdvancingFetcher(
+        IReadOnlyDictionary<string, string> revisions,
+        long stableGeneration,
+        string candidatePath)
+        : OrchestratorHydrationFetcher(
+            new HttpClient(),
+            NullLogger.Instance)
+    {
+        private bool _generationAdvanced;
+
+        public bool CandidateWasPresentWhenGenerationAdvanced { get; private set; }
+        public List<string> RequestedTicketKeys { get; } = [];
+
+        public override Task<PublicationMetadataFetchResult>
+            FetchPublicationMetadataAsync(
+                string ticketKey,
+                DateTimeOffset hydratedAt,
+                CancellationToken ct)
+        {
+            RequestedTicketKeys.Add(ticketKey);
+            if (!_generationAdvanced && File.Exists(candidatePath))
+            {
+                _generationAdvanced = true;
+                CandidateWasPresentWhenGenerationAdvanced = true;
+            }
+            return Task.FromResult(new PublicationMetadataFetchResult(
+                ticketKey,
+                hydratedAt,
+                revisions[ticketKey],
+                null,
+                null,
+                [],
+                "FHIR",
+                hydratedAt,
+                _generationAdvanced
+                    ? stableGeneration + 1
+                    : stableGeneration,
+                true,
+                PublicDisplayNamePolicy.CurrentVersion,
+                Failure: null,
+                UpdatedAt: hydratedAt));
+        }
+    }
 
     private sealed class InProcessReconciliationGroupingDispatcher(
         PreparerDatabase database,
