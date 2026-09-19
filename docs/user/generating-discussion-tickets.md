@@ -689,6 +689,36 @@ rather than submit a replacement start.
 
 #### 2. Poll authoritative state
 
+To discover active Preparer runs without knowing a run ID, use the read-only
+PowerShell helper from the repository root:
+
+```powershell
+.\tools\preparer-status.ps1
+.\tools\preparer-status.ps1 -Watch -IntervalSeconds 5
+```
+
+It displays each run's ID, status, completed/total ticket count (for example,
+`10/100`), completion percentage, retryable error count, and superseded count.
+By default it includes all non-terminal runs: `queued`, `running`,
+`finalizing`, and recoverable `error`. With no active runs it says so
+explicitly. `-Watch` polls until Ctrl+C; its default interval is 10 seconds.
+Use `-IncludeCompleted` to also show terminal runs.
+
+The helper requires PowerShell 5.1 or later, but not an installed
+`fhir-augury-cli`. It calls
+`GET /api/v1/processing-services/Preparer/authoring/runs?limit=100`
+through the Orchestrator at `http://localhost:5150`; override that base URL with
+`-Orchestrator <url>`. The server prioritizes non-terminal runs, and the helper
+warns if the result is truncated. Unavailable services or invalid responses
+stop the script with an error rather than reporting no active work.
+
+The percentage measures successfully completed ticket items only. Superseded
+items are reported separately, zero-item runs show `n/a`, and `100%` does not
+mean grouping or snapshot finalization has finished; the run status remains
+authoritative.
+
+For item-level detail on a known run, use the CLI:
+
 ```powershell
 fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"status","runId":"<runId>"}'
 ```
