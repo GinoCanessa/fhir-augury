@@ -75,6 +75,7 @@
     <Project Path="tools/ticket-site/ticket-site.csproj" />
     <Project Path="tools/fhir-spec-review/fhir-spec-review.csproj" />
     <Project Path="tools/dictionary-build/dictionary-build.csproj" />
+    <Project Path="tools/ingestion-toggle/ingestion-toggle.csproj" />
   </Folder>
   <Folder Name="/Solution Items/">
     <File Path=".gitignore" />
