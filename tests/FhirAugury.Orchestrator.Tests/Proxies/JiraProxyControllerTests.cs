@@ -1,4 +1,6 @@
 using System.Net;
+using System.Text.Json;
+using FhirAugury.Common.Api;
 using FhirAugury.Orchestrator.Controllers.Proxies;
 using FhirAugury.Orchestrator.Routing;
 using Microsoft.AspNetCore.Mvc;
@@ -173,6 +175,122 @@ public class JiraProxyControllerTests
         Assert.Contains("Triaged", h.Bodies[0]);
         Assert.Contains("FHIR-100", body);
         Assert.Equal(200, status);
+    }
+
+    [Fact]
+    public async Task LocalProcessingSelectionTickets_ForwardsBodyQueryAndResponse()
+    {
+        const string response = """
+            {
+              "results":[{"key":"FHIR-2","projectKey":"FHIR","title":"Selected ticket"}],
+              "limit":1,
+              "offset":1,
+              "total":3,
+              "provenance":{
+                "source":"jira",
+                "contentRevision":42,
+                "isStable":true,
+                "projectLastSuccessfulRefreshAt":{"FHIR":"2026-09-30T12:00:00+00:00","UNKNOWN":null}
+              }
+            }
+            """;
+        JiraLocalProcessingSelectionRequest request = new()
+        {
+            Projects = ["FHIR"],
+            Statuses = ["Open"],
+            Labels = ["exact-label"],
+            ProcessedLocally = null,
+            LabelText = new JiraLabelTextFilter
+            {
+                Includes = [" inc-01 ", "x' OR 1=1 --", @"path\label", "%", "_", " inc-01 "],
+                Excludes = ["ex-01", "ex-02"],
+            },
+            Keys = ["FHIR-1", "FHIR-2"],
+            Limit = 1,
+            Offset = 1,
+        };
+        string requestBody = JsonSerializer.Serialize(request, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        JiraProxyController controller = NewController(out ProxyTestSupport.CapturingHandler handler, responseBody: response);
+        ProxyTestSupport.SetRequest(controller, method: "POST", queryString: "?type=fhir", body: requestBody);
+
+        HttpPostAttribute route = Assert.Single(
+            typeof(JiraProxyController).GetMethods()
+                .Single(method => method.Name == nameof(JiraProxyController.LocalProcessingSelectionTickets))
+                .GetCustomAttributes(typeof(HttpPostAttribute), inherit: false)
+                .Cast<HttpPostAttribute>());
+        Assert.Equal("local-processing/selection-tickets", route.Template);
+
+        IActionResult result = await controller.LocalProcessingSelectionTickets(default);
+        (int status, string body, _, string? contentType) = await ProxyTestSupport.ExecuteAsync(controller, result);
+
+        HttpRequestMessage forwarded = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Post, forwarded.Method);
+        Assert.Equal("/api/v1/local-processing/selection-tickets", forwarded.RequestUri?.AbsolutePath);
+        Assert.Equal("?type=fhir", forwarded.RequestUri?.Query);
+        Assert.Equal("application/json", forwarded.Content?.Headers.ContentType?.MediaType);
+        string forwardedBody = Assert.IsType<string>(Assert.Single(handler.Bodies));
+        Assert.Equal(requestBody, forwardedBody);
+        using JsonDocument sentJson = JsonDocument.Parse(forwardedBody);
+        JsonElement sent = sentJson.RootElement;
+        Assert.Equal(request.LabelText.Includes, sent.GetProperty("labelText").GetProperty("includes").EnumerateArray().Select(value => value.GetString()));
+        Assert.Equal(request.LabelText.Excludes, sent.GetProperty("labelText").GetProperty("excludes").EnumerateArray().Select(value => value.GetString()));
+        Assert.Equal(request.Keys, sent.GetProperty("keys").EnumerateArray().Select(value => value.GetString()));
+        Assert.Equal(request.Labels, sent.GetProperty("labels").EnumerateArray().Select(value => value.GetString()));
+        Assert.Equal(request.Projects, sent.GetProperty("projects").EnumerateArray().Select(value => value.GetString()));
+        Assert.Equal(request.Statuses, sent.GetProperty("statuses").EnumerateArray().Select(value => value.GetString()));
+        Assert.Equal(JsonValueKind.Null, sent.GetProperty("processedLocally").ValueKind);
+        Assert.Equal(1, sent.GetProperty("limit").GetInt32());
+        Assert.Equal(1, sent.GetProperty("offset").GetInt32());
+
+        Assert.Equal(200, status);
+        Assert.Equal(response, body);
+        Assert.NotNull(contentType);
+        Assert.StartsWith("application/json", contentType);
+        using JsonDocument responseJson = JsonDocument.Parse(body);
+        JsonElement received = responseJson.RootElement;
+        Assert.Equal("FHIR-2", Assert.Single(received.GetProperty("results").EnumerateArray()).GetProperty("key").GetString());
+        Assert.Equal(1, received.GetProperty("limit").GetInt32());
+        Assert.Equal(1, received.GetProperty("offset").GetInt32());
+        Assert.Equal(3, received.GetProperty("total").GetInt32());
+        JsonElement provenance = received.GetProperty("provenance");
+        Assert.Equal("jira", provenance.GetProperty("source").GetString());
+        Assert.Equal(42, provenance.GetProperty("contentRevision").GetInt64());
+        Assert.True(provenance.GetProperty("isStable").GetBoolean());
+        Assert.Equal(
+            "2026-09-30T12:00:00+00:00",
+            provenance.GetProperty("projectLastSuccessfulRefreshAt").GetProperty("FHIR").GetString());
+        Assert.Equal(
+            JsonValueKind.Null,
+            provenance.GetProperty("projectLastSuccessfulRefreshAt").GetProperty("UNKNOWN").ValueKind);
+    }
+
+    [Theory]
+    [InlineData(400)]
+    [InlineData(404)]
+    [InlineData(503)]
+    public async Task LocalProcessingSelectionTickets_PreservesFailureStatus(int upstreamStatus)
+    {
+        const string request = """{"labelText":{"includes":["inc-01"],"excludes":["ex-01"]},"keys":["FHIR-1"],"limit":500,"offset":0}""";
+        const string response = """{"error":"source-selection-error","detail":"source diagnostic"}""";
+        JiraProxyController controller = NewController(
+            out ProxyTestSupport.CapturingHandler handler,
+            responseBody: response,
+            statusCode: (HttpStatusCode)upstreamStatus);
+        ProxyTestSupport.SetRequest(controller, method: "POST", queryString: "?type=fhir", body: request);
+
+        IActionResult result = await controller.LocalProcessingSelectionTickets(default);
+        (int status, string body, _, _) = await ProxyTestSupport.ExecuteAsync(controller, result);
+
+        HttpRequestMessage forwarded = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Post, forwarded.Method);
+        Assert.Equal("/api/v1/local-processing/selection-tickets", forwarded.RequestUri?.AbsolutePath);
+        Assert.Equal("?type=fhir", forwarded.RequestUri?.Query);
+        Assert.Equal(request, Assert.Single(handler.Bodies));
+        Assert.Equal(upstreamStatus, status);
+        Assert.Equal(response, body);
+        using JsonDocument json = JsonDocument.Parse(body);
+        Assert.Equal("source-selection-error", json.RootElement.GetProperty("error").GetString());
+        Assert.False(json.RootElement.TryGetProperty("results", out _));
     }
 
     [Fact]

@@ -41,7 +41,10 @@ public class LocalProcessingControllerTests : IDisposable
         DateTimeOffset? processedAt = null,
         string? relatedArtifacts = null,
         string? status = "Open",
-        string? reporter = null)
+        string? reporter = null,
+        string? labels = null,
+        string? workGroup = null,
+        string? specification = null)
     {
         JiraIssueRecord issue = new()
         {
@@ -61,8 +64,8 @@ public class LocalProcessingControllerTests : IDisposable
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
             ResolvedAt = null,
-            WorkGroup = null,
-            Specification = null,
+            WorkGroup = workGroup,
+            Specification = specification,
             RaisedInVersion = null,
             SelectedBallot = null,
             RelatedArtifacts = relatedArtifacts,
@@ -72,7 +75,7 @@ public class LocalProcessingControllerTests : IDisposable
             ChangeType = null,
             Impact = null,
             Vote = null,
-            Labels = null,
+            Labels = labels,
             CommentCount = 0,
             ChangeCategory = null,
             ChangeImpact = null,
@@ -295,6 +298,442 @@ public class LocalProcessingControllerTests : IDisposable
             _controller.GetTickets(new JiraLocalProcessingListRequest { Labels = ["L1", "L2"] }));
 
         Assert.Equal(["FHIR-1", "FHIR-2"], response.Results.Select(r => r.Key).OrderBy(s => s).ToArray());
+    }
+
+    [Theory]
+    [InlineData(null, null, null, true)]
+    [InlineData(new[] { "inc-01", "inc-02" }, null, "prefix-inc-02-suffix", true)]
+    [InlineData(new[] { "inc-01", "inc-02" }, null, "other", false)]
+    [InlineData(new[] { "inc-01" }, null, null, false)]
+    [InlineData(null, new[] { "ex-01", "ex-02" }, "other", true)]
+    [InlineData(null, new[] { "ex-01", "ex-02" }, "prefix-ex-02-suffix", false)]
+    [InlineData(null, new[] { "ex-01", "ex-02" }, null, false)]
+    [InlineData(null, new[] { "ex-01", "ex-02" }, "", true)]
+    [InlineData(new[] { "inc-01", "inc-02" }, new[] { "ex-01", "ex-02" }, "inc-01,ex-02", false)]
+    [InlineData(new[] { "inc-01", "inc-02" }, new[] { "ex-01", "ex-02" }, "prefix-inc-02-suffix", true)]
+    public void GetSelectionTickets_LabelTruthTable(string[]? includes, string[]? excludes, string? labels, bool selected)
+    {
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            SeedIssue(connection, "FHIR-1", labels: labels);
+            SeedIssue(connection, "FHIR-2", status: "Closed", labels: labels);
+        }
+
+        JiraLocalProcessingListResponse response = UnwrapList(
+            _controller.GetSelectionTickets(new JiraLocalProcessingSelectionRequest
+            {
+                Statuses = ["Open"],
+                LabelText = new JiraLabelTextFilter
+                {
+                    Includes = includes?.ToList(),
+                    Excludes = excludes?.ToList(),
+                },
+            }));
+
+        string[] expectedKeys = selected ? ["FHIR-1"] : [];
+        Assert.Equal(expectedKeys, response.Results.Select(result => result.Key));
+        Assert.Equal(expectedKeys.Length, response.Total);
+        Assert.Equal(500, response.Limit);
+        Assert.Equal(0, response.Offset);
+    }
+
+    [Theory]
+    [InlineData("null", null, true)]
+    [InlineData("{}", null, true)]
+    [InlineData("""{"includes":null,"excludes":null}""", null, true)]
+    [InlineData("""{"includes":[],"excludes":[]}""", null, true)]
+    [InlineData("""{"includes":[null,""," \t\r\n"],"excludes":[null,""," \t\r\n"]}""", null, true)]
+    [InlineData("""{"includes":[null,""," \t\r\n"],"excludes":[null,""," \t\r\n"]}""", "", true)]
+    [InlineData("""{"includes":[null,""," \t"],"excludes":["ex-01"]}""", "other", true)]
+    [InlineData("""{"includes":[null,""," \t"],"excludes":["ex-01"]}""", null, false)]
+    [InlineData("""{"includes":[null,""," \t","inc-01"],"excludes":[null,""," \t"]}""", "prefix-inc-01-suffix", true)]
+    [InlineData("""{"includes":[null,""," \t","inc-01"],"excludes":[null,""," \t"]}""", "other", false)]
+    [InlineData("""{"includes":[" inc-01 "]}""", "prefix inc-01 suffix", true)]
+    [InlineData("""{"includes":[" inc-01 "]}""", "prefix-inc-01-suffix", false)]
+    [InlineData("""{"excludes":[" ex-01 "]}""", "prefix ex-01 suffix", false)]
+    [InlineData("""{"excludes":[" ex-01 "]}""", "prefix-ex-01-suffix", true)]
+    [InlineData("""{"includes":["InC-01","InC-01"]}""", "prefix-inc-01-suffix", true)]
+    [InlineData("""{"includes":["inc%02"]}""", "prefix-inc-anything-02-suffix", true)]
+    [InlineData("""{"includes":["inc%02"]}""", "prefix-inc-only-suffix", false)]
+    [InlineData("""{"includes":["inc_02"]}""", "prefix-incX02-suffix", true)]
+    [InlineData("""{"includes":["inc_02"]}""", "prefix-inc02-suffix", false)]
+    [InlineData("""{"includes":["inc_02"]}""", "prefix-incXX02-suffix", false)]
+    [InlineData("""{"includes":["%"]}""", "", true)]
+    [InlineData("""{"includes":["%"]}""", null, false)]
+    [InlineData("""{"includes":["_"]}""", "x", true)]
+    [InlineData("""{"includes":["_"]}""", "", false)]
+    [InlineData("""{"excludes":["%"]}""", "", false)]
+    [InlineData("""{"excludes":["%"]}""", "other", false)]
+    [InlineData("""{"excludes":["%"]}""", null, false)]
+    [InlineData("""{"excludes":["_"]}""", "", true)]
+    [InlineData("""{"excludes":["_"]}""", "x", false)]
+    [InlineData("""{"includes":["x' OR 1=1 --"]}""", "prefix-x' OR 1=1 --suffix", true)]
+    [InlineData("""{"includes":["x' OR 1=1 --"]}""", "other", false)]
+    [InlineData("""{"excludes":["x' OR 1=1 --"]}""", "prefix-x' OR 1=1 --suffix", false)]
+    [InlineData("""{"excludes":["x' OR 1=1 --"]}""", "other", true)]
+    [InlineData("""{"includes":["quoted\"label"]}""", "prefix-quoted\"label-suffix", true)]
+    [InlineData("""{"includes":["quoted\"label"]}""", "prefix-quotedlabel-suffix", false)]
+    [InlineData("""{"includes":["path\\label"]}""", @"prefix-path\label-suffix", true)]
+    [InlineData("""{"includes":["path\\label"]}""", "prefix-pathlabel-suffix", false)]
+    [InlineData("""{"excludes":["path\\label"]}""", @"prefix-path\label-suffix", false)]
+    [InlineData("""{"includes":["path\\%end"]}""", @"prefix-path\anything-end-suffix", true)]
+    [InlineData("""{"includes":["path\\%end"]}""", "prefix-path-anything-end-suffix", false)]
+    [InlineData("""{"includes":["InC-AsCii"]}""", "prefix-iNc-aScII-suffix", true)]
+    [InlineData("""{"excludes":["EX-AsCiI"]}""", "prefix-eX-aScII-suffix", false)]
+    [InlineData("""{"includes":["æ"]}""", "prefix-Æ-suffix", false)]
+    [InlineData("""{"includes":["æ"]}""", "prefix-æ-suffix", true)]
+    [InlineData("""{"includes":["Æ"]}""", "prefix-æ-suffix", false)]
+    [InlineData("""{"excludes":["æ"]}""", "prefix-Æ-suffix", true)]
+    [InlineData("""{"excludes":["æ"]}""", "prefix-æ-suffix", false)]
+    public void GetSelectionTickets_PreservesNativeLikeAndLiteralValues(string labelTextJson, string? labels, bool selected)
+    {
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            // Raw label text is deliberately independent of the exact-label index.
+            SeedIssue(connection, "FHIR-1", labels: labels);
+        }
+
+        JiraLocalProcessingListResponse response = UnwrapList(
+            _controller.GetSelectionTickets(new JiraLocalProcessingSelectionRequest
+            {
+                LabelText = JsonSerializer.Deserialize<JiraLabelTextFilter>(
+                    labelTextJson,
+                    new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+            }));
+
+        string[] expectedKeys = selected ? ["FHIR-1"] : [];
+        Assert.Equal(expectedKeys, response.Results.Select(result => result.Key));
+        Assert.Equal(expectedKeys.Length, response.Total);
+    }
+
+    [Fact]
+    public void GetSelectionTickets_FiltersBeforePagingAndReturnsMatchingTotal()
+    {
+        DateTimeOffset refreshedAt = new(2026, 9, 30, 12, 0, 0, TimeSpan.Zero);
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            for (int i = 8; i >= 1; i--)
+            {
+                string? labels = i switch
+                {
+                    1 => "other",
+                    3 => "inc-01,ex-02",
+                    4 => "inc-02",
+                    5 => null,
+                    _ => "inc-01",
+                };
+                SeedIssue(connection, $"FHIR-{i}", status: i == 8 ? "Closed" : "Open", labels: labels);
+            }
+            InsertSyncState(connection, "FHIR", refreshedAt);
+        }
+
+        JiraLocalProcessingSelectionRequest request = new()
+        {
+            Statuses = ["Open"],
+            LabelText = new JiraLabelTextFilter { Includes = ["inc-01", "inc-02"], Excludes = ["ex-01", "ex-02"] },
+            Limit = 2,
+            Offset = 0,
+        };
+        JiraLocalProcessingListResponse first = UnwrapList(_controller.GetSelectionTickets(request));
+        JiraLocalProcessingListResponse second = UnwrapList(_controller.GetSelectionTickets(request with { Offset = 2 }));
+        JiraLocalProcessingListResponse empty = UnwrapList(_controller.GetSelectionTickets(request with { Offset = 10 }));
+
+        Assert.Equal(["FHIR-2", "FHIR-4"], first.Results.Select(result => result.Key));
+        Assert.Equal(["FHIR-6", "FHIR-7"], second.Results.Select(result => result.Key));
+        Assert.Empty(empty.Results);
+        Assert.Equal(0, first.Offset);
+        Assert.Equal(2, second.Offset);
+        Assert.Equal(10, empty.Offset);
+        foreach (JiraLocalProcessingListResponse page in new[] { first, second, empty })
+        {
+            Assert.Equal(4, page.Total);
+            Assert.Equal(2, page.Limit);
+            Assert.NotNull(page.Provenance);
+            Assert.True(page.Provenance.IsStable);
+            Assert.Equal(first.Provenance?.ContentRevision, page.Provenance.ContentRevision);
+            Assert.Equal(refreshedAt, page.Provenance.ProjectLastSuccessfulRefreshAt["FHIR"]);
+        }
+
+        JiraLocalProcessingListResponse oldPage = UnwrapList(
+            _controller.GetTickets(new JiraLocalProcessingListRequest { Limit = 2, Offset = 0 }));
+        Assert.Equal(8, oldPage.Total);
+        Assert.Equal(["FHIR-1", "FHIR-2"], oldPage.Results.Select(result => result.Key));
+    }
+
+    [Fact]
+    public void GetSelectionTickets_KeysScopeSelection()
+    {
+        const string quotedKey = "FHIR-' OR 1=1 --";
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            SeedIssue(connection, "FHIR-1", labels: "inc-01");
+            SeedIssue(connection, "FHIR-2", processedAt: DateTimeOffset.UtcNow, labels: "inc-01");
+            SeedIssue(connection, "FHIR-3", labels: "other");
+            SeedIssue(connection, "FHIR-4", labels: "inc-01,ex-01");
+            SeedIssue(connection, "FHIR-5", labels: null);
+            SeedIssue(connection, quotedKey, labels: "inc-01");
+        }
+
+        JiraLocalProcessingSelectionRequest request = new()
+        {
+            Keys = ["FHIR-2", quotedKey, "MISSING", "FHIR-3", "FHIR-4", "FHIR-5", "FHIR-2"],
+            LabelText = new JiraLabelTextFilter { Includes = ["inc-01"], Excludes = ["ex-01"] },
+        };
+        JiraLocalProcessingListResponse scoped = UnwrapList(_controller.GetSelectionTickets(request));
+        Assert.Equal(2, scoped.Total);
+        Assert.Equal([quotedKey, "FHIR-2"], scoped.Results.Select(result => result.Key));
+
+        JiraLocalProcessingListResponse missing = UnwrapList(
+            _controller.GetSelectionTickets(request with { Keys = ["MISSING"] }));
+        Assert.Empty(missing.Results);
+        Assert.Equal(0, missing.Total);
+
+        foreach (List<string>? keys in new List<string>?[] { null, [] })
+        {
+            JiraLocalProcessingListResponse unrestrictedKeys = UnwrapList(
+                _controller.GetSelectionTickets(request with { Keys = keys }));
+            Assert.Equal(3, unrestrictedKeys.Total);
+            Assert.Equal([quotedKey, "FHIR-1", "FHIR-2"], unrestrictedKeys.Results.Select(result => result.Key));
+        }
+
+        JiraLocalProcessingListResponse keysOnly = UnwrapList(
+            _controller.GetSelectionTickets(new JiraLocalProcessingSelectionRequest { Keys = ["FHIR-3", "FHIR-5"] }));
+        Assert.Equal(2, keysOnly.Total);
+        Assert.Equal(["FHIR-3", "FHIR-5"], keysOnly.Results.Select(result => result.Key));
+
+        JiraLocalProcessingListResponse processed = UnwrapList(
+            _controller.GetSelectionTickets(request with { ProcessedLocally = true }));
+        JiraLocalProcessingListResponse unprocessed = UnwrapList(
+            _controller.GetSelectionTickets(request with { ProcessedLocally = false }));
+        Assert.Equal("FHIR-2", Assert.Single(processed.Results).Key);
+        Assert.Equal(1, processed.Total);
+        Assert.Equal(quotedKey, Assert.Single(unprocessed.Results).Key);
+        Assert.Equal(1, unprocessed.Total);
+    }
+
+    [Theory]
+    [InlineData(null, "fhir")]
+    [InlineData("", "fhir")]
+    [InlineData(" \t", "fhir")]
+    [InlineData("fhir", "fhir")]
+    [InlineData("FHIR", "fhir")]
+    [InlineData("pss", "pss")]
+    [InlineData("PsS", "pss")]
+    [InlineData("baldef", "baldef")]
+    [InlineData("BALDEF", "baldef")]
+    [InlineData("ballot", "ballot")]
+    [InlineData("BALLOT", "ballot")]
+    [InlineData("bogus", null)]
+    [InlineData(" fhir ", null)]
+    [InlineData("jira_issues; SELECT 1", null)]
+    public void GetSelectionTickets_PreservesMappingValidationAndProvenance(string? type, string? expectedType)
+    {
+        HttpPostAttribute route = Assert.Single(
+            typeof(LocalProcessingController).GetMethods()
+                .Single(method => method.Name == nameof(LocalProcessingController.GetSelectionTickets))
+                .GetCustomAttributes(typeof(HttpPostAttribute), inherit: false)
+                .Cast<HttpPostAttribute>());
+        Assert.Equal("selection-tickets", route.Template);
+
+        JiraLocalProcessingSelectionRequest request = new()
+        {
+            LabelText = new JiraLabelTextFilter { Includes = ["inc-01", "inc-02"], Excludes = ["ex-01", "ex-02"] },
+            Limit = 0,
+            Offset = -5,
+        };
+        if (expectedType is null)
+        {
+            BadRequestObjectResult badRequest = Assert.IsType<BadRequestObjectResult>(
+                _controller.GetSelectionTickets(request, type));
+            Assert.Equal(400, badRequest.StatusCode);
+            string? error = JsonSerializer.SerializeToElement(badRequest.Value).GetProperty("error").GetString();
+            Assert.Equal($"Unknown type '{type}'. Expected one of: fhir, pss, baldef, ballot.", error);
+            return;
+        }
+
+        DateTimeOffset refreshedAt = new(2026, 9, 30, 12, 0, 0, TimeSpan.Zero);
+        Dictionary<string, JiraIssueBaseRecord> issues = [];
+        long contentRevision;
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            issues["fhir"] = SeedIssue(
+                connection, "FHIR-1", labels: "prefix-inc-02-suffix", workGroup: "FHIR-I", specification: "Core");
+            SeedIssue(connection, "FHIR-0", labels: "other");
+
+            JiraProjectScopeStatementRecord pss = NewPss("PSS-1", processedAt: null) with
+            {
+                Labels = "prefix-inc-02-suffix",
+                SponsoringWorkGroupsLegacy = "Legacy work group",
+            };
+            JiraProjectScopeStatementRecord.Insert(connection, pss);
+            JiraProjectScopeStatementRecord.Insert(connection, NewPss("PSS-0", processedAt: null) with { Labels = "inc-02,ex-02" });
+            issues["pss"] = pss;
+
+            JiraBaldefRecord baldef = NewBaldef("BALDEF-1", processedAt: null) with
+            {
+                Labels = "prefix-inc-02-suffix",
+                Specification = "Core",
+            };
+            JiraBaldefRecord.Insert(connection, baldef);
+            JiraBaldefRecord.Insert(connection, NewBaldef("BALDEF-0", processedAt: null));
+            issues["baldef"] = baldef;
+
+            JiraBallotRecord ballot = NewBallot("BALLOT-1", processedAt: null) with
+            {
+                Labels = "prefix-inc-02-suffix",
+                Specification = "Core",
+            };
+            JiraBallotRecord.Insert(connection, ballot);
+            JiraBallotRecord.Insert(connection, NewBallot("BALLOT-0", processedAt: null) with { Labels = "other" });
+            issues["ballot"] = ballot;
+
+            InsertSyncState(connection, "FHIR", refreshedAt);
+            InsertSyncState(connection, "SYNC-ONLY", refreshedAt.AddHours(-1));
+            contentRevision = JiraDatabase.ReadSourceState(connection).ContentRevision;
+        }
+
+        JiraIssueBaseRecord expected = issues[expectedType];
+        JiraLocalProcessingListResponse stable = UnwrapList(_controller.GetSelectionTickets(request, type));
+        JiraIssueSummaryEntry summary = Assert.Single(stable.Results);
+        Assert.Equal(1, stable.Total);
+        Assert.Equal(500, stable.Limit);
+        Assert.Equal(0, stable.Offset);
+        Assert.Equal(expected.Key, summary.Key);
+        Assert.Equal(expected.ProjectKey, summary.ProjectKey);
+        Assert.Equal(expected.Title, summary.Title);
+        Assert.Equal(expected.Type, summary.Type);
+        Assert.Equal(expected.Priority, summary.Priority);
+        Assert.Equal(expected.Status, summary.Status);
+        Assert.Equal(expected.UpdatedAt, summary.UpdatedAt);
+        Assert.Equal($"{new JiraServiceOptions().BaseUrl}/browse/{expected.Key}", summary.Url);
+        Assert.Equal(expectedType switch { "fhir" => "FHIR-I", "pss" => "Legacy work group", _ => "" }, summary.WorkGroup);
+        Assert.Equal(expectedType == "pss" ? "" : "Core", summary.Specification);
+        Assert.NotNull(stable.Provenance);
+        Assert.Equal("jira", stable.Provenance.Source);
+        Assert.True(stable.Provenance.IsStable);
+        Assert.Equal(contentRevision, stable.Provenance.ContentRevision);
+        Assert.Equal(refreshedAt, stable.Provenance.ProjectLastSuccessfulRefreshAt["FHIR"]);
+        Assert.Equal(refreshedAt.AddHours(-1), stable.Provenance.ProjectLastSuccessfulRefreshAt["SYNC-ONLY"]);
+        Assert.True(stable.Provenance.ProjectLastSuccessfulRefreshAt.ContainsKey(expected.ProjectKey));
+        if (expectedType != "fhir")
+        {
+            Assert.Null(stable.Provenance.ProjectLastSuccessfulRefreshAt[expected.ProjectKey]);
+        }
+
+        JiraLocalProcessingListResponse oldPage = UnwrapList(_controller.GetTickets(request, type));
+        Assert.Equal(2, oldPage.Total);
+        Assert.Equal(summary, oldPage.Results.Single(result => result.Key == expected.Key));
+        Assert.NotNull(oldPage.Provenance);
+        Assert.Equal(contentRevision, oldPage.Provenance.ContentRevision);
+        Assert.Equal(
+            oldPage.Provenance.ProjectLastSuccessfulRefreshAt.OrderBy(pair => pair.Key),
+            stable.Provenance.ProjectLastSuccessfulRefreshAt.OrderBy(pair => pair.Key));
+
+        JiraSourceStateRecord started = _db.BeginContentMutation();
+        try
+        {
+            JiraLocalProcessingListResponse unstable = UnwrapList(_controller.GetSelectionTickets(request, type));
+            Assert.Equal(expected.Key, Assert.Single(unstable.Results).Key);
+            Assert.Equal(1, unstable.Total);
+            Assert.NotNull(unstable.Provenance);
+            Assert.False(unstable.Provenance.IsStable);
+            Assert.Equal(started.ContentRevision, unstable.Provenance.ContentRevision);
+            Assert.Equal(refreshedAt, unstable.Provenance.ProjectLastSuccessfulRefreshAt["FHIR"]);
+        }
+        finally
+        {
+            _db.CompleteContentMutation();
+        }
+
+        JiraLocalProcessingListResponse empty = UnwrapList(
+            _controller.GetSelectionTickets(request with { Offset = 3 }, type));
+        Assert.Empty(empty.Results);
+        Assert.Equal(1, empty.Total);
+        Assert.Equal(500, empty.Limit);
+        Assert.Equal(3, empty.Offset);
+        Assert.NotNull(empty.Provenance);
+        Assert.True(empty.Provenance.IsStable);
+        Assert.Equal(contentRevision + 2, empty.Provenance.ContentRevision);
+        Assert.Equal(refreshedAt, empty.Provenance.ProjectLastSuccessfulRefreshAt["FHIR"]);
+        Assert.Equal(refreshedAt.AddHours(-1), empty.Provenance.ProjectLastSuccessfulRefreshAt["SYNC-ONLY"]);
+
+        using SqliteConnection check = _db.OpenConnection();
+        Assert.Equal(contentRevision + 2, JiraDatabase.ReadSourceState(check).ContentRevision);
+    }
+
+    [Fact]
+    public void GetSelectionTickets_CombinesInheritedExactLabelsWithoutRedefiningThem()
+    {
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            SeedIssue(connection, "FHIR-1", labels: "inc-01");
+            SeedIssue(connection, "FHIR-2", labels: "inc-02");
+            SeedIssue(connection, "FHIR-3", labels: "inc-01,ex-02");
+            SeedIssue(connection, "FHIR-4", labels: "other");
+            SeedIssue(connection, "FHIR-5", labels: "inc-01");
+            SeedIssue(connection, "FHIR-6", labels: "Exact-L1,inc-01");
+
+            JiraIndexLabelRecord first = new() { Id = JiraIndexLabelRecord.GetIndex(), Name = "Exact-L1", IssueCount = 3 };
+            JiraIndexLabelRecord second = new() { Id = JiraIndexLabelRecord.GetIndex(), Name = "Exact-L2", IssueCount = 1 };
+            JiraIndexLabelRecord partial = new() { Id = JiraIndexLabelRecord.GetIndex(), Name = "Prefix-Exact-L1-Suffix", IssueCount = 1 };
+            JiraIndexLabelRecord.Insert(connection, first);
+            JiraIndexLabelRecord.Insert(connection, second);
+            JiraIndexLabelRecord.Insert(connection, partial);
+            foreach ((string key, int labelId) in new[]
+                     {
+                         ("FHIR-1", first.Id),
+                         ("FHIR-2", second.Id),
+                         ("FHIR-3", first.Id),
+                         ("FHIR-4", first.Id),
+                         ("FHIR-5", partial.Id),
+                     })
+            {
+                JiraIssueLabelRecord.Insert(connection, new JiraIssueLabelRecord
+                {
+                    Id = JiraIssueLabelRecord.GetIndex(),
+                    IssueKey = key,
+                    LabelId = labelId,
+                });
+            }
+        }
+
+        JiraLocalProcessingSelectionRequest request = new()
+        {
+            Labels = ["Exact-L1", "Exact-L2"],
+            LabelText = new JiraLabelTextFilter { Includes = ["inc-01", "inc-02"], Excludes = ["ex-01", "ex-02"] },
+        };
+        JiraLocalProcessingListResponse combined = UnwrapList(_controller.GetSelectionTickets(request));
+        Assert.Equal(2, combined.Total);
+        Assert.Equal(["FHIR-1", "FHIR-2"], combined.Results.Select(result => result.Key));
+
+        JiraLocalProcessingListResponse exactOnly = UnwrapList(
+            _controller.GetTickets(new JiraLocalProcessingListRequest { Labels = ["Exact-L1", "Exact-L2"] }));
+        Assert.Equal(4, exactOnly.Total);
+        Assert.Equal(["FHIR-1", "FHIR-2", "FHIR-3", "FHIR-4"], exactOnly.Results.Select(result => result.Key));
+
+        JiraLocalProcessingListResponse inactiveText = UnwrapList(
+            _controller.GetSelectionTickets(request with { LabelText = null }));
+        Assert.Equal(exactOnly.Total, inactiveText.Total);
+        Assert.Equal(exactOnly.Results.Select(result => result.Key), inactiveText.Results.Select(result => result.Key));
+
+        JiraLocalProcessingListResponse textOnly = UnwrapList(
+            _controller.GetSelectionTickets(request with { Labels = [] }));
+        Assert.Equal(4, textOnly.Total);
+        Assert.Equal(["FHIR-1", "FHIR-2", "FHIR-5", "FHIR-6"], textOnly.Results.Select(result => result.Key));
+
+        JiraLocalProcessingListResponse wildcardExact = UnwrapList(
+            _controller.GetSelectionTickets(request with { Labels = ["Exact-L%"] }));
+        JiraLocalProcessingListResponse oldWildcardExact = UnwrapList(
+            _controller.GetTickets(new JiraLocalProcessingListRequest { Labels = ["Exact-L%"] }));
+        Assert.Empty(wildcardExact.Results);
+        Assert.Equal(0, wildcardExact.Total);
+        Assert.Empty(oldWildcardExact.Results);
+        Assert.Equal(0, oldWildcardExact.Total);
+
+        JiraLocalProcessingListResponse fullExact = UnwrapList(
+            _controller.GetSelectionTickets(request with { Labels = ["Prefix-Exact-L1-Suffix"] }));
+        Assert.Equal("FHIR-5", Assert.Single(fullExact.Results).Key);
+        Assert.Equal(1, fullExact.Total);
     }
 
     [Fact]

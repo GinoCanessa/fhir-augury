@@ -52,6 +52,34 @@ public record JiraLocalProcessingListRequest : JiraLocalProcessingFilter
     public int? Offset { get; init; }
 }
 
+/// <summary>
+/// Native SQL-LIKE criteria over raw nullable Jira label text, distinct from
+/// the existing exact <see cref="JiraLocalProcessingFilter.Labels"/> filter.
+/// Blank entries are ignored; other values are preserved and wrapped in
+/// <c>%</c> for contains matching, retaining native wildcard and case behavior.
+/// </summary>
+public record JiraLabelTextFilter
+{
+    /// <summary>Require any inclusion to match. Null, empty, or all-blank lists add no restriction.</summary>
+    public List<string>? Includes { get; init; }
+
+    /// <summary>Require non-null label text and no exclusion to match. Null, empty, or all-blank lists add no restriction.</summary>
+    public List<string>? Excludes { get; init; }
+}
+
+/// <summary>
+/// Selection-tickets request: inherited exact filters and paging, plus
+/// optional raw label-text criteria and an issue-key restriction.
+/// </summary>
+public record JiraLocalProcessingSelectionRequest : JiraLocalProcessingListRequest
+{
+    /// <summary>Label-text criteria ANDed with the inherited filters, without redefining exact Labels.</summary>
+    public JiraLabelTextFilter? LabelText { get; init; }
+
+    /// <summary>Optional exact issue keys. Null or empty adds no restriction.</summary>
+    public List<string>? Keys { get; init; }
+}
+
 /// <summary>List-tickets response: paged results plus unpaged total.</summary>
 public record JiraLocalProcessingListResponse(
     IReadOnlyList<JiraIssueSummaryEntry> Results,

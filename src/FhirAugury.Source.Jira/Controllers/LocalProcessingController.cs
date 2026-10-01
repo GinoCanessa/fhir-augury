@@ -38,42 +38,22 @@ public class LocalProcessingController(
         JiraLocalProcessingQueryBuilder.TableMapping? mapping = JiraLocalProcessingQueryBuilder.TryGetMapping(type);
         if (mapping is null) return BadRequest(new { error = $"Unknown type '{type}'. Expected one of: fhir, pss, baldef, ballot." });
 
-        JiraServiceOptions options = optionsAccessor.Value;
-        using SqliteConnection connection = db.OpenConnection();
-        using SqliteCommand transaction = connection.CreateCommand();
-        transaction.CommandText = "BEGIN DEFERRED;";
-        transaction.ExecuteNonQuery();
+        return Ok(ReadPage(
+            request,
+            JiraLocalProcessingQueryBuilder.BuildList(request, mapping),
+            JiraLocalProcessingQueryBuilder.BuildCount(request, mapping)));
+    }
 
-        (string listSql, List<SqliteParameter> listParams) =
-            JiraLocalProcessingQueryBuilder.BuildList(request, mapping);
+    [HttpPost("selection-tickets")]
+    public IActionResult GetSelectionTickets([FromBody] JiraLocalProcessingSelectionRequest request, [FromQuery] string? type = null)
+    {
+        JiraLocalProcessingQueryBuilder.TableMapping? mapping = JiraLocalProcessingQueryBuilder.TryGetMapping(type);
+        if (mapping is null) return BadRequest(new { error = $"Unknown type '{type}'. Expected one of: fhir, pss, baldef, ballot." });
 
-        int limit = (request.Limit is null || request.Limit.Value <= 0)
-            ? JiraLocalProcessingQueryBuilder.DefaultLimit
-            : request.Limit.Value;
-        int offset = (request.Offset is null || request.Offset.Value < 0)
-            ? 0
-            : request.Offset.Value;
-
-        List<JiraIssueSummaryEntry> results = ReadSummaries(connection, listSql, listParams, options);
-
-        (string countSql, List<SqliteParameter> countParams) =
-            JiraLocalProcessingQueryBuilder.BuildCount(request, mapping);
-        using SqliteCommand countCmd = new SqliteCommand(countSql, connection);
-        foreach (SqliteParameter p in countParams) countCmd.Parameters.Add(p);
-        int total = Convert.ToInt32(countCmd.ExecuteScalar());
-
-        SourceReadProvenance provenance = JiraSyncStateHelper.CaptureProvenance(
-            connection,
-            results.Select(result => result.ProjectKey));
-
-        JiraLocalProcessingListResponse response =
-            new JiraLocalProcessingListResponse(results, limit, offset, total)
-            {
-                Provenance = provenance,
-            };
-        transaction.CommandText = "COMMIT;";
-        transaction.ExecuteNonQuery();
-        return Ok(response);
+        return Ok(ReadPage(
+            request,
+            JiraLocalProcessingQueryBuilder.BuildSelectionList(request, mapping),
+            JiraLocalProcessingQueryBuilder.BuildSelectionCount(request, mapping)));
     }
 
     [HttpPost("random-ticket")]
@@ -219,6 +199,44 @@ public class LocalProcessingController(
         }
 
         return Ok(new JiraLocalProcessingClearResponse(rowsAffected));
+    }
+
+    private JiraLocalProcessingListResponse ReadPage(
+        JiraLocalProcessingListRequest request,
+        (string Sql, List<SqliteParameter> Parameters) listQuery,
+        (string Sql, List<SqliteParameter> Parameters) countQuery)
+    {
+        JiraServiceOptions options = optionsAccessor.Value;
+        using SqliteConnection connection = db.OpenConnection();
+        using SqliteCommand transaction = connection.CreateCommand();
+        transaction.CommandText = "BEGIN DEFERRED;";
+        transaction.ExecuteNonQuery();
+
+        int limit = (request.Limit is null || request.Limit.Value <= 0)
+            ? JiraLocalProcessingQueryBuilder.DefaultLimit
+            : request.Limit.Value;
+        int offset = (request.Offset is null || request.Offset.Value < 0)
+            ? 0
+            : request.Offset.Value;
+
+        List<JiraIssueSummaryEntry> results = ReadSummaries(connection, listQuery.Sql, listQuery.Parameters, options);
+
+        using SqliteCommand countCmd = new SqliteCommand(countQuery.Sql, connection);
+        foreach (SqliteParameter p in countQuery.Parameters) countCmd.Parameters.Add(p);
+        int total = Convert.ToInt32(countCmd.ExecuteScalar());
+
+        SourceReadProvenance provenance = JiraSyncStateHelper.CaptureProvenance(
+            connection,
+            results.Select(result => result.ProjectKey));
+
+        JiraLocalProcessingListResponse response =
+            new JiraLocalProcessingListResponse(results, limit, offset, total)
+            {
+                Provenance = provenance,
+            };
+        transaction.CommandText = "COMMIT;";
+        transaction.ExecuteNonQuery();
+        return response;
     }
 
     private static List<JiraIssueSummaryEntry> ReadSummaries(

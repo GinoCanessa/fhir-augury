@@ -331,6 +331,12 @@ public class JiraProxyController(SourceHttpClient httpClient) : ControllerBase
     public Task<IActionResult> LocalProcessingTickets(CancellationToken ct)
         => httpClient.ProxyAsync(Source, HttpMethod.Post, "local-processing/tickets", Request, ct);
 
+    /// <summary>Page through tickets selected by exact filters, keys, and label text.</summary>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpPost("local-processing/selection-tickets")]
+    public Task<IActionResult> LocalProcessingSelectionTickets(CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Post, "local-processing/selection-tickets", Request, ct);
+
     /// <summary>Draw a random unprocessed ticket from the local-processing queue.</summary>
     /// <param name="ct">Cancellation token.</param>
     [HttpPost("local-processing/random-ticket")]
