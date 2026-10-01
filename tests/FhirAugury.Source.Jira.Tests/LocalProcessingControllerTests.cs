@@ -307,10 +307,11 @@ public class LocalProcessingControllerTests : IDisposable
     [InlineData(new[] { "inc-01" }, null, null, false)]
     [InlineData(null, new[] { "ex-01", "ex-02" }, "other", true)]
     [InlineData(null, new[] { "ex-01", "ex-02" }, "prefix-ex-02-suffix", false)]
-    [InlineData(null, new[] { "ex-01", "ex-02" }, null, false)]
+    [InlineData(null, new[] { "ex-01", "ex-02" }, null, true)]
     [InlineData(null, new[] { "ex-01", "ex-02" }, "", true)]
     [InlineData(new[] { "inc-01", "inc-02" }, new[] { "ex-01", "ex-02" }, "inc-01,ex-02", false)]
     [InlineData(new[] { "inc-01", "inc-02" }, new[] { "ex-01", "ex-02" }, "prefix-inc-02-suffix", true)]
+    [InlineData(new[] { "inc-01", "inc-02" }, new[] { "ex-01", "ex-02" }, null, false)]
     public void GetSelectionTickets_LabelTruthTable(string[]? includes, string[]? excludes, string? labels, bool selected)
     {
         using (SqliteConnection connection = _db.OpenConnection())
@@ -345,7 +346,7 @@ public class LocalProcessingControllerTests : IDisposable
     [InlineData("""{"includes":[null,""," \t\r\n"],"excludes":[null,""," \t\r\n"]}""", null, true)]
     [InlineData("""{"includes":[null,""," \t\r\n"],"excludes":[null,""," \t\r\n"]}""", "", true)]
     [InlineData("""{"includes":[null,""," \t"],"excludes":["ex-01"]}""", "other", true)]
-    [InlineData("""{"includes":[null,""," \t"],"excludes":["ex-01"]}""", null, false)]
+    [InlineData("""{"includes":[null,""," \t"],"excludes":["ex-01"]}""", null, true)]
     [InlineData("""{"includes":[null,""," \t","inc-01"],"excludes":[null,""," \t"]}""", "prefix-inc-01-suffix", true)]
     [InlineData("""{"includes":[null,""," \t","inc-01"],"excludes":[null,""," \t"]}""", "other", false)]
     [InlineData("""{"includes":[" inc-01 "]}""", "prefix inc-01 suffix", true)]
@@ -364,7 +365,7 @@ public class LocalProcessingControllerTests : IDisposable
     [InlineData("""{"includes":["_"]}""", "", false)]
     [InlineData("""{"excludes":["%"]}""", "", false)]
     [InlineData("""{"excludes":["%"]}""", "other", false)]
-    [InlineData("""{"excludes":["%"]}""", null, false)]
+    [InlineData("""{"excludes":["%"]}""", null, true)]
     [InlineData("""{"excludes":["_"]}""", "", true)]
     [InlineData("""{"excludes":["_"]}""", "x", false)]
     [InlineData("""{"includes":["x' OR 1=1 --"]}""", "prefix-x' OR 1=1 --suffix", true)]
@@ -458,6 +459,55 @@ public class LocalProcessingControllerTests : IDisposable
             _controller.GetTickets(new JiraLocalProcessingListRequest { Limit = 2, Offset = 0 }));
         Assert.Equal(8, oldPage.Total);
         Assert.Equal(["FHIR-1", "FHIR-2"], oldPage.Results.Select(result => result.Key));
+    }
+
+    [Fact]
+    public void GetSelectionTickets_ExclusionOnlyPreservesStatusKeysAndPaging()
+    {
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            SeedIssue(connection, "FHIR-9", labels: null);
+            SeedIssue(connection, "FHIR-8", labels: "other");
+            SeedIssue(connection, "FHIR-7", labels: null);
+            SeedIssue(connection, "FHIR-6", status: "Closed", labels: "other");
+            SeedIssue(connection, "FHIR-5", status: "Closed", labels: null);
+            SeedIssue(connection, "FHIR-4", labels: "other");
+            SeedIssue(connection, "FHIR-3", labels: "prefix-ex-02-suffix");
+            SeedIssue(connection, "FHIR-2", labels: null);
+            SeedIssue(connection, "FHIR-1", labels: "prefix-ex-01-suffix");
+        }
+
+        JiraLocalProcessingSelectionRequest request = new()
+        {
+            Statuses = ["Open"],
+            Keys = ["FHIR-9", "FHIR-6", "FHIR-5", "FHIR-4", "FHIR-3", "FHIR-2", "FHIR-1"],
+            LabelText = new JiraLabelTextFilter { Excludes = ["ex-01", "ex-02"] },
+            Limit = 2,
+            Offset = 0,
+        };
+        JiraLocalProcessingListResponse first = UnwrapList(_controller.GetSelectionTickets(request));
+        JiraLocalProcessingListResponse second = UnwrapList(_controller.GetSelectionTickets(request with { Offset = 2 }));
+        JiraLocalProcessingListResponse empty = UnwrapList(_controller.GetSelectionTickets(request with { Offset = 4 }));
+
+        Assert.Equal(["FHIR-2", "FHIR-4"], first.Results.Select(result => result.Key));
+        Assert.Equal(["FHIR-9"], second.Results.Select(result => result.Key));
+        Assert.Empty(empty.Results);
+        Assert.Equal(0, first.Offset);
+        Assert.Equal(2, second.Offset);
+        Assert.Equal(4, empty.Offset);
+        foreach (JiraLocalProcessingListResponse page in new[] { first, second, empty })
+        {
+            Assert.Equal(3, page.Total);
+            Assert.Equal(2, page.Limit);
+        }
+
+        JiraLocalProcessingListResponse wildcard = UnwrapList(
+            _controller.GetSelectionTickets(request with
+            {
+                LabelText = new JiraLabelTextFilter { Excludes = ["%"] },
+            }));
+        Assert.Equal(["FHIR-2", "FHIR-9"], wildcard.Results.Select(result => result.Key));
+        Assert.Equal(2, wildcard.Total);
     }
 
     [Fact]

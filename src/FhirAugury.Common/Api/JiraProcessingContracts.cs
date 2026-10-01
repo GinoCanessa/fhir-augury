@@ -60,10 +60,16 @@ public record JiraLocalProcessingListRequest : JiraLocalProcessingFilter
 /// </summary>
 public record JiraLabelTextFilter
 {
-    /// <summary>Require any inclusion to match. Null, empty, or all-blank lists add no restriction.</summary>
+    /// <summary>
+    /// When active, require non-null stored label text matching at least one inclusion.
+    /// Null, empty, or all-blank lists are inactive and add no restriction.
+    /// </summary>
     public List<string>? Includes { get; init; }
 
-    /// <summary>Require non-null label text and no exclusion to match. Null, empty, or all-blank lists add no restriction.</summary>
+    /// <summary>
+    /// When active, allow null stored label text or non-null text matching no exclusion.
+    /// Null, empty, or all-blank lists are inactive and add no restriction.
+    /// </summary>
     public List<string>? Excludes { get; init; }
 }
 

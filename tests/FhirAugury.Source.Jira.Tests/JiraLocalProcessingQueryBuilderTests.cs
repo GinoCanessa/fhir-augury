@@ -244,8 +244,8 @@ public class JiraLocalProcessingQueryBuilderTests
             " OR Labels LIKE @labelTextInclude2 OR Labels LIKE @labelTextInclude3" +
             " OR Labels LIKE @labelTextInclude4 OR Labels LIKE @labelTextInclude5" +
             " OR Labels LIKE @labelTextInclude6 OR Labels LIKE @labelTextInclude7)" +
-            " AND (Labels IS NOT NULL AND Labels NOT LIKE @labelTextExclude0" +
-            " AND Labels NOT LIKE @labelTextExclude1 AND Labels NOT LIKE @labelTextExclude2)",
+            " AND (Labels IS NULL OR (Labels NOT LIKE @labelTextExclude0" +
+            " AND Labels NOT LIKE @labelTextExclude1 AND Labels NOT LIKE @labelTextExclude2))",
             selection);
         Assert.DoesNotContain("Inc-01", selection);
         Assert.DoesNotContain("ex-02", selection);
@@ -280,6 +280,32 @@ public class JiraLocalProcessingQueryBuilderTests
         Assert.DoesNotContain("@labelText", oldList + oldCount + oldRandom);
         Assert.DoesNotContain("@selectionKey", oldList + oldCount + oldRandom);
         Assert.Equal(inheritedParameters.Count + 2, oldListParameters.Count);
+    }
+
+    [Fact]
+    public void BuildSelectionWhere_ExclusionOnlyGroupPreservesStatusAndKeyRestrictions()
+    {
+        JiraLocalProcessingSelectionRequest request = new()
+        {
+            Statuses = ["Open"],
+            Keys = ["FHIR-1", "FHIR-2"],
+            LabelText = new JiraLabelTextFilter { Excludes = ["ex-01", "ex-02"] },
+        };
+
+        (string where, List<SqliteParameter> parameters) = JiraLocalProcessingQueryBuilder.BuildSelectionWhere(request);
+
+        Assert.Equal(
+            " WHERE 1=1 AND Status IN (@p0)" +
+            " AND Key IN (@selectionKey0, @selectionKey1)" +
+            " AND (Labels IS NULL OR (Labels NOT LIKE @labelTextExclude0" +
+            " AND Labels NOT LIKE @labelTextExclude1))",
+            where);
+        Assert.Equal(
+            ["@p0", "@selectionKey0", "@selectionKey1", "@labelTextExclude0", "@labelTextExclude1"],
+            parameters.Select(p => p.ParameterName));
+        Assert.Equal(
+            ["Open", "FHIR-1", "FHIR-2", "%ex-01%", "%ex-02%"],
+            parameters.Select(p => p.Value));
     }
 
     [Theory]

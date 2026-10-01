@@ -37,8 +37,8 @@ public static class JiraLabelTextPredicateBuilder
 
         if (predicates.Count == 0) return;
 
-        sql.Append(exclude ? " AND (Labels IS NOT NULL AND " : " AND (");
+        sql.Append(exclude ? " AND (Labels IS NULL OR (" : " AND (");
         sql.Append(string.Join(exclude ? " AND " : " OR ", predicates));
-        sql.Append(')');
+        sql.Append(exclude ? "))" : ")");
     }
 }
