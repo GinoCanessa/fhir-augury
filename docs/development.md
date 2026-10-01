@@ -80,6 +80,19 @@ prefix (e.g. `FHIR_AUGURY_JIRA_`):
 See the [Configuration Reference](configuration.md) for the complete key list
 and the [Configuration guide](user/configuration.md) for credential setup.
 
+To set existing boolean options across source-local configuration files:
+
+```powershell
+dotnet run --project tools\ingestion-toggle -- --ingestion-paused true
+dotnet run --project tools\ingestion-toggle -- --ingestion-paused false --ingest-on-startup-only true
+```
+
+Any existing boolean directly inside the source's own section can be selected
+with its kebab-case name. Missing files and properties are not created, and
+unrelated content is preserved. See the
+[ingestion-toggle guide](../tools/ingestion-toggle/README.md) for aliases,
+scope, and failure reporting.
+
 ## Where to Go Next
 
 - [Architecture](technical/architecture.md) — system design and components.
