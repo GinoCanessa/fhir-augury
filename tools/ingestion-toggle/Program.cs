@@ -1,6 +1,4 @@
-using System.Text.Encodings.Web;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 
 namespace FhirAugury.Tools.IngestionToggle;
 
@@ -49,8 +47,11 @@ public static class Program
               ingestion-toggle --help
 
             Flags:
-              --enable      Set IngestionPaused to false for each existing src/*/appsettings.local.json file.
-              --disable     Set IngestionPaused to true for each existing src/*/appsettings.local.json file.
+              --enable      Set <Section>.IngestionPaused to false in each existing src/*/appsettings.local.json file.
+              --disable     Set <Section>.IngestionPaused to true in each existing src/*/appsettings.local.json file.
+
+            Only existing boolean IngestionPaused values are rewritten; files and properties are never created.
+            Exit codes: 0 = no failures, 1 = at least one file failed, 2 = invalid arguments.
             """);
     }
 }
@@ -118,8 +119,24 @@ internal enum FileStatus
 
 internal sealed record FileResult(string Path, FileStatus Status, string Reason);
 
+internal enum ToggleOutcome
+{
+    Changed,
+    AlreadySet,
+    NotFound,
+    NotBoolean,
+    RootNotObject,
+}
+
 internal static class IngestionToggleRunner
 {
+    public const string LocalSettingsFileName = "appsettings.local.json";
+    public const string PropertyName = "IngestionPaused";
+
+    private static readonly byte[] _utf8Bom = [0xEF, 0xBB, 0xBF];
+    private static readonly byte[] _trueLiteral = "true"u8.ToArray();
+    private static readonly byte[] _falseLiteral = "false"u8.ToArray();
+
     public static int Run(string repoRoot, bool enableIngestion, TextWriter output, TextWriter errorOutput)
     {
         string root = string.IsNullOrWhiteSpace(repoRoot) ? RepositoryRootLocator.Find() : repoRoot;
@@ -135,9 +152,15 @@ internal static class IngestionToggleRunner
 
         foreach (string candidate in Directory.EnumerateDirectories(srcDirectory).OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
         {
-            string filePath = Path.Combine(candidate, "appsettings.local.json");
+            string filePath = Path.Combine(candidate, LocalSettingsFileName);
             if (!File.Exists(filePath))
             {
+                // Only projects that ship an appsettings.json can have a local override worth reporting.
+                if (File.Exists(Path.Combine(candidate, "appsettings.json")))
+                {
+                    results.Add(new FileResult(filePath, FileStatus.Skipped, "File does not exist."));
+                }
+
                 continue;
             }
 
@@ -175,36 +198,30 @@ internal static class IngestionToggleRunner
         }
 
         bool targetPaused = !enableIngestion;
+        string targetText = FormatBool(targetPaused);
 
         try
         {
-            string json = File.ReadAllText(filePath);
-            JsonNode? root = JsonNode.Parse(json);
-            if (root is null)
+            byte[] content = File.ReadAllBytes(filePath);
+            ToggleOutcome outcome = Apply(content, targetPaused, out byte[] updated, out IReadOnlyList<string> sections);
+
+            switch (outcome)
             {
-                return new FileResult(filePath, FileStatus.Failed, "JSON file is empty or null.");
+                case ToggleOutcome.NotFound:
+                    return new FileResult(filePath, FileStatus.Skipped, $"No <Section>.{PropertyName} setting found.");
+
+                case ToggleOutcome.AlreadySet:
+                    return new FileResult(filePath, FileStatus.Skipped, $"{FormatSections(sections)} already {targetText}.");
+
+                case ToggleOutcome.NotBoolean:
+                    return new FileResult(filePath, FileStatus.Failed, $"{FormatSections(sections)} exists but is not a boolean value.");
+
+                case ToggleOutcome.RootNotObject:
+                    return new FileResult(filePath, FileStatus.Failed, "JSON root is not an object.");
             }
 
-            bool found = false;
-            bool changed = UpdateIngestionPausedValue(root, targetPaused, ref found);
-            if (!found)
-            {
-                return new FileResult(filePath, FileStatus.Skipped, "No IngestionPaused setting found.");
-            }
-
-            if (!changed)
-            {
-                return new FileResult(filePath, FileStatus.Skipped, $"IngestionPaused already set to {targetPaused.ToString().ToLowerInvariant()}.");
-            }
-
-            File.WriteAllText(
-                filePath,
-                root.ToJsonString(new JsonSerializerOptions
-                {
-                    WriteIndented = true,
-                    Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-                }) + Environment.NewLine);
-            return new FileResult(filePath, FileStatus.Changed, $"IngestionPaused={targetPaused.ToString().ToLowerInvariant()}");
+            File.WriteAllBytes(filePath, updated);
+            return new FileResult(filePath, FileStatus.Changed, $"{FormatSections(sections)}={targetText}");
         }
         catch (JsonException ex)
         {
@@ -216,51 +233,111 @@ internal static class IngestionToggleRunner
         }
     }
 
-    private static bool UpdateIngestionPausedValue(JsonNode? node, bool targetPaused, ref bool found)
+    /// <summary>
+    /// Locates every boolean <c>IngestionPaused</c> property that is a direct child of a top-level
+    /// section object (e.g. <c>Jira.IngestionPaused</c>) and rewrites only the literal bytes of the
+    /// values that differ from <paramref name="targetPaused"/>. All other bytes — formatting,
+    /// comments, BOM, line endings, and unrelated settings — are copied through unchanged.
+    /// </summary>
+    internal static ToggleOutcome Apply(byte[] content, bool targetPaused, out byte[] updated, out IReadOnlyList<string> sections)
     {
-        if (node is JsonObject rootObject)
-        {
-            bool changed = false;
-            foreach ((string key, JsonNode? value) in rootObject)
-            {
-                if (key == "IngestionPaused")
-                {
-                    found = true;
-                    if (value is JsonValue jsonValue && jsonValue.TryGetValue<bool>(out bool currentValue))
-                    {
-                        if (currentValue != targetPaused)
-                        {
-                            rootObject[key] = targetPaused;
-                            changed = true;
-                        }
-                    }
-                    else
-                    {
-                        throw new InvalidOperationException("IngestionPaused exists but is not a boolean value.");
-                    }
-                }
-                else if (value is not null)
-                {
-                    changed |= UpdateIngestionPausedValue(value, targetPaused, ref found);
-                }
-            }
+        updated = content;
 
-            return changed;
+        int offset = content.AsSpan().StartsWith(_utf8Bom) ? _utf8Bom.Length : 0;
+        Utf8JsonReader reader = new(
+            content.AsSpan(offset),
+            new JsonReaderOptions
+            {
+                CommentHandling = JsonCommentHandling.Skip,
+                AllowTrailingCommas = true,
+            });
+
+        if (!reader.Read())
+        {
+            throw new JsonException("The file contains no JSON value.");
         }
 
-        if (node is JsonArray array)
+        if (reader.TokenType != JsonTokenType.StartObject)
         {
-            bool changed = false;
-            foreach (JsonNode? item in array)
-            {
-                changed |= UpdateIngestionPausedValue(item, targetPaused, ref found);
-            }
-
-            return changed;
+            sections = [];
+            return ToggleOutcome.RootNotObject;
         }
 
-        return false;
+        List<string> found = [];
+        List<string> nonBoolean = [];
+        List<(int Start, int Length)> edits = [];
+        string? currentSection = null;
+
+        while (reader.Read())
+        {
+            if (reader.TokenType != JsonTokenType.PropertyName)
+            {
+                continue;
+            }
+
+            if (reader.CurrentDepth == 1)
+            {
+                currentSection = reader.GetString();
+                continue;
+            }
+
+            if (reader.CurrentDepth != 2 || !reader.ValueTextEquals(PropertyName))
+            {
+                continue;
+            }
+
+            string path = $"{currentSection}.{PropertyName}";
+            reader.Read();
+
+            if (reader.TokenType is not (JsonTokenType.True or JsonTokenType.False))
+            {
+                nonBoolean.Add(path);
+                continue;
+            }
+
+            found.Add(path);
+            bool currentValue = reader.TokenType == JsonTokenType.True;
+            if (currentValue != targetPaused)
+            {
+                edits.Add((offset + (int)reader.TokenStartIndex, currentValue ? _trueLiteral.Length : _falseLiteral.Length));
+            }
+        }
+
+        if (nonBoolean.Count > 0)
+        {
+            sections = nonBoolean;
+            return ToggleOutcome.NotBoolean;
+        }
+
+        sections = found;
+        if (found.Count == 0)
+        {
+            return ToggleOutcome.NotFound;
+        }
+
+        if (edits.Count == 0)
+        {
+            return ToggleOutcome.AlreadySet;
+        }
+
+        byte[] replacement = targetPaused ? _trueLiteral : _falseLiteral;
+        using MemoryStream buffer = new(content.Length + edits.Count);
+        int position = 0;
+        foreach ((int start, int length) in edits)
+        {
+            buffer.Write(content, position, start - position);
+            buffer.Write(replacement);
+            position = start + length;
+        }
+
+        buffer.Write(content, position, content.Length - position);
+        updated = buffer.ToArray();
+        return ToggleOutcome.Changed;
     }
+
+    private static string FormatBool(bool value) => value ? "true" : "false";
+
+    private static string FormatSections(IReadOnlyList<string> sections) => string.Join(", ", sections);
 
     private static string GetDisplayPath(string repoRoot, string fullPath) =>
         Path.GetRelativePath(repoRoot, fullPath).Replace('\\', '/');
