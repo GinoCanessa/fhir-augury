@@ -417,6 +417,7 @@ public sealed class PlannedTicketAuthoringRunTests
             Coordinator = new JiraAuthoringRunCoordinator(
                 AuthoringStore,
                 _sourceStore,
+                new JiraConfiguredTicketSelector(_sourceStore, new TestJiraTicketLabelMatcher()),
                 new JiraProcessingFilterResolver(),
                 Options.Create(new JiraProcessingOptions
                 {

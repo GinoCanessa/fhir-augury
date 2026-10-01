@@ -1,12 +1,17 @@
 using FhirAugury.Common.Api;
+using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database;
+using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Discovery;
 using FhirAugury.Processing.Jira.Common.Filtering;
+using FhirAugury.Processing.Jira.Common.Tests.Authoring;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -51,6 +56,107 @@ public class JiraTicketSyncWorkerTests
 
         Assert.True(discovery.CallCount >= 2);
         Assert.NotNull(await fixture.Store.GetByKeyAsync("FHIR-99", "fhir", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SelectionUnavailableRetriesWithoutConsumingAuthoringAttempts()
+    {
+        using JiraAuthoringTestFixture fixture = new();
+        await fixture.ActivateAsync();
+        fixture.Options.Value.LabelsToInclude = ["cohort"];
+        JiraIssueSummaryEntry[] tickets = [CreateTicket("FHIR-1"), CreateTicket("FHIR-2")];
+        TaskCompletionSource retryEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource allowRetry = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        FakeDiscovery discovery = new(
+        [
+            _ => Task.FromResult<IReadOnlyList<JiraIssueSummaryEntry>>(tickets),
+            async _ =>
+            {
+                retryEntered.TrySetResult();
+                await allowRetry.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                return tickets;
+            },
+        ]);
+        IOptions<ProcessingServiceOptions> options = Options.Create(new ProcessingServiceOptions
+        {
+            DatabasePath = fixture.DatabasePath,
+            StartProcessingOnStartup = true,
+            SyncSchedule = "00:00:00.050",
+        });
+        ProcessingLifecycleService lifecycle = new(options);
+        JiraTicketSelectionUnavailableException failure = new("Jira selection is unavailable.");
+        fixture.Matcher.Enqueue((_, _, _) => throw failure);
+        fixture.Matcher.Enqueue((keys, _, _) =>
+        {
+            lifecycle.Stop();
+            return Task.FromResult(keys);
+        });
+        JiraTicketSyncService syncService = new(
+            discovery,
+            fixture.SourceStore,
+            fixture.AuthoringStore,
+            fixture.Coordinator,
+            new JiraProcessingFilterResolver(),
+            fixture.Options,
+            NullLogger<JiraTicketSyncService>.Instance);
+        SignalingLogger logger = new();
+        using JiraTicketSyncWorker worker = new(syncService, lifecycle, options, logger);
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            Assert.Same(failure, await logger.Failure.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+            await retryEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Single(fixture.Matcher.Calls);
+            Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_runs"));
+            Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_items"));
+            Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_attempts"));
+            foreach (JiraIssueSummaryEntry ticket in tickets)
+            {
+                JiraProcessingSourceTicketRecord source = Assert.IsType<JiraProcessingSourceTicketRecord>(
+                    await fixture.SourceStore.GetByKeyAsync(ticket.Key, "fhir", CancellationToken.None));
+                Assert.Equal(ticket.UpdatedAt, source.LastUpdated);
+                Assert.Null(source.ProcessingStatus);
+                Assert.Null(source.ProcessingError);
+                Assert.Equal(0, source.ProcessingAttemptCount);
+            }
+
+            allowRetry.SetResult();
+            await logger.Success.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(2, discovery.CallCount);
+            Assert.Equal([true, true], discovery.RunBackedRequests);
+            Assert.Equal(2, fixture.Matcher.Calls.Count);
+            Assert.All(fixture.Matcher.Calls, call =>
+            {
+                Assert.Equal(["FHIR-1", "FHIR-2"], call.Keys);
+                Assert.Equal(["cohort"], call.Filters.LabelsToInclude);
+            });
+            AuthoringRunRecord run = Assert.IsType<AuthoringRunRecord>(
+                await fixture.AuthoringStore.GetOldestQueuedRunAsync(fixture.Coordinator.ProcessorKind));
+            IReadOnlyList<AuthoringRunItemRecord> items = await fixture.AuthoringStore.GetRunItemsAsync(run.Id);
+            Assert.Equal(2, items.Count);
+            Assert.All(items, item =>
+            {
+                Assert.Equal(AuthoringStatusValues.Items.Pending, item.Status);
+                Assert.Equal(0, item.AttemptCount);
+                Assert.Null(item.Error);
+            });
+            Assert.Equal(1, fixture.Scalar("SELECT COUNT(*) FROM authoring_runs"));
+            Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_attempts"));
+            Assert.Equal(0, fixture.Scalar("SELECT SUM(ProcessingAttemptCount) FROM jira_processing_source_tickets"));
+            Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+                fixture.Coordinator.ProcessorKind, run.Id));
+            AuthoringOperationClaim claim = Assert.IsType<AuthoringOperationClaim>(
+                await fixture.AuthoringStore.ClaimItemAsync(run.Id, items[0].Id));
+            Assert.Equal(1, claim.AttemptNumber);
+        }
+        finally
+        {
+            allowRetry.TrySetResult();
+            using CancellationTokenSource stopTimeout = new(TimeSpan.FromSeconds(5));
+            await worker.StopAsync(stopTimeout.Token);
+        }
+        Assert.True(worker.ExecuteTask!.IsCompletedSuccessfully);
     }
 
     [Fact]
@@ -128,6 +234,7 @@ public class JiraTicketSyncWorkerTests
             JiraAuthoringRunCoordinator coordinator = new(
                 authoringStore,
                 store,
+                new JiraConfiguredTicketSelector(store, new TestJiraTicketLabelMatcher()),
                 filterResolver,
                 jiraOptions);
             JiraTicketSyncService syncService = new(
@@ -152,12 +259,49 @@ public class JiraTicketSyncWorkerTests
         }
     }
 
+    private sealed class SignalingLogger : ILogger<JiraTicketSyncWorker>
+    {
+        public TaskCompletionSource<Exception> Failure { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Success { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (exception is not null)
+            {
+                Failure.TrySetResult(exception);
+            }
+            else if (logLevel == LogLevel.Debug)
+            {
+                Success.TrySetResult();
+            }
+        }
+    }
+
     private sealed class FakeDiscovery(IReadOnlyList<Func<ResolvedJiraProcessingFilters, Task<IReadOnlyList<JiraIssueSummaryEntry>>>> responders) : IJiraTicketDiscoveryClient
     {
         private int _callIndex;
         private readonly object _lock = new();
 
         public int CallCount { get; private set; }
+        public List<bool> RunBackedRequests { get; } = [];
+
+        public Task<IReadOnlyList<JiraIssueSummaryEntry>> ListTicketsForModeAsync(
+            ResolvedJiraProcessingFilters filters,
+            bool runBacked,
+            CancellationToken ct)
+        {
+            RunBackedRequests.Add(runBacked);
+            return ListTicketsAsync(filters, ct);
+        }
 
         public Task<IReadOnlyList<JiraIssueSummaryEntry>> ListTicketsAsync(ResolvedJiraProcessingFilters filters, CancellationToken ct)
         {

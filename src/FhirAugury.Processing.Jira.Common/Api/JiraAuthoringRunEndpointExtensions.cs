@@ -67,6 +67,12 @@ public static class JiraAuthoringRunEndpointExtensions
                     databaseOnly: request.DatabaseOnly,
                     ct: ct);
             }
+            catch (JiraTicketSelectionUnavailableException ex)
+            {
+                return Results.Json(
+                    new { error = "jira-selection-unavailable", detail = ex.Message },
+                    statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
             catch (AuthoringConflictException ex)
                 when (ex.Code is
                     AuthoringConflictCode.ActiveRunCapacityReached or

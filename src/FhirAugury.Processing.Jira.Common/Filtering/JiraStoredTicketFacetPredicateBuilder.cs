@@ -1,6 +1,6 @@
 namespace FhirAugury.Processing.Jira.Common.Filtering;
 
-public static class JiraSourceTicketPredicateBuilder
+public static class JiraStoredTicketFacetPredicateBuilder
 {
     public static Func<IJiraProcessingTicketFilterCandidate, bool> Build(ResolvedJiraProcessingFilters filters)
     {

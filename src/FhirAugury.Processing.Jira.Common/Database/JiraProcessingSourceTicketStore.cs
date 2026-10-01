@@ -177,7 +177,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
     public async Task<IReadOnlyList<JiraProcessingSourceTicketRecord>> GetPendingAsync(int maxItems, CancellationToken ct)
     {
         ResolvedJiraProcessingFilters filters = _filtersFactory();
-        Func<IJiraProcessingTicketFilterCandidate, bool> predicate = JiraSourceTicketPredicateBuilder.Build(filters);
+        Func<IJiraProcessingTicketFilterCandidate, bool> predicate = JiraStoredTicketFacetPredicateBuilder.Build(filters);
         await using SqliteConnection connection = OpenConnection();
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText = """
@@ -392,14 +392,14 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
         return await reader.ReadAsync(ct) ? ReadRecord(reader) : null;
     }
 
-    public async Task<IReadOnlyList<JiraProcessingSourceTicketRecord>> GetAuthoringCandidatesAsync(
+    public async Task<IReadOnlyList<JiraProcessingSourceTicketRecord>> GetLocalAuthoringCandidatesAsync(
         ResolvedJiraProcessingFilters filters,
-        int maxItems,
+        int? maxItems,
         CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(filters);
         Func<IJiraProcessingTicketFilterCandidate, bool> predicate =
-            JiraSourceTicketPredicateBuilder.Build(filters);
+            JiraStoredTicketFacetPredicateBuilder.Build(filters);
         await using SqliteConnection connection = OpenConnection();
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText =
@@ -429,7 +429,7 @@ public sealed class JiraProcessingSourceTicketStore : IProcessingWorkItemStore<J
             if (!await HasFrozenRevisionAsync(connection, candidate, ct))
             {
                 pending.Add(candidate);
-                if (pending.Count >= maxItems)
+                if (maxItems is not null && pending.Count >= maxItems.Value)
                 {
                     break;
                 }

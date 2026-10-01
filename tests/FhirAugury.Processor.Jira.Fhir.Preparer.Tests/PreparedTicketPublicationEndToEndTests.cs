@@ -2756,10 +2756,13 @@ public sealed class PreparedTicketPublicationEndToEndTests
 
     private static JiraAuthoringRunCoordinator CreateCoordinator(
         Fixture fixture)
-        => new(
+    {
+        JiraProcessingSourceTicketStore sourceStore = new(
+            fixture.Database.DatabasePath);
+        return new(
             fixture.Store,
-            new JiraProcessingSourceTicketStore(
-                fixture.Database.DatabasePath),
+            sourceStore,
+            new JiraConfiguredTicketSelector(sourceStore, new TestJiraTicketLabelMatcher()),
             new JiraProcessingFilterResolver(),
             Options.Create(new JiraProcessingOptions
             {
@@ -2768,6 +2771,7 @@ public sealed class PreparedTicketPublicationEndToEndTests
                 SourceTicketShape = "fhir",
                 TicketStatusesToProcess = ["Triaged"],
             }));
+    }
 
     private static PreparedTicketPayload CreateRevisedPayload(
         string key,

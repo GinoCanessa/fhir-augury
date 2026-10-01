@@ -25,6 +25,7 @@ public class FakeJiraProcessorHostTests
         ServiceCollection services = new();
         services.AddJiraProcessing(CreateConfiguration(), defaults: new JiraProcessingFilterDefaults { TicketStatusesToProcess = ["Triaged"] });
         services.AddSingleton<IJiraTicketDiscoveryClient>(discovery);
+        services.AddSingleton<IJiraTicketLabelMatcher>(new TestJiraTicketLabelMatcher());
         services.AddSingleton<IJiraAgentCliRunner>(runner);
         services.AddSingleton<IJiraAgentExtensionTokenProvider>(new FakeTokenProvider());
         await using ServiceProvider provider = services.BuildServiceProvider();

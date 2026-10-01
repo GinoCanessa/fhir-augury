@@ -273,6 +273,74 @@ public sealed class JiraAuthoringWorkItemStoreTests
     }
 
     [Fact]
+    public async Task PersistedReceiptResume_DoesNotConsultLabelMatcher()
+    {
+        using JiraAuthoringTestFixture fixture = new();
+        await fixture.ActivateAsync();
+        fixture.Options.Value.LabelsToInclude = ["cohort"];
+        await fixture.SeedAsync(
+            "FHIR-1", new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
+        fixture.Matcher.Enqueue(["FHIR-1"]);
+        JiraAuthoringRunCreation creation = Assert.IsType<JiraAuthoringRunCreation>(
+            await fixture.Coordinator.CreateScheduledRunAsync());
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind, creation.Run.Id));
+        JiraAuthoringWorkItemStore store = new(fixture.AuthoringStore, fixture.SourceStore);
+        JiraAuthoringWorkItem item = Assert.Single(
+            await store.GetPendingAsync(creation.Run.Id, 10, CancellationToken.None));
+        DateTimeOffset startedAt = new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        AuthoringQueueClaim authoringClaim = Assert.IsType<AuthoringQueueClaim>(
+            await store.TryClaimAsync(item, startedAt, CancellationToken.None));
+        AuthoringReceiptAcceptance receipt = await fixture.AuthoringStore.AcceptResultAsync(
+            new AuthoringResultSubmission(
+                creation.Run.Id,
+                item.RunItem.Id,
+                authoringClaim.OperationId,
+                item.RunItem.ExpectedSourceRevision,
+                AuthoringResultHasher.HashNormalizedUtf8("payload")),
+            authoringClaim.OperationToken,
+            now: startedAt.AddSeconds(1));
+        fixture.Options.Value.LabelsToInclude = ["different-cohort"];
+        fixture.Options.Value.LabelsToExclude = ["cohort"];
+
+        JiraAuthoringWorkItem persisted = Assert.Single(
+            await store.GetPendingAsync(creation.Run.Id, 10, CancellationToken.None));
+        AuthoringQueueClaim firstLease = Assert.IsType<AuthoringQueueClaim>(
+            await store.TryClaimAsync(persisted, startedAt.AddSeconds(2), CancellationToken.None));
+        await store.ApplyResultAsync(
+            persisted,
+            firstLease,
+            AuthoringWorkResult.Retry("Post-persistence work failed."),
+            startedAt.AddSeconds(3),
+            CancellationToken.None);
+        Assert.Equal(1, (await fixture.AuthoringStore.ReconcileErroredItemsAsync(
+            creation.Run.Id, startedAt.AddMinutes(2))).ResumedReceiptItems);
+        JiraAuthoringWorkItem resumed = Assert.Single(
+            await store.GetPendingAsync(creation.Run.Id, 10, CancellationToken.None));
+        AuthoringQueueClaim retryLease = Assert.IsType<AuthoringQueueClaim>(
+            await store.TryClaimAsync(resumed, startedAt.AddMinutes(2), CancellationToken.None));
+        await store.ApplyResultAsync(
+            resumed,
+            retryLease,
+            AuthoringWorkResult.Complete(receipt.Receipt.ReceiptId),
+            startedAt.AddMinutes(2).AddSeconds(1),
+            CancellationToken.None);
+
+        AuthoringRunItemRecord completed = Assert.Single(
+            await fixture.AuthoringStore.GetRunItemsAsync(creation.Run.Id));
+        Assert.Equal(AuthoringStatusValues.Items.Complete, completed.Status);
+        Assert.Equal(receipt.Receipt.ReceiptId, completed.AcceptedReceiptId);
+        Assert.Equal(authoringClaim.OperationId, completed.CurrentOperationId);
+        Assert.Equal(item.RunItem.ExpectedSourceRevision, completed.ExpectedSourceRevision);
+        Assert.Equal(1, completed.AttemptCount);
+        Assert.Equal(1, retryLease.AttemptNumber);
+        Assert.Empty(retryLease.OperationToken);
+        Assert.NotEqual(firstLease.OperationId, retryLease.OperationId);
+        Assert.Single(fixture.Matcher.Calls);
+        Assert.Equal(1, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_attempts"));
+    }
+
+    [Fact]
     public async Task LateOldClaimCannotFailReplacementOperation()
     {
         using JiraAuthoringTestFixture fixture = new();

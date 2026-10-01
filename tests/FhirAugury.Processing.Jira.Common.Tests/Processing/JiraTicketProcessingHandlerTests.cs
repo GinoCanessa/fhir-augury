@@ -215,6 +215,67 @@ public class JiraTicketProcessingHandlerTests
         Assert.Equal(accepted.Receipt.ReceiptId, result.ReceiptId);
     }
 
+    [Fact]
+    public async Task AuthoringHandler_FrozenWorkDoesNotConsultLabelMatcher()
+    {
+        using JiraAuthoringTestFixture fixture = new();
+        await fixture.ActivateAsync();
+        fixture.Options.Value.LabelsToInclude = ["cohort"];
+        await fixture.SeedAsync(
+            "FHIR-1", new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
+        fixture.Matcher.Enqueue(["FHIR-1"]);
+        JiraAuthoringRunCreation creation = Assert.IsType<JiraAuthoringRunCreation>(
+            await fixture.Coordinator.CreateScheduledRunAsync());
+        fixture.Options.Value.LabelsToInclude = ["different-cohort"];
+        fixture.Options.Value.LabelsToExclude = ["cohort"];
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind, creation.Run.Id));
+        JiraAuthoringWorkItemStore queue = new(fixture.AuthoringStore, fixture.SourceStore);
+        JiraAuthoringWorkItem item = Assert.Single(
+            await queue.GetPendingAsync(creation.Run.Id, 10, CancellationToken.None));
+        DateTimeOffset startedAt = new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        AuthoringQueueClaim firstClaim = Assert.IsType<AuthoringQueueClaim>(
+            await queue.TryClaimAsync(item, startedAt, CancellationToken.None));
+        IOptions<ProcessingServiceOptions> options = Options.Create(
+            new ProcessingServiceOptions { DatabasePath = fixture.DatabasePath });
+        JiraAuthoringWorkItemHandler failingHandler = new(
+            new JiraAgentCommandRenderer(fixture.Options),
+            new FakeRunner(new JiraAgentResult(2, "", "retryable failure", TimeSpan.Zero, false)),
+            fixture.AuthoringStore,
+            new EmptyJiraAgentExtensionTokenProvider(),
+            options);
+
+        AuthoringWorkResult failure = await failingHandler.ProcessAsync(item, firstClaim, CancellationToken.None);
+        Assert.Equal(AuthoringWorkDisposition.RetryableError, failure.Disposition);
+        await queue.ApplyResultAsync(
+            item, firstClaim, failure, startedAt.AddSeconds(1), CancellationToken.None);
+        Assert.Equal(1, (await fixture.AuthoringStore.ReconcileErroredItemsAsync(
+            creation.Run.Id, startedAt.AddMinutes(2))).RetriedItems);
+        JiraAuthoringWorkItem retryItem = Assert.Single(
+            await queue.GetPendingAsync(creation.Run.Id, 10, CancellationToken.None));
+        AuthoringQueueClaim secondClaim = Assert.IsType<AuthoringQueueClaim>(
+            await queue.TryClaimAsync(retryItem, startedAt.AddMinutes(2), CancellationToken.None));
+        JiraAuthoringWorkItemHandler acceptingHandler = new(
+            new JiraAgentCommandRenderer(fixture.Options),
+            new ReceiptRunner(fixture.AuthoringStore, retryItem),
+            fixture.AuthoringStore,
+            new EmptyJiraAgentExtensionTokenProvider(),
+            options);
+        AuthoringWorkResult result = await acceptingHandler.ProcessAsync(
+            retryItem, secondClaim, CancellationToken.None);
+
+        Assert.Equal(AuthoringWorkDisposition.Persisted, result.Disposition);
+        Assert.NotNull(result.ReceiptId);
+        Assert.Equal(2, secondClaim.AttemptNumber);
+        Assert.Equal(item.RunItem.Id, retryItem.RunItem.Id);
+        Assert.Equal(item.RunItem.ExpectedSourceRevision, retryItem.RunItem.ExpectedSourceRevision);
+        Assert.Equal(result.ReceiptId, Assert.Single(
+            await fixture.AuthoringStore.GetRunItemsAsync(creation.Run.Id)).AcceptedReceiptId);
+        Assert.Single(fixture.Matcher.Calls);
+        Assert.Equal(2, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_attempts"));
+        Assert.Equal(0, fixture.Scalar("SELECT SUM(ProcessingAttemptCount) FROM jira_processing_source_tickets"));
+    }
+
     private sealed class Fixture
     {
         public required JiraTicketProcessingHandler Handler { get; init; }

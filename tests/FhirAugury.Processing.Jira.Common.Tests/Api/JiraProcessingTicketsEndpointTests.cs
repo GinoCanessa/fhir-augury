@@ -148,6 +148,40 @@ public class JiraProcessingTicketsEndpointTests
     }
 
     [Fact]
+    public async Task PostTicket_RunBackedBypassesConfiguredLabelsAndReplays()
+    {
+        TestJiraTicketLabelMatcher matcher = new();
+        FakeDiscovery discovery = new(CreateTicket("FHIR-1", "Submitted"));
+        using HttpClient client = CreateClientForMode(
+            discovery,
+            AuthoringStatusValues.ProcessorModes.RunBacked,
+            out _,
+            out AuthoringRunStore authoringStore,
+            out _,
+            labelMatcher: matcher,
+            configure: options =>
+            {
+                options.LabelsToInclude = ["different-cohort"];
+                options.LabelsToExclude = ["%"];
+            });
+
+        HttpResponseMessage response = await client.PostAsync("/processing/tickets/FHIR-1", null);
+        JiraProcessingEnqueueTicketResponse accepted = Assert.IsType<JiraProcessingEnqueueTicketResponse>(
+            await response.Content.ReadFromJsonAsync<JiraProcessingEnqueueTicketResponse>());
+        HttpResponseMessage replayResponse = await client.PostAsync("/processing/tickets/FHIR-1", null);
+        JiraProcessingEnqueueTicketResponse replay = Assert.IsType<JiraProcessingEnqueueTicketResponse>(
+            await replayResponse.Content.ReadFromJsonAsync<JiraProcessingEnqueueTicketResponse>());
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, replayResponse.StatusCode);
+        Assert.NotNull(accepted.RunId);
+        Assert.Equal(accepted.RunId, replay.RunId);
+        Assert.Equal(accepted.RunItemId, replay.RunItemId);
+        Assert.Equal("FHIR-1", Assert.Single(await authoringStore.GetRunItemsAsync(accepted.RunId!)).BusinessKey);
+        Assert.Empty(matcher.Calls);
+    }
+
+    [Fact]
     public async Task PostTicket_RunBackedFreezesDiscoveryProvenanceAndPreservesItOnReplay()
     {
         DateTimeOffset firstRefresh =
@@ -597,7 +631,9 @@ public class JiraProcessingTicketsEndpointTests
         out AuthoringRunStore authoringStore,
         out JiraAuthoringRunCoordinator coordinator,
         int maxActiveAuthoringRuns = int.MaxValue,
-        IAuthoringSnapshotWorkflowGuard? snapshotWorkflowGuard = null)
+        IAuthoringSnapshotWorkflowGuard? snapshotWorkflowGuard = null,
+        TestJiraTicketLabelMatcher? labelMatcher = null,
+        Action<JiraProcessingOptions>? configure = null)
         => CreateClientForMode(
             discovery,
             mode,
@@ -606,7 +642,9 @@ public class JiraProcessingTicketsEndpointTests
             out coordinator,
             out _,
             maxActiveAuthoringRuns,
-            snapshotWorkflowGuard);
+            snapshotWorkflowGuard,
+            labelMatcher,
+            configure);
 
     private static HttpClient CreateClientForMode(
         FakeDiscovery discovery,
@@ -616,7 +654,9 @@ public class JiraProcessingTicketsEndpointTests
         out JiraAuthoringRunCoordinator coordinator,
         out string dbPath,
         int maxActiveAuthoringRuns = int.MaxValue,
-        IAuthoringSnapshotWorkflowGuard? snapshotWorkflowGuard = null)
+        IAuthoringSnapshotWorkflowGuard? snapshotWorkflowGuard = null,
+        TestJiraTicketLabelMatcher? labelMatcher = null,
+        Action<JiraProcessingOptions>? configure = null)
     {
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
@@ -644,9 +684,11 @@ public class JiraProcessingTicketsEndpointTests
             JiraSourceAddress = "http://source",
             SourceTicketShape = "fhir",
         });
+        configure?.Invoke(options.Value);
         coordinator = new JiraAuthoringRunCoordinator(
             authoringStore,
             store,
+            new JiraConfiguredTicketSelector(store, labelMatcher ?? new TestJiraTicketLabelMatcher()),
             new JiraProcessingFilterResolver(),
             options,
             processingOptions,

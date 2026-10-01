@@ -62,6 +62,48 @@ public class JiraProcessingServiceCollectionExtensionsTests
             service => service.GetType().Name == "JiraModeAwareProcessingHostedService");
     }
 
+    [Theory]
+    [InlineData(JiraTicketDiscoverySource.DirectJiraSource)]
+    [InlineData(JiraTicketDiscoverySource.Orchestrator)]
+    public void AddJiraProcessing_ResolvesSelectorAndMatcherFromSelectedDiscoveryClient(
+        JiraTicketDiscoverySource discoverySource)
+    {
+        Dictionary<string, string?> values = BaseValues();
+        values["Processing:Jira:DiscoverySource"] = discoverySource.ToString();
+        values["Processing:Jira:OrchestratorAddress"] = "http://orchestrator";
+        values["Processing:Jira:LabelsToInclude:0"] = "cohort";
+        ServiceCollection services = new();
+        services.AddJiraProcessing(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        IJiraTicketLabelMatcher matcher = provider.GetRequiredService<IJiraTicketLabelMatcher>();
+        IJiraTicketDiscoveryClient discovery = provider.GetRequiredService<IJiraTicketDiscoveryClient>();
+        JiraConfiguredTicketSelector selector = provider.GetRequiredService<JiraConfiguredTicketSelector>();
+
+        Assert.Same(discovery, matcher);
+        Assert.Same(discovery, provider.GetRequiredService<IJiraTicketDiscoveryClient>());
+        Assert.Same(matcher, provider.GetRequiredService<IJiraTicketLabelMatcher>());
+        Assert.Same(selector, provider.GetRequiredService<JiraConfiguredTicketSelector>());
+        if (discoverySource == JiraTicketDiscoverySource.Orchestrator)
+        {
+            Assert.IsType<OrchestratorJiraTicketDiscoveryClient>(discovery);
+        }
+        else
+        {
+            Assert.IsType<DirectJiraTicketDiscoveryClient>(discovery);
+        }
+        Assert.NotNull(provider.GetRequiredService<JiraAuthoringRunCoordinator>());
+        Assert.Equal(
+            ServiceLifetime.Singleton,
+            Assert.Single(services, service => service.ServiceType == typeof(IJiraTicketDiscoveryClient)).Lifetime);
+        Assert.Equal(
+            ServiceLifetime.Singleton,
+            Assert.Single(services, service => service.ServiceType == typeof(IJiraTicketLabelMatcher)).Lifetime);
+        Assert.Equal(
+            ServiceLifetime.Singleton,
+            Assert.Single(services, service => service.ServiceType == typeof(JiraConfiguredTicketSelector)).Lifetime);
+    }
+
     [Fact]
     public void AddJiraProcessing_ThrowsHelpfulErrorForInvalidOptions()
     {

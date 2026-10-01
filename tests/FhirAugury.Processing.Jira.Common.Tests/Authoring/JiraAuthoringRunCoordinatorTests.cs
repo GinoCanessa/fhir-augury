@@ -11,7 +11,9 @@ using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processing.Jira.Common.Database.Records;
+using FhirAugury.Processing.Jira.Common.Discovery;
 using FhirAugury.Processing.Jira.Common.Filtering;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -56,6 +58,237 @@ public sealed class JiraAuthoringRunCoordinatorTests
         Assert.Equal(
             firstRevision.ToString("O"),
             Assert.Single(await fixture.AuthoringStore.GetRunItemsAsync(first.Run.Id)).ExpectedSourceRevision);
+    }
+
+    [Fact]
+    public async Task CreateScheduledRun_LabelsApplyToPreviouslyStoredCandidates()
+    {
+        using JiraAuthoringTestFixture fixture = new();
+        DateTimeOffset revision = new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        await fixture.SeedAsync("FHIR-1", revision.AddDays(-1));
+        await fixture.SeedAsync(
+            "FHIR-2", revision, sourceRefresh: revision.AddHours(-1), contentRevision: 42);
+        await fixture.SeedAsync("FHIR-3", revision);
+        JiraProcessingSourceTicketRecord before = Assert.IsType<JiraProcessingSourceTicketRecord>(
+            await fixture.SourceStore.GetByKeyAsync("FHIR-2", "fhir", CancellationToken.None));
+        await fixture.ActivateAsync();
+        fixture.Options.Value.LabelsToInclude = ["cohort"];
+        fixture.Options.Value.LabelsToExclude = ["blocked"];
+        fixture.Matcher.Enqueue(["FHIR-3", "fhir-2", "FHIR-999"]);
+
+        JiraAuthoringRunCreation creation = Assert.IsType<JiraAuthoringRunCreation>(
+            await fixture.Coordinator.CreateScheduledRunAsync(maxItems: 1));
+
+        AuthoringRunItemRecord item = Assert.Single(creation.Items);
+        Assert.Equal("FHIR-2", item.BusinessKey);
+        Assert.Equal(JiraProcessingSourceTicketStore.GetSourceRevision(before), item.ExpectedSourceRevision);
+        Assert.Equal(0, item.AttemptCount);
+        Assert.Equal(["FHIR-1", "FHIR-2", "FHIR-3"], Assert.Single(fixture.Matcher.Calls).Keys);
+        Assert.Equal(["cohort"], fixture.Matcher.Calls[0].Filters.LabelsToInclude);
+        Assert.Equal(["blocked"], fixture.Matcher.Calls[0].Filters.LabelsToExclude);
+        AuthoringRunInputProvenanceRecord provenance = Assert.Single(
+            await fixture.AuthoringStore.GetRunInputProvenanceAsync(creation.Run.Id));
+        Assert.Equal(42, provenance.ContentRevision);
+        Assert.Equal(revision.AddHours(-1), provenance.LatestSuccessfulRefreshAt);
+        Assert.Equal(before, await fixture.SourceStore.GetByKeyAsync(
+            "FHIR-2", "fhir", CancellationToken.None));
+        Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_attempts"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CreateScheduledRun_SelectionFailureCreatesNoRunOrAttempt(bool laterBatch)
+    {
+        using JiraAuthoringTestFixture fixture = new();
+        await fixture.ActivateAsync();
+        fixture.Options.Value.LabelsToInclude = ["cohort"];
+        DateTimeOffset revision = new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        int count = laterBatch ? 501 : 1;
+        for (int index = 1; index <= count; index++)
+        {
+            await fixture.SeedAsync($"FHIR-{index:D4}", revision.AddSeconds(index));
+        }
+        JiraProcessingSourceTicketRecord before = Assert.IsType<JiraProcessingSourceTicketRecord>(
+            await fixture.SourceStore.GetByKeyAsync("FHIR-0001", "fhir", CancellationToken.None));
+        JiraTicketSelectionUnavailableException failure = new("Source selection is unavailable.");
+        if (laterBatch)
+        {
+            fixture.Matcher.Enqueue(["FHIR-0001"]);
+        }
+        fixture.Matcher.Enqueue((_, _, _) => throw failure);
+
+        JiraTicketSelectionUnavailableException actual =
+            await Assert.ThrowsAsync<JiraTicketSelectionUnavailableException>(
+                () => fixture.Coordinator.CreateScheduledRunAsync(maxItems: 2));
+
+        Assert.Same(failure, actual);
+        Assert.Equal(laterBatch ? 2 : 1, fixture.Matcher.Calls.Count);
+        Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_runs"));
+        Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_items"));
+        Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_attempts"));
+        Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_input_provenance"));
+        Assert.Equal(0, fixture.Scalar("SELECT SUM(ProcessingAttemptCount) FROM jira_processing_source_tickets"));
+        Assert.Equal(before, await fixture.SourceStore.GetByKeyAsync(
+            "FHIR-0001", "fhir", CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task CreateScheduledRun_CollisionRetryReselectsConfiguredCandidates(int collisions)
+    {
+        using JiraAuthoringTestFixture fixture = new();
+        await SeedCollisionCandidatesAsync(fixture, collisions + 1);
+        QueueCollidingAdmissions(fixture, collisions);
+        fixture.Matcher.Enqueue((keys, _, _) => Task.FromResult<IReadOnlyList<string>>([keys[0]]));
+
+        JiraAuthoringRunCreation creation = Assert.IsType<JiraAuthoringRunCreation>(
+            await fixture.Coordinator.CreateScheduledRunAsync(maxItems: 1, databaseOnly: true));
+
+        Assert.Equal($"FHIR-{collisions + 1}", Assert.Single(creation.Items).BusinessKey);
+        Assert.Equal(collisions + 1, fixture.Matcher.Calls.Count);
+        for (int index = 0; index <= collisions; index++)
+        {
+            Assert.Equal(
+                Enumerable.Range(index + 1, collisions + 1 - index).Select(value => $"FHIR-{value}"),
+                fixture.Matcher.Calls[index].Keys);
+            Assert.Same(fixture.Matcher.Calls[0].Filters, fixture.Matcher.Calls[index].Filters);
+        }
+        Assert.Equal(collisions + 1, fixture.Scalar("SELECT COUNT(*) FROM authoring_runs"));
+        Assert.Equal(collisions + 1, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_items"));
+        Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_attempts"));
+    }
+
+    [Fact]
+    public async Task CreateScheduledRun_CollisionRetriesStopAfterThreeAttempts()
+    {
+        using JiraAuthoringTestFixture fixture = new();
+        await SeedCollisionCandidatesAsync(fixture, 4);
+        QueueCollidingAdmissions(fixture, 3);
+
+        SqliteException conflict = await Assert.ThrowsAsync<SqliteException>(
+            () => fixture.Coordinator.CreateScheduledRunAsync(maxItems: 1, databaseOnly: true));
+
+        Assert.Equal(19, conflict.SqliteErrorCode);
+        Assert.Equal([4, 3, 2], fixture.Matcher.Calls.Select(call => call.Keys.Count));
+        Assert.Equal(["FHIR-1", "FHIR-2", "FHIR-3"], fixture.Matcher.Calls.Select(call => call.Keys[0]));
+        Assert.Equal(3, fixture.Scalar("SELECT COUNT(*) FROM authoring_runs"));
+        Assert.Equal(3, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_items"));
+        Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_attempts"));
+        Assert.Equal(
+            "FHIR-4",
+            Assert.Single(await fixture.SourceStore.GetLocalAuthoringCandidatesAsync(
+                new JiraProcessingFilterResolver().Resolve(fixture.Options.Value),
+                maxItems: null,
+                CancellationToken.None)).Key);
+    }
+
+    [Fact]
+    public async Task CreateScheduledRun_SelectionIsOutsideCollisionRetryCatch()
+    {
+        using JiraAuthoringTestFixture fixture = new();
+        await SeedCollisionCandidatesAsync(fixture, 1);
+        SqliteException failure = new("Matcher failure is not an admission collision.", 19);
+        fixture.Matcher.Enqueue((_, _, _) => throw failure);
+
+        Assert.Same(failure, await Assert.ThrowsAsync<SqliteException>(
+            () => fixture.Coordinator.CreateScheduledRunAsync()));
+
+        Assert.Single(fixture.Matcher.Calls);
+        Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_runs"));
+        Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_attempts"));
+    }
+
+    [Fact]
+    public async Task CreateScheduledRun_CapacityPrecheckDoesNotCallMatcher()
+    {
+        using JiraAuthoringTestFixture fixture = new(maxActiveAuthoringRuns: 1);
+        await fixture.ActivateAsync();
+        DateTimeOffset revision = new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        JiraProcessingSourceTicketRecord first = await fixture.SeedAsync("FHIR-1", revision);
+        await fixture.SeedAsync("FHIR-2", revision);
+        JiraAuthoringRunCreation existing = await fixture.Coordinator.CreateExplicitRunAsync(
+            [first], databaseOnly: true);
+        fixture.Options.Value.LabelsToInclude = ["cohort"];
+
+        AuthoringConflictException conflict = await Assert.ThrowsAsync<AuthoringConflictException>(
+            () => fixture.Coordinator.CreateScheduledRunAsync());
+
+        Assert.Equal(AuthoringConflictCode.ActiveRunCapacityReached, conflict.Code);
+        Assert.Equal([existing.Run.Id], conflict.RelatedRunIds);
+        Assert.Empty(fixture.Matcher.Calls);
+        Assert.Equal(1, fixture.Scalar("SELECT COUNT(*) FROM authoring_runs"));
+    }
+
+    [Fact]
+    public async Task CreateScheduledRun_WorkflowPrecheckPrecedesCapacityAndDoesNotCallMatcher()
+    {
+        using JiraAuthoringTestFixture fixture = new(
+            maxActiveAuthoringRuns: 1,
+            snapshotWorkflowGuard: new RejectingSnapshotWorkflowGuard());
+        await fixture.ActivateAsync();
+        JiraProcessingSourceTicketRecord first = await fixture.SeedAsync(
+            "FHIR-1", new DateTimeOffset(2026, 9, 8, 12, 0, 0, TimeSpan.Zero));
+        await fixture.Coordinator.CreateExplicitRunAsync([first], databaseOnly: true);
+        fixture.Options.Value.LabelsToInclude = ["cohort"];
+
+        AuthoringConflictException conflict = await Assert.ThrowsAsync<AuthoringConflictException>(
+            () => fixture.Coordinator.CreateScheduledRunAsync(databaseOnly: false));
+
+        Assert.Equal(AuthoringConflictCode.CanonicalUnpublishedRestriction, conflict.Code);
+        Assert.Empty(fixture.Matcher.Calls);
+        Assert.Equal(1, fixture.Scalar("SELECT COUNT(*) FROM authoring_runs"));
+    }
+
+    [Fact]
+    public async Task CreateScheduledRun_SelectionCancellationCreatesNoRunOrAttempt()
+    {
+        using JiraAuthoringTestFixture fixture = new();
+        using CancellationTokenSource cancellation = new();
+        await SeedCollisionCandidatesAsync(fixture, 1);
+        fixture.Matcher.Enqueue((_, _, ct) =>
+        {
+            cancellation.Cancel();
+            ct.ThrowIfCancellationRequested();
+            return Task.FromResult<IReadOnlyList<string>>([]);
+        });
+
+        OperationCanceledException actual = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => fixture.Coordinator.CreateScheduledRunAsync(ct: cancellation.Token));
+
+        Assert.Equal(cancellation.Token, actual.CancellationToken);
+        Assert.Single(fixture.Matcher.Calls);
+        Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_runs"));
+        Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_attempts"));
+    }
+
+    [Fact]
+    public async Task ReconcileRun_LabelConfigurationChangeDoesNotPruneFrozenMembership()
+    {
+        using JiraAuthoringTestFixture fixture = new();
+        await SeedCollisionCandidatesAsync(fixture, 2);
+        fixture.Matcher.Enqueue(["FHIR-2", "FHIR-1"]);
+        JiraAuthoringRunCreation creation = Assert.IsType<JiraAuthoringRunCreation>(
+            await fixture.Coordinator.CreateScheduledRunAsync());
+        Assert.True(await fixture.AuthoringStore.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind, creation.Run.Id));
+        IReadOnlyList<AuthoringRunItemRecord> before =
+            await fixture.AuthoringStore.GetRunItemsAsync(creation.Run.Id);
+        IReadOnlyList<AuthoringRunInputProvenanceRecord> provenance =
+            await fixture.AuthoringStore.GetRunInputProvenanceAsync(creation.Run.Id);
+        fixture.Options.Value.LabelsToInclude = ["different-cohort"];
+        fixture.Options.Value.LabelsToExclude = ["cohort"];
+
+        AuthoringRunReconciliationResult result = await fixture.Coordinator.ReconcileRunAsync(
+            (await fixture.AuthoringStore.GetRunAsync(creation.Run.Id))!, CancellationToken.None);
+
+        Assert.Equal(AuthoringRunReconciliationOutcome.Current, result.Outcome);
+        Assert.Equal(before, await fixture.AuthoringStore.GetRunItemsAsync(creation.Run.Id));
+        Assert.Equal(provenance, await fixture.AuthoringStore.GetRunInputProvenanceAsync(creation.Run.Id));
+        Assert.Single(fixture.Matcher.Calls);
+        Assert.Equal(1, fixture.Scalar("SELECT COUNT(*) FROM authoring_runs"));
+        Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_attempts"));
     }
 
     [Fact]
@@ -828,6 +1061,41 @@ public sealed class JiraAuthoringRunCoordinatorTests
             .Status);
     }
 
+    private static async Task SeedCollisionCandidatesAsync(JiraAuthoringTestFixture fixture, int count)
+    {
+        await fixture.ActivateAsync();
+        fixture.Options.Value.LabelsToInclude = ["cohort"];
+        DateTimeOffset revision = new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        for (int index = 1; index <= count; index++)
+        {
+            await fixture.SeedAsync($"FHIR-{index}", revision.AddMinutes(index));
+        }
+    }
+
+    private static void QueueCollidingAdmissions(JiraAuthoringTestFixture fixture, int count)
+    {
+        for (int index = 0; index < count; index++)
+        {
+            fixture.Matcher.Enqueue(async (keys, _, ct) =>
+            {
+                JiraProcessingSourceTicketRecord ticket = Assert.IsType<JiraProcessingSourceTicketRecord>(
+                    await fixture.SourceStore.GetByKeyAsync(keys[0], "fhir", ct));
+                await fixture.Coordinator.CreateExplicitRunAsync([ticket], databaseOnly: true, ct);
+                return [keys[0]];
+            });
+        }
+    }
+
+    private sealed class RejectingSnapshotWorkflowGuard : IAuthoringSnapshotWorkflowGuard
+    {
+        public Task EnsureSnapshotWorkflowAllowedAsync(
+            AuthoringSnapshotWorkflowIntent intent,
+            CancellationToken ct = default)
+            => intent.DatabaseOnly
+                ? Task.CompletedTask
+                : Task.FromException(AuthoringConflictException.ForCanonicalUnpublishedRestriction());
+    }
+
     private static async Task CompleteDatabaseOnlyRunAsync(
         JiraAuthoringTestFixture fixture,
         JiraAuthoringRunCreation creation)
@@ -871,7 +1139,9 @@ internal sealed class JiraAuthoringTestFixture : IDisposable
 {
     private readonly string _directory;
 
-    public JiraAuthoringTestFixture(int maxActiveAuthoringRuns = int.MaxValue)
+    public JiraAuthoringTestFixture(
+        int maxActiveAuthoringRuns = int.MaxValue,
+        IAuthoringSnapshotWorkflowGuard? snapshotWorkflowGuard = null)
     {
         _directory = Path.Combine(Path.GetTempPath(), $"fhir-augury-jira-authoring-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_directory);
@@ -896,22 +1166,27 @@ internal sealed class JiraAuthoringTestFixture : IDisposable
             SourceTicketShape = "fhir",
             TicketStatusesToProcess = ["Triaged"],
         });
+        Selector = new JiraConfiguredTicketSelector(SourceStore, Matcher);
         Coordinator = new JiraAuthoringRunCoordinator(
             AuthoringStore,
             SourceStore,
+            Selector,
             new JiraProcessingFilterResolver(),
             Options,
             Microsoft.Extensions.Options.Options.Create(
                 new ProcessingServiceOptions
                 {
                     MaxActiveAuthoringRuns = maxActiveAuthoringRuns,
-                }));
+                }),
+            snapshotWorkflowGuard);
     }
 
     public string DatabasePath { get; }
     public JiraProcessingSourceTicketStore SourceStore { get; }
     public AuthoringRunStore AuthoringStore { get; }
     public IOptions<JiraProcessingOptions> Options { get; }
+    public TestJiraTicketLabelMatcher Matcher { get; } = new();
+    public JiraConfiguredTicketSelector Selector { get; }
     public JiraAuthoringRunCoordinator Coordinator { get; }
 
     public Microsoft.Data.Sqlite.SqliteConnection SourceStoreConnection()
@@ -925,6 +1200,14 @@ internal sealed class JiraAuthoringTestFixture : IDisposable
             }.ToString());
         connection.Open();
         return connection;
+    }
+
+    public int Scalar(string sql)
+    {
+        using SqliteConnection connection = SourceStoreConnection();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = sql;
+        return Convert.ToInt32(command.ExecuteScalar());
     }
 
     public async Task ActivateAsync()

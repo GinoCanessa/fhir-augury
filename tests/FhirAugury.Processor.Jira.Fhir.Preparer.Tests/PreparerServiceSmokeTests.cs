@@ -167,6 +167,8 @@ public sealed class PreparerServiceSmokeTests
             {
                 services.RemoveAll<IJiraTicketDiscoveryClient>();
                 services.AddSingleton<IJiraTicketDiscoveryClient, FakeDiscoveryClient>();
+                services.RemoveAll<IJiraTicketLabelMatcher>();
+                services.AddSingleton<IJiraTicketLabelMatcher, TestJiraTicketLabelMatcher>();
             });
         });
 
@@ -238,6 +240,8 @@ public sealed class PreparerServiceSmokeTests
                 {
                     services.RemoveAll<IJiraTicketDiscoveryClient>();
                     services.AddSingleton<IJiraTicketDiscoveryClient, FakeDiscoveryClient>();
+                    services.RemoveAll<IJiraTicketLabelMatcher>();
+                    services.AddSingleton<IJiraTicketLabelMatcher, TestJiraTicketLabelMatcher>();
                 });
             });
         }

@@ -84,6 +84,7 @@ internal static class PreparedTicketPublicationTestFixture
             _coordinator = new JiraAuthoringRunCoordinator(
                 Store,
                 _sourceStore,
+                new JiraConfiguredTicketSelector(_sourceStore, new TestJiraTicketLabelMatcher()),
                 new JiraProcessingFilterResolver(),
                 jiraOptions);
             _options = Options.Create(

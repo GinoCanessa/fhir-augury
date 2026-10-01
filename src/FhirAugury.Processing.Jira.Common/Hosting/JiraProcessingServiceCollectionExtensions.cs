@@ -85,6 +85,7 @@ public static class JiraProcessingServiceCollectionExtensions
         services.AddSingleton<AuthoringRunFinalizer>();
         services.AddSingleton<JiraProcessingSourceTicketStore>();
         services.AddSingleton<IProcessingWorkItemStore<JiraProcessingSourceTicketRecord>>(sp => sp.GetRequiredService<JiraProcessingSourceTicketStore>());
+        services.AddSingleton<JiraConfiguredTicketSelector>();
         services.AddSingleton<JiraAuthoringRunCoordinator>();
         services.AddSingleton<IAuthoringRunLifecycleAdapter>(sp =>
             sp.GetRequiredService<JiraAuthoringRunCoordinator>());
@@ -116,6 +117,8 @@ public static class JiraProcessingServiceCollectionExtensions
                 ? sp.GetRequiredService<OrchestratorJiraTicketDiscoveryClient>()
                 : sp.GetRequiredService<DirectJiraTicketDiscoveryClient>();
         });
+        services.AddSingleton<IJiraTicketLabelMatcher>(sp =>
+            (IJiraTicketLabelMatcher)sp.GetRequiredService<IJiraTicketDiscoveryClient>());
         services.AddSingleton<JiraTicketSyncService>();
         services.AddSingleton<JiraTicketSyncWorker>();
         services.AddHostedService(sp => sp.GetRequiredService<JiraTicketSyncWorker>());

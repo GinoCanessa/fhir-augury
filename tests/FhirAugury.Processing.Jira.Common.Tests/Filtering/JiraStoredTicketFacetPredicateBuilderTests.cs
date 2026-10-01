@@ -2,14 +2,14 @@ using FhirAugury.Processing.Jira.Common.Filtering;
 
 namespace FhirAugury.Processing.Jira.Common.Tests.Filtering;
 
-public class JiraSourceTicketPredicateBuilderTests
+public class JiraStoredTicketFacetPredicateBuilderTests
 {
     [Fact]
     public void Specification_NullFilter_AcceptsAllCandidates()
     {
         ResolvedJiraProcessingFilters filters = new() { SourceTicketShape = "fhir" };
 
-        Func<IJiraProcessingTicketFilterCandidate, bool> predicate = JiraSourceTicketPredicateBuilder.Build(filters);
+        Func<IJiraProcessingTicketFilterCandidate, bool> predicate = JiraStoredTicketFacetPredicateBuilder.Build(filters);
 
         Assert.True(predicate(Candidate(specification: "fhir-core")));
         Assert.True(predicate(Candidate(specification: "fhir-extensions")));
@@ -25,7 +25,7 @@ public class JiraSourceTicketPredicateBuilderTests
             SourceTicketShape = "fhir",
         };
 
-        Func<IJiraProcessingTicketFilterCandidate, bool> predicate = JiraSourceTicketPredicateBuilder.Build(filters);
+        Func<IJiraProcessingTicketFilterCandidate, bool> predicate = JiraStoredTicketFacetPredicateBuilder.Build(filters);
 
         Assert.True(predicate(Candidate(specification: "fhir-core")));
         Assert.True(predicate(Candidate(specification: "FHIR-CORE")));

@@ -133,6 +133,7 @@ public class JiraTicketDiscoveryClientTests
         JiraAuthoringRunCoordinator coordinator = new(
             authoringStore,
             store,
+            new JiraConfiguredTicketSelector(store, new TestJiraTicketLabelMatcher()),
             filterResolver,
             options);
         JiraTicketSyncService service = new(

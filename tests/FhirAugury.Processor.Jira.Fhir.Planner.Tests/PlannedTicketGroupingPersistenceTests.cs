@@ -99,6 +99,7 @@ public sealed class PlannedTicketGroupingPersistenceTests
             _coordinator = new JiraAuthoringRunCoordinator(
                 AuthoringStore,
                 _sourceStore,
+                new JiraConfiguredTicketSelector(_sourceStore, new TestJiraTicketLabelMatcher()),
                 new JiraProcessingFilterResolver(),
                 Options.Create(new JiraProcessingOptions
                 {

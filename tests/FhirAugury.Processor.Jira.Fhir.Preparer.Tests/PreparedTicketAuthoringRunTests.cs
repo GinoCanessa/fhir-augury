@@ -236,6 +236,7 @@ public sealed class PreparedTicketAuthoringRunTests
             Coordinator = new JiraAuthoringRunCoordinator(
                 AuthoringStore,
                 _sourceStore,
+                new JiraConfiguredTicketSelector(_sourceStore, new TestJiraTicketLabelMatcher()),
                 new JiraProcessingFilterResolver(),
                 options);
         }

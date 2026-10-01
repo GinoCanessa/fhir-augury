@@ -25,6 +25,7 @@ public sealed record JiraAuthoringRunRequestSnapshot(
 public sealed class JiraAuthoringRunCoordinator(
     AuthoringRunStore authoringStore,
     JiraProcessingSourceTicketStore sourceStore,
+    JiraConfiguredTicketSelector configuredTicketSelector,
     JiraProcessingFilterResolver filterResolver,
     IOptions<JiraProcessingOptions> optionsAccessor,
     IOptions<ProcessingServiceOptions>? processingOptionsAccessor = null,
@@ -59,7 +60,7 @@ public sealed class JiraAuthoringRunCoordinator(
         for (int attempt = 0; attempt < 3; attempt++)
         {
             IReadOnlyList<JiraProcessingSourceTicketRecord> candidates =
-                await sourceStore.GetAuthoringCandidatesAsync(filters, maxItems, ct);
+                await configuredTicketSelector.SelectAsync(filters, maxItems, ct);
             if (candidates.Count == 0)
             {
                 return null;

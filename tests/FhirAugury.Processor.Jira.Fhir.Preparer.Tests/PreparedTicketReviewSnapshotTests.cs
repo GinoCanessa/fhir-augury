@@ -1321,6 +1321,7 @@ public sealed class PreparedTicketReviewSnapshotTests
             _coordinator = new JiraAuthoringRunCoordinator(
                 AuthoringStore,
                 _sourceStore,
+                new JiraConfiguredTicketSelector(_sourceStore, new TestJiraTicketLabelMatcher()),
                 new JiraProcessingFilterResolver(),
                 jiraOptions);
             if (activate)

@@ -186,6 +186,7 @@ public sealed class PlannerTicketHandlerTests
             JiraAuthoringRunCoordinator coordinator = new(
                 authoringStore,
                 sourceStore,
+                new JiraConfiguredTicketSelector(sourceStore, new TestJiraTicketLabelMatcher()),
                 new JiraProcessingFilterResolver(),
                 Options.Create(new JiraProcessingOptions
                 {

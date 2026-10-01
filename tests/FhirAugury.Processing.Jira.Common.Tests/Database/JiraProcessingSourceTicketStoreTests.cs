@@ -9,6 +9,7 @@ using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Filtering;
+using FhirAugury.Processing.Jira.Common.Tests.Authoring;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -585,7 +586,7 @@ public class JiraProcessingSourceTicketStoreTests
     }
 
     [Fact]
-    public async Task AuthoringCandidates_DoNotReselectSupersededUnchangedRevision()
+    public async Task LocalAuthoringCandidates_DoNotReselectSupersededUnchangedRevision()
     {
         ResolvedJiraProcessingFilters filters = new()
         {
@@ -642,7 +643,7 @@ public class JiraProcessingSourceTicketStoreTests
             claim.OperationId,
             "terminal failure");
 
-        Assert.Empty(await store.GetAuthoringCandidatesAsync(filters, 10, CancellationToken.None));
+        Assert.Empty(await store.GetLocalAuthoringCandidatesAsync(filters, 10, CancellationToken.None));
 
         JiraIssueSummaryEntry updatedTicket =
             CreateTicket("FHIR-1", title: "Updated") with
@@ -654,10 +655,54 @@ public class JiraProcessingSourceTicketStoreTests
             "fhir",
             false,
             CancellationToken.None);
-        Assert.Single(await store.GetAuthoringCandidatesAsync(
+        Assert.Single(await store.GetLocalAuthoringCandidatesAsync(
             filters,
             10,
             CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData(null, 3)]
+    [InlineData(1, 1)]
+    [InlineData(2, 2)]
+    public async Task LocalAuthoringCandidates_OptionalLimitAppliesAfterFacetsAndFrozenRevisions(
+        int? maxItems,
+        int expectedCount)
+    {
+        using JiraAuthoringTestFixture fixture = new();
+        await fixture.ActivateAsync();
+        DateTimeOffset revision = new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        JiraProcessingSourceTicketRecord frozen =
+            await fixture.SeedAsync("FHIR-0", revision.AddDays(-1));
+        await fixture.Coordinator.CreateOneItemRunAsync(frozen);
+        await fixture.SourceStore.UpsertAsync(
+            CreateTicket("FHIR-REJECTED", status: "Submitted") with { UpdatedAt = revision.AddDays(-2) },
+            "fhir", false, CancellationToken.None);
+        await fixture.SourceStore.UpsertAsync(
+            CreateTicket("FHIR-SHAPE") with { UpdatedAt = revision.AddDays(-2) },
+            "pss", false, CancellationToken.None);
+        await fixture.SeedAsync("FHIR-2", revision);
+        JiraProcessingSourceTicketRecord completed = await fixture.SeedAsync("FHIR-1", revision);
+        await fixture.SourceStore.MarkCompleteAsync(completed, revision, CancellationToken.None);
+        await fixture.SeedAsync("FHIR-3", revision.AddMinutes(1));
+        ResolvedJiraProcessingFilters filters = new()
+        {
+            TicketStatuses = ["triaged"],
+            LabelsToInclude = ["not-evaluated-locally"],
+        };
+
+        IReadOnlyList<JiraProcessingSourceTicketRecord> candidates =
+            await fixture.SourceStore.GetLocalAuthoringCandidatesAsync(
+                filters, maxItems, CancellationToken.None);
+
+        Assert.Equal(
+            new[] { "FHIR-1", "FHIR-2", "FHIR-3" }.Take(expectedCount),
+            candidates.Select(ticket => ticket.Key));
+        Assert.Equal(ProcessingStatusValues.Complete, candidates[0].ProcessingStatus);
+        using (new FileStream(fixture.DatabasePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+        }
+        Assert.Empty(fixture.Matcher.Calls);
     }
 
     private static Dictionary<string, (int Pk, string Type)> ReadTableInfo(SqliteConnection connection, string table)

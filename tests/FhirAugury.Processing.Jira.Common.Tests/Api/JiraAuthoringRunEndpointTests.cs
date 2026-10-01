@@ -25,6 +25,263 @@ namespace FhirAugury.Processing.Jira.Common.Tests.Api;
 
 public sealed class JiraAuthoringRunEndpointTests
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task CreateRun_NoKeysUsesConfiguredLabels(bool emptyKeys, bool databaseOnly)
+    {
+        using EndpointFixture fixture = new(configure: options =>
+        {
+            options.LabelsToInclude = ["cohort"];
+            options.LabelsToExclude = ["blocked"];
+        });
+        DateTimeOffset revision = new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        await fixture.SeedAsync("FHIR-1", revision.AddDays(-1));
+        await fixture.SeedAsync("FHIR-2", revision);
+        fixture.Matcher.Enqueue(["FHIR-2"]);
+
+        HttpResponseMessage response = await fixture.Client.PostAsJsonAsync(
+            "/processing/authoring/runs",
+            new JiraAuthoringRunRequest(emptyKeys ? [] : null, databaseOnly));
+        AuthoringRunResponse body = Assert.IsType<AuthoringRunResponse>(
+            await response.Content.ReadFromJsonAsync<AuthoringRunResponse>());
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        Assert.Equal(
+            $"/processing/authoring/runs/{body.Run.RunId}",
+            response.Headers.Location?.OriginalString);
+        AuthoringRunItemRecord item = Assert.Single(
+            await fixture.Store.GetRunItemsAsync(body.Run.RunId));
+        Assert.Equal("FHIR-2", item.BusinessKey);
+        Assert.Equal(0, item.AttemptCount);
+        Assert.Equal(databaseOnly, (await fixture.Store.GetRunAsync(body.Run.RunId))!.DatabaseOnly);
+        Assert.Equal(["FHIR-1", "FHIR-2"], Assert.Single(fixture.Matcher.Calls).Keys);
+        Assert.Equal(["cohort"], fixture.Matcher.Calls[0].Filters.LabelsToInclude);
+        Assert.Equal(["blocked"], fixture.Matcher.Calls[0].Filters.LabelsToExclude);
+        Assert.Equal(1, fixture.Scalar("SELECT COUNT(*) FROM authoring_runs"));
+        Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_attempts"));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task CreateRun_SelectionUnavailableReturns503WithoutRun(bool emptyKeys, bool databaseOnly)
+    {
+        using EndpointFixture fixture = new(configure: options => options.LabelsToInclude = ["cohort"]);
+        await fixture.SeedAsync("FHIR-1", new DateTimeOffset(2026, 9, 8, 12, 0, 0, TimeSpan.Zero));
+        const string detail = "Jira selection response was incomplete.";
+        fixture.Matcher.Enqueue((_, _, _) =>
+            throw new JiraTicketSelectionUnavailableException(detail));
+
+        HttpResponseMessage response = await fixture.Client.PostAsJsonAsync(
+            "/processing/authoring/runs",
+            new JiraAuthoringRunRequest(emptyKeys ? [] : null, databaseOnly));
+        using JsonDocument body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal("jira-selection-unavailable", body.RootElement.GetProperty("error").GetString());
+        Assert.Equal(detail, body.RootElement.GetProperty("detail").GetString());
+        Assert.Single(fixture.Matcher.Calls);
+        AssertNoAuthoringWork(fixture);
+        JiraProcessingSourceTicketRecord source = Assert.IsType<JiraProcessingSourceTicketRecord>(
+            await fixture.SourceStore.GetByKeyAsync("FHIR-1", "fhir", CancellationToken.None));
+        Assert.Equal(0, source.ProcessingAttemptCount);
+        Assert.Null(source.ProcessingStatus);
+        Assert.Null(source.ProcessingError);
+    }
+
+    [Fact]
+    public async Task CreateRun_LaterBatchSelectionFailureReturns503WithoutPartialRun()
+    {
+        using EndpointFixture fixture = new(configure: options => options.LabelsToInclude = ["cohort"]);
+        DateTimeOffset revision = new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        for (int index = 1; index <= 501; index++)
+        {
+            await fixture.SeedAsync($"FHIR-{index:D4}", revision.AddSeconds(index));
+        }
+        fixture.Matcher.Enqueue(["FHIR-0001"]);
+        fixture.Matcher.Enqueue((_, _, _) =>
+            throw new JiraTicketSelectionUnavailableException("Jira selection is unavailable."));
+
+        HttpResponseMessage response = await fixture.Client.PostAsJsonAsync(
+            "/processing/authoring/runs",
+            new JiraAuthoringRunRequest(DatabaseOnly: true));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal([500, 1], fixture.Matcher.Calls.Select(call => call.Keys.Count));
+        AssertNoAuthoringWork(fixture);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task CreateRun_NoLabelMatchesReturns204(bool emptyKeys, bool databaseOnly)
+    {
+        using EndpointFixture fixture = new(configure: options => options.LabelsToExclude = ["blocked"]);
+        await fixture.SeedAsync("FHIR-1", new DateTimeOffset(2026, 9, 8, 12, 0, 0, TimeSpan.Zero));
+        fixture.Matcher.Enqueue([]);
+
+        HttpResponseMessage response = await fixture.Client.PostAsJsonAsync(
+            "/processing/authoring/runs",
+            new JiraAuthoringRunRequest(emptyKeys ? [] : null, databaseOnly));
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Empty(await response.Content.ReadAsStringAsync());
+        Assert.Single(fixture.Matcher.Calls);
+        AssertNoAuthoringWork(fixture);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task CreateRun_ExplicitKeysBypassConfiguredLabels(bool singleKey, bool databaseOnly)
+    {
+        using EndpointFixture fixture = new(configure: options =>
+        {
+            options.LabelsToInclude = ["different-cohort"];
+            options.LabelsToExclude = ["%"];
+        });
+        DateTimeOffset revision = new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        await fixture.SeedAsync("FHIR-1", revision);
+        await fixture.SeedAsync("FHIR-2", revision);
+        string[] keys = singleKey ? ["FHIR-1"] : ["FHIR-1", "FHIR-2"];
+
+        HttpResponseMessage response = await fixture.Client.PostAsJsonAsync(
+            "/processing/authoring/runs", new JiraAuthoringRunRequest(keys, databaseOnly));
+        AuthoringRunResponse body = Assert.IsType<AuthoringRunResponse>(
+            await response.Content.ReadFromJsonAsync<AuthoringRunResponse>());
+        HttpResponseMessage replay = await fixture.Client.PostAsJsonAsync(
+            "/processing/authoring/runs",
+            new JiraAuthoringRunRequest(
+                keys.Reverse().Select(key => key.ToLowerInvariant()).ToArray(), databaseOnly));
+        AuthoringRunResponse replayBody = Assert.IsType<AuthoringRunResponse>(
+            await replay.Content.ReadFromJsonAsync<AuthoringRunResponse>());
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, replay.StatusCode);
+        Assert.Equal(body.Run.RunId, replayBody.Run.RunId);
+        Assert.Equal(
+            keys,
+            (await fixture.Store.GetRunItemsAsync(body.Run.RunId))
+                .Select(item => item.BusinessKey).Order(StringComparer.Ordinal));
+        Assert.Equal(databaseOnly, (await fixture.Store.GetRunAsync(body.Run.RunId))!.DatabaseOnly);
+        Assert.Empty(fixture.Matcher.Calls);
+        Assert.Equal(1, fixture.Scalar("SELECT COUNT(*) FROM authoring_runs"));
+        Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_attempts"));
+    }
+
+    [Fact]
+    public async Task CreateRun_ExplicitDiscoveryFailureIsNotTranslatedToSelection503()
+    {
+        JiraTicketSelectionUnavailableException failure = new("Explicit discovery failed.");
+        using EndpointFixture fixture = new(
+            discoveryClient: new EmptyDiscoveryClient(failure),
+            configure: options => options.LabelsToInclude = ["cohort"]);
+
+        JiraTicketSelectionUnavailableException actual =
+            await Assert.ThrowsAsync<JiraTicketSelectionUnavailableException>(
+                () => fixture.Client.PostAsJsonAsync(
+                    "/processing/authoring/runs", new JiraAuthoringRunRequest(["FHIR-1"])));
+
+        Assert.Same(failure, actual);
+        Assert.Empty(fixture.Matcher.Calls);
+        AssertNoAuthoringWork(fixture);
+    }
+
+    [Fact]
+    public async Task CreateRun_SelectionPreservesCallerCancellation()
+    {
+        using EndpointFixture fixture = new(configure: options => options.LabelsToInclude = ["cohort"]);
+        using CancellationTokenSource cancellation = new();
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource canceled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        await fixture.SeedAsync("FHIR-1", new DateTimeOffset(2026, 9, 8, 12, 0, 0, TimeSpan.Zero));
+        fixture.Matcher.Enqueue(async (_, _, ct) =>
+        {
+            entered.SetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                return [];
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                canceled.SetResult();
+                throw;
+            }
+        });
+        Task<HttpResponseMessage> request = fixture.Client.PostAsJsonAsync(
+            "/processing/authoring/runs", new JiraAuthoringRunRequest(), cancellation.Token);
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await cancellation.CancelAsync();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => request);
+            await canceled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Single(fixture.Matcher.Calls);
+            AssertNoAuthoringWork(fixture);
+        }
+        finally
+        {
+            await cancellation.CancelAsync();
+        }
+    }
+
+    [Theory]
+    [InlineData("capacity", HttpStatusCode.Conflict, "active-run-capacity-reached")]
+    [InlineData("workflow", HttpStatusCode.Conflict, "canonical-unpublished-restriction")]
+    [InlineData("legacy", HttpStatusCode.Conflict, "authoring-not-activated")]
+    [InlineData("cutover", HttpStatusCode.ServiceUnavailable, "cutover-in-progress")]
+    [InlineData("revalidation", HttpStatusCode.Conflict, "revalidation-required")]
+    public async Task CreateRun_NoKeysPreservesEarlyConflicts(
+        string guard, HttpStatusCode expectedStatus, string expectedError)
+    {
+        using EndpointFixture fixture = new(
+            maxActiveAuthoringRuns: guard == "capacity" ? 1 : int.MaxValue,
+            configure: options => options.LabelsToInclude = ["cohort"],
+            snapshotWorkflowGuard: guard == "workflow" ? new RejectingSnapshotWorkflowGuard() : null);
+        DateTimeOffset revision = new(2026, 9, 8, 12, 0, 0, TimeSpan.Zero);
+        JiraProcessingSourceTicketRecord source = await fixture.SeedAsync("FHIR-1", revision);
+        await fixture.SeedAsync("FHIR-2", revision);
+        if (guard == "capacity")
+        {
+            await fixture.Coordinator.CreateExplicitRunAsync([source], databaseOnly: true);
+        }
+        else if (guard is "legacy" or "cutover")
+        {
+            fixture.Execute(
+                "UPDATE authoring_processor_modes SET Mode = @mode",
+                ("@mode", guard == "legacy"
+                    ? AuthoringStatusValues.ProcessorModes.Legacy
+                    : AuthoringStatusValues.ProcessorModes.CuttingOver));
+        }
+        else if (guard == "revalidation")
+        {
+            fixture.Execute(
+                "UPDATE authoring_processor_modes SET RevalidationRequired = 1, RevalidationRunId = 'revalidation-run'");
+        }
+
+        HttpResponseMessage response = await fixture.Client.PostAsJsonAsync(
+            "/processing/authoring/runs", new JiraAuthoringRunRequest());
+        AuthoringConflictResponse body = Assert.IsType<AuthoringConflictResponse>(
+            await response.Content.ReadFromJsonAsync<AuthoringConflictResponse>());
+
+        Assert.Equal(expectedStatus, response.StatusCode);
+        Assert.Equal(expectedError, body.Error);
+        Assert.Empty(fixture.Matcher.Calls);
+        Assert.Equal(guard == "capacity" ? 1 : 0, fixture.Scalar("SELECT COUNT(*) FROM authoring_runs"));
+        Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_attempts"));
+    }
+
     [Fact]
     public async Task ListRuns_ReturnsAggregateSummaries()
     {
@@ -263,6 +520,22 @@ public sealed class JiraAuthoringRunEndpointTests
         Assert.Equal(revalidationRun.Id, revalidationBody.RunId);
     }
 
+    private static void AssertNoAuthoringWork(EndpointFixture fixture)
+    {
+        Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_runs"));
+        Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_items"));
+        Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_attempts"));
+        Assert.Equal(0, fixture.Scalar("SELECT COUNT(*) FROM authoring_run_input_provenance"));
+    }
+
+    private sealed class RejectingSnapshotWorkflowGuard : IAuthoringSnapshotWorkflowGuard
+    {
+        public Task EnsureSnapshotWorkflowAllowedAsync(
+            AuthoringSnapshotWorkflowIntent intent,
+            CancellationToken ct = default)
+            => Task.FromException(AuthoringConflictException.ForCanonicalUnpublishedRestriction());
+    }
+
     private sealed class EndpointFixture : IDisposable
     {
         private readonly string _directory;
@@ -270,7 +543,9 @@ public sealed class JiraAuthoringRunEndpointTests
 
         public EndpointFixture(
             int maxActiveAuthoringRuns = int.MaxValue,
-            IJiraTicketDiscoveryClient? discoveryClient = null)
+            IJiraTicketDiscoveryClient? discoveryClient = null,
+            Action<JiraProcessingOptions>? configure = null,
+            IAuthoringSnapshotWorkflowGuard? snapshotWorkflowGuard = null)
         {
             _directory = Path.Combine(
                 Path.GetTempPath(),
@@ -304,12 +579,15 @@ public sealed class JiraAuthoringRunEndpointTests
                     JiraSourceAddress = "http://source",
                     SourceTicketShape = "fhir",
                 });
+            configure?.Invoke(options.Value);
             Coordinator = new JiraAuthoringRunCoordinator(
                 Store,
                 SourceStore,
+                new JiraConfiguredTicketSelector(SourceStore, Matcher),
                 new JiraProcessingFilterResolver(),
                 options,
-                processingOptions);
+                processingOptions,
+                snapshotWorkflowGuard);
             Store.EnsureProcessorModeAsync(Coordinator.ProcessorKind)
                 .GetAwaiter()
                 .GetResult();
@@ -347,6 +625,7 @@ public sealed class JiraAuthoringRunEndpointTests
         public HttpClient Client { get; }
         public JiraProcessingSourceTicketStore SourceStore { get; }
         public AuthoringRunStore Store { get; }
+        public TestJiraTicketLabelMatcher Matcher { get; } = new();
         public JiraAuthoringRunCoordinator Coordinator { get; }
 
         public Task<JiraProcessingSourceTicketRecord> SeedAsync(
@@ -388,6 +667,15 @@ public sealed class JiraAuthoringRunEndpointTests
             return command.ExecuteNonQuery();
         }
 
+        public int Scalar(string sql)
+        {
+            using SqliteConnection connection = new($"Data Source={DatabasePath};Pooling=False");
+            connection.Open();
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = sql;
+            return Convert.ToInt32(command.ExecuteScalar());
+        }
+
         public void Dispose()
         {
             Client.Dispose();
@@ -400,7 +688,7 @@ public sealed class JiraAuthoringRunEndpointTests
         }
     }
 
-    private sealed class EmptyDiscoveryClient : IJiraTicketDiscoveryClient
+    private sealed class EmptyDiscoveryClient(Exception? failure = null) : IJiraTicketDiscoveryClient
     {
         public Task<IReadOnlyList<JiraIssueSummaryEntry>> ListTicketsAsync(
             ResolvedJiraProcessingFilters filters,
@@ -411,7 +699,9 @@ public sealed class JiraAuthoringRunEndpointTests
             string key,
             string sourceTicketShape,
             CancellationToken ct)
-            => Task.FromResult<JiraIssueSummaryEntry?>(null);
+            => failure is null
+                ? Task.FromResult<JiraIssueSummaryEntry?>(null)
+                : Task.FromException<JiraIssueSummaryEntry?>(failure);
 
         public Task MarkProcessedAsync(
             string key,

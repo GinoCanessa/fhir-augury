@@ -1554,10 +1554,13 @@ public sealed class PreparedTicketPublicationReconciliationTests
 
     private static JiraAuthoringRunCoordinator CreateCoordinator(
         Fixture fixture)
-        => new(
+    {
+        JiraProcessingSourceTicketStore sourceStore = new(
+            fixture.Database.DatabasePath);
+        return new(
             fixture.Store,
-            new JiraProcessingSourceTicketStore(
-                fixture.Database.DatabasePath),
+            sourceStore,
+            new JiraConfiguredTicketSelector(sourceStore, new TestJiraTicketLabelMatcher()),
             new JiraProcessingFilterResolver(),
             Options.Create(new JiraProcessingOptions
             {
@@ -1566,6 +1569,7 @@ public sealed class PreparedTicketPublicationReconciliationTests
                 SourceTicketShape = "fhir",
                 TicketStatusesToProcess = ["Triaged"],
             }));
+    }
 
     private static PreparedTicketRunWorkflowRegistry CreateWorkflows(
         Fixture fixture,
