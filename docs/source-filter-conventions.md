@@ -19,6 +19,15 @@ For API query filters with no per-field default, `null` and `[]` both add no SQL
 
 Operator configs that currently use `[]` on defaulted ingestion lists to mean "use defaults" should remove the key or set it to `null`.
 
+## Jira specification exactness
+
+Jira specification values are passed unchanged to exact, parameterized `IN`
+predicates. Ordinary spaces (`U+0020`) and non-breaking spaces (`U+00A0`) are
+distinct inputs; specification filters do not normalize one into the other.
+This differs from the native contains-LIKE label-text selection described
+below. For the shipped Planner restriction and correctly nested local
+overrides, see [Planner Jira filter repair](configuration.md#planner-jira-filter-repair).
+
 ## Jira label-text selection
 
 For the FHIR Preparer and Planner, `Processing.Jira.LabelsToInclude` and

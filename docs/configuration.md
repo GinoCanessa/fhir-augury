@@ -659,7 +659,7 @@ test compatibility inputs only; they are not supported producer settings.
     "Jira": {
       "TicketStatusesToProcess": ["Resolved - change required"],
       "ProjectsToInclude": ["FHIR"],
-      "SpecificationsToInclude": [],
+      "SpecificationsToInclude": ["FHIR R5 Subscriptions Backport (FHIR)"],
       "WorkGroupsToInclude": null,
       "TicketTypesToProcess": null,
       "AuthoringAgentCliCommand": "copilot -p '/ticket-plan {ticketKey} --repos {repoFilters}' --allow-all",
@@ -705,7 +705,7 @@ template. Preparer uses the equivalent `/ticket-prep {ticketKey}` command.
 | `Processing.Ports.Http` | int | per-processor | HTTP listen port (5171 / 5172 / 5173) |
 | `Processing.Jira.TicketStatusesToProcess` | string[] | per-processor | Jira statuses to pull (Preparer: `Triaged`/`Submitted`; Planner: `Resolved - change required`) |
 | `Processing.Jira.ProjectsToInclude` | string[] | `["FHIR"]` | Jira projects to include |
-| `Processing.Jira.SpecificationsToInclude` | string[] | `[]` | Restrict to specific specifications (empty = all) |
+| `Processing.Jira.SpecificationsToInclude` | string[] | Planner: `["FHIR R5 Subscriptions Backport (FHIR)"]` | Restrict to specific specifications; an effective empty list means no specification restriction |
 | `Processing.Jira.WorkGroupsToInclude` | string[]? | `null` | Restrict to specific work groups (null = all) |
 | `Processing.Jira.TicketTypesToProcess` | string[]? | `null` | Restrict to specific ticket types (null = all) |
 | `Processing.Jira.AuthoringAgentCliCommand` | string | per-processor | Processor-launched callback worker command (`{ticketKey}` and optional `{repoFilters}`; no shell expansion) |
@@ -715,6 +715,62 @@ template. Preparer uses the equivalent `/ticket-prep {ticketKey}` command.
 | `Processing.Planner.RepoFilters` | string[]? | `null` | Planner-only exact `owner/repo` allow-list passed to `ticket-plan` via `{repoFilters}` (null = no restriction) |
 | `Processing.Hydration.BackfillOnStartup` | bool | `true` | Backfill hydrated evidence for existing output on boot |
 | `Processing.Hydration.MaxParallelism` | int | `4` | Max units hydrated concurrently |
+
+### Planner Jira filter repair
+
+The checked-in Planner is restricted to `FHIR R5 Subscriptions Backport (FHIR)`,
+with ordinary `U+0020` spaces, in project `FHIR` and status
+`Resolved - change required`. It is not unrestricted. An effective
+`SpecificationsToInclude = []` means no specification restriction, but an
+empty array in a later configuration provider does not automatically clear
+inherited indexed values.
+
+For the affected installation, both the specification and the `AwaitingMerge`
+label-text exclusion must be under `Processing.Jira`. `AwaitingMerge` is local
+operator intent, not a shipped Planner default. In a separately authorized
+change window, merge these keys into the existing ignored
+`src/FhirAugury.Processor.Jira.Fhir.Planner/appsettings.local.json`:
+
+```json
+{
+  "Processing": {
+    "Jira": {
+      "SpecificationsToInclude": ["FHIR R5 Subscriptions Backport (FHIR)"],
+      "LabelsToExclude": ["AwaitingMerge"]
+    }
+  }
+}
+```
+
+This is a **merge fragment, not a replacement for the whole local file**.
+Leave the existing `Processing.DatabasePath` value at its current parent,
+as a sibling of `Jira`, and preserve unrelated local settings. An authorized
+operator must remove the shallow `Processing.SpecificationsToInclude` and
+`Processing.LabelsToExclude` copies; those paths do not override the options
+bound from `Processing:Jira`.
+
+Planner explicitly layers base `appsettings.json`, then optional
+`appsettings.local.json`, then service-prefixed environment variables.
+Later providers override the **same path**, including array indexes. The
+canonical first-entry paths and environment equivalents are:
+
+| Configuration path | Environment variable |
+|-----|-----|
+| `Processing:Jira:SpecificationsToInclude:0` | `FHIR_AUGURY_PROCESSOR_JIRA_FHIR_PLANNER_Processing__Jira__SpecificationsToInclude__0` |
+| `Processing:Jira:LabelsToExclude:0` | `FHIR_AUGURY_PROCESSOR_JIRA_FHIR_PLANNER_Processing__Jira__LabelsToExclude__0` |
+
+Inspect the effective values from later providers and any additional indexes;
+moving the JSON keys alone cannot rule out an environment override or an
+inherited extra entry.
+
+**Do not resume the affected Planner after only the repository correction.**
+First relocate both local filters and check effective overrides in the
+separately authorized change window. Startup processing can schedule work
+automatically, so after an eventual authorized start, reconcile the
+authoritative processor run inventory, including startup-created runs,
+before submitting an additional explicit run. This repository change does
+not migrate ignored local or environment values, prove live ticket
+membership, or authorize a start.
 
 ### Preparer schema-v3 effective-configuration preflight
 
