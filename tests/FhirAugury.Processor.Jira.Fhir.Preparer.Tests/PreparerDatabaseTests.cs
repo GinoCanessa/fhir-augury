@@ -1,20 +1,32 @@
+using System.Globalization;
+using System.Net;
+using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Text;
+using FhirAugury.Common.WorkGroups;
 using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Common.Hosting;
+using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Contracts;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Database;
+using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Api;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database.Records;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Tests;
 
@@ -78,6 +90,167 @@ public sealed class PreparerDatabaseTests
         {
             Assert.True(Exists(database, "table", table), table);
         }
+    }
+
+    [Fact]
+    public Task Initialize_MissingCompletionId_PreservesPopulatedPreparedState()
+        => AssertPopulatedInitializationAsync(missingCompletionId: true);
+
+    [Fact]
+    public Task Initialize_CurrentSchema_PreservesCompletionAndPreparedState()
+        => AssertPopulatedInitializationAsync(missingCompletionId: false);
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task PublicationRefresh_CanonicalNewKeyHonorsFallbackRevision(
+        bool canonicalUpstreamId)
+    {
+        using TestDatabase database = CreateDatabase(isolated: true);
+        JiraProcessingSourceTicketStore sourceStore = new(database.Database.DatabasePath);
+        JiraIssueSummaryEntry input = SourceTicket("fHiR-811") with { UpdatedAt = null };
+        DateTimeOffset sourceRefreshedAt = new(2026, 9, 1, 13, 0, 0, TimeSpan.Zero);
+        JiraProcessingSourceTicketRecord stored = await sourceStore.UpsertAsync(
+            input, " FHIR ", false, sourceRefreshedAt, 73, CancellationToken.None);
+        JiraProcessingSourceTicketRecord neighbour = await sourceStore.UpsertAsync(
+            SourceTicket("FHIR-812") with { UpdatedAt = null },
+            "fhir", false, sourceRefreshedAt, 73, CancellationToken.None);
+        Assert.Equal("FHIR-811", stored.Key);
+        Assert.Equal("fhir", stored.SourceTicketShape);
+        Assert.Null(stored.LastUpdated);
+        string frozenRevision = JiraProcessingSourceTicketStore.GetSourceRevision(stored);
+        JiraProcessingSourceTicketRecord persistedBefore = Assert.IsType<JiraProcessingSourceTicketRecord>(
+            await sourceStore.GetByIdAsync(stored.Id, CancellationToken.None));
+        Assert.True(persistedBefore.RowId > 0);
+        Assert.Equal(stored with { RowId = persistedBefore.RowId }, persistedBefore);
+        PublicationRefreshContext context = await CreateRetainedPublicationContextAsync(
+            database, [stored, neighbour]);
+        PreparedTicketPublicationRefreshCandidate candidate = Assert.Single(
+            context.Inventory.Candidates, value => value.TicketKey == stored.Key);
+        Assert.Equal(frozenRevision, candidate.ExpectedSourceRevision);
+        AuthoringRunStore authoringStore = new(database.Database);
+        AuthoringRunItemRecord item = Assert.Single(
+            await authoringStore.GetRunItemsAsync(context.SourceRunId),
+            value => value.BusinessKey == stored.Key);
+        AuthoringResultReceipt accepted = Assert.IsType<AuthoringResultReceipt>(
+            await authoringStore.GetReceiptByOperationAsync(
+                Assert.IsType<string>(item.CurrentOperationId)));
+        Assert.Equal(candidate.ReceiptId, accepted.ReceiptId);
+        Assert.Equal(frozenRevision, item.ExpectedSourceRevision);
+        Assert.Equal(frozenRevision, accepted.ExpectedSourceRevision);
+        Assert.Equal(frozenRevision, accepted.ObservedSourceRevision);
+
+        TypedDatabaseValues before = ReadTypedDatabaseValues(database);
+        Dictionary<string, byte[]> snapshots = ReadFixtureSnapshotArtifacts(database);
+        DateTimeOffset refreshAt = new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
+        DateTimeOffset hydratedAt = refreshAt.AddHours(1);
+        using PublicationMetadataHandler handler = new(
+            [stored, neighbour],
+            stored.Key,
+            canonicalUpstreamId ? stored.Key : input.Key,
+            refreshAt);
+        using HttpClient client = new(handler)
+        {
+            BaseAddress = new Uri("http://preparer-publication.invalid/"),
+        };
+        OrchestratorHydrationFetcher fetcher = new(
+            client, NullLogger<OrchestratorHydrationFetcher>.Instance);
+        List<PreparedTicketPublicationMetadata> metadata = [];
+        foreach (PreparedTicketPublicationRefreshCandidate current in context.Inventory.Candidates)
+        {
+            PublicationMetadataFetchResult fetched = await fetcher.FetchPublicationMetadataAsync(
+                current.TicketKey, hydratedAt, CancellationToken.None);
+            Assert.True(fetched.IsSuccess);
+            Assert.Null(fetched.Failure);
+            Assert.Null(fetched.UpdatedAt);
+            Assert.True(fetched.SourceIsStable);
+            Assert.Equal(PublicDisplayNamePolicy.CurrentVersion, fetched.PublicDisplayNamePolicyVersion);
+            Assert.Equal(refreshAt, fetched.SourceLastSuccessfulRefreshAt);
+            Assert.Equal(811, fetched.SourceContentRevision);
+            metadata.Add(new(
+                fetched.TicketKey,
+                Assert.IsType<string>(fetched.ObservedSourceRevision),
+                fetched.Reporter,
+                fetched.Assignee,
+                fetched.InPersonRequesters,
+                Assert.IsType<string>(fetched.SourceProject),
+                Assert.IsType<DateTimeOffset>(fetched.SourceLastSuccessfulRefreshAt),
+                Assert.IsType<long>(fetched.SourceContentRevision),
+                Assert.IsType<bool>(fetched.SourceIsStable),
+                Assert.IsType<int>(fetched.PublicDisplayNamePolicyVersion),
+                fetched.HydratedAt,
+                fetched.UpdatedAt));
+        }
+        Assert.Equal(2, handler.RequestCount);
+        string observedRevision = Assert.Single(
+            metadata, value => value.TicketKey == stored.Key).ObservedSourceRevision;
+
+        if (canonicalUpstreamId)
+        {
+            Assert.Equal(frozenRevision, observedRevision);
+            PreparedTicketPublicationRefreshReceiptRecord receipt =
+                await database.Database.ApplyPublicationMetadataAsync(
+                    context.RefreshRunId, context.Lease, context.InputFingerprint,
+                    context.Inventory, metadata);
+            Assert.Equal(receipt, await database.Database.GetPublicationRefreshReceiptAsync(
+                context.RefreshRunId, context.Lease.StageId));
+            Assert.Equal(context.Inventory.CorpusFingerprint, receipt.CorpusFingerprint);
+            Assert.Equal(811, receipt.SourceContentRevision);
+            Assert.Equal(refreshAt, receipt.SourceLastSuccessfulRefreshAt);
+            Assert.Equal(PublicDisplayNamePolicy.CurrentVersion, receipt.PublicDisplayNamePolicyVersion);
+            Assert.Equal(1, Count(database, "prepared_ticket_publication_refresh_receipts"));
+            AssertPublicationProtectedValuesEqual(before, ReadTypedDatabaseValues(database));
+            foreach (PreparedTicketPublicationMetadata value in metadata)
+            {
+                PreparedTicketHydrationReadModel hydration = Assert.IsType<PreparedTicketHydrationReadModel>(
+                    await database.Database.GetHydrationAsync(value.TicketKey));
+                PreparedTicketHydrationRow parent = Assert.IsType<PreparedTicketHydrationRow>(hydration.Parent);
+                Assert.Equal(value.Reporter, parent.Reporter);
+                Assert.Equal(value.Assignee, parent.Assignee);
+                Assert.Equal(value.SourceProject, parent.SourceProject);
+                Assert.Equal(value.SourceLastSuccessfulRefreshAt, parent.SourceLastSuccessfulRefreshAt);
+                Assert.Equal(value.SourceContentRevision, parent.SourceContentRevision);
+                Assert.Equal(value.PublicDisplayNamePolicyVersion, parent.PublicDisplayNamePolicyVersion);
+                Assert.Equal(value.HydratedAt, parent.HydratedAt);
+                Assert.Equal("resolved", parent.HydrationStatus);
+                Assert.Null(parent.HydrationReason);
+                PreparedJiraHydrationRow self = Assert.Single(
+                    hydration.JiraRows, row => row.JiraKey == value.TicketKey);
+                Assert.Equal(value.Reporter, self.Reporter);
+                Assert.Equal(value.Assignee, self.Assignee);
+                Assert.Equal(value.PublicDisplayNamePolicyVersion, self.PublicDisplayNamePolicyVersion);
+                Assert.Equal(value.InPersonRequesters, hydration.InPersonRequesters.Select(row => row.DisplayName));
+                Assert.All(hydration.InPersonRequesters, row =>
+                    Assert.Equal(value.PublicDisplayNamePolicyVersion, row.PublicDisplayNamePolicyVersion));
+            }
+            AuthoringRunInputProvenanceRecord provenance = Assert.Single(
+                await authoringStore.GetRunInputProvenanceAsync(context.RefreshRunId));
+            Assert.Equal("jira", provenance.Source);
+            Assert.Equal(refreshAt, provenance.LatestSuccessfulRefreshAt);
+            Assert.Equal(811, provenance.ContentRevision);
+            Assert.Equal(receipt.AppliedAt, provenance.CapturedAt);
+        }
+        else
+        {
+            Assert.NotEqual(frozenRevision, observedRevision);
+            Assert.False(JiraSourceRevision.AreEquivalent(frozenRevision, observedRevision));
+            AuthoringConflictException failure = await Assert.ThrowsAsync<AuthoringConflictException>(
+                () => database.Database.ApplyPublicationMetadataAsync(
+                    context.RefreshRunId, context.Lease, context.InputFingerprint,
+                    context.Inventory, metadata));
+            Assert.Equal(AuthoringConflictCode.SourceRevisionMismatch, failure.Code);
+            Assert.Null(await database.Database.GetPublicationRefreshReceiptAsync(
+                context.RefreshRunId, context.Lease.StageId));
+            Assert.Equal(0, Count(database, "prepared_ticket_publication_refresh_receipts"));
+            AssertTypedDatabaseValuesEqual(before, ReadTypedDatabaseValues(database));
+        }
+
+        Assert.Equal(persistedBefore, await sourceStore.GetByKeyAsync(stored.Key, "fhir", CancellationToken.None));
+        Assert.Equal(accepted, await authoringStore.GetReceiptByOperationAsync(accepted.OperationId));
+        PreparedTicketPublicationRefreshInventory after = await database.Database.GetPublicationRefreshInventoryAsync();
+        Assert.Equal(context.Inventory.CorpusFingerprint, after.CorpusFingerprint);
+        Assert.Equal(context.Inventory.Candidates, after.Candidates);
+        AssertInitializationSentinels(snapshots);
     }
 
     [Fact]
@@ -2448,6 +2621,910 @@ public sealed class PreparerDatabaseTests
         Assert.Null(provenance.ContentRevision);
     }
 
+    private const string SourceTicketTable = "jira_processing_source_tickets";
+
+    private const string ReportedSourceSchema =
+        """
+        CREATE TABLE jira_processing_source_tickets (
+            RowId INTEGER UNIQUE PRIMARY KEY NOT NULL,
+            Id TEXT UNIQUE NOT NULL,
+            Key TEXT NOT NULL,
+            Title TEXT NOT NULL,
+            Description TEXT,
+            Project TEXT NOT NULL,
+            Status TEXT NOT NULL,
+            WorkGroup TEXT NOT NULL,
+            Type TEXT NOT NULL,
+            Specification TEXT NOT NULL DEFAULT '',
+            SourceTicketShape TEXT NOT NULL,
+            LastSyncedAt TEXT NOT NULL,
+            LastUpdated TEXT,
+            SourceProjectLastSuccessfulRefreshAt TEXT,
+            SourceContentRevision INTEGER,
+            StartedProcessingAt TEXT,
+            CompletedProcessingAt TEXT,
+            LastProcessingAttemptAt TEXT,
+            ProcessingStatus TEXT,
+            ProcessingError TEXT,
+            ProcessingAttemptCount INTEGER NOT NULL,
+            ErrorMessage TEXT,
+            AgentExitCode INTEGER,
+            ErrorOccurredAt TEXT
+        );
+        """;
+
+    private static async Task AssertPopulatedInitializationAsync(bool missingCompletionId)
+    {
+        using TestDatabase donor = CreateDatabase(isolated: true);
+        JiraProcessingSourceTicketRecord[] sources = RetainedSourceRows();
+        using (SqliteConnection connection = donor.Database.OpenConnection())
+        {
+            InsertRetainedSourceRows(connection, sources, includeCompletionId: false);
+        }
+        if (!missingCompletionId)
+        {
+            JiraProcessingSourceTicketStore sourceStore = new(donor.Database.DatabasePath);
+            foreach (JiraProcessingSourceTicketRecord source in sources.Take(2))
+            {
+                await sourceStore.MarkCompleteAsync(
+                    source, Assert.IsType<DateTimeOffset>(source.CompletedProcessingAt), CancellationToken.None);
+                Assert.False(string.IsNullOrWhiteSpace(source.CompletionId));
+            }
+        }
+
+        HydrationBatch neutral = SampleNeutralBatch(sources[3].Key, PublicDisplayNamePolicy.CurrentVersion);
+        await ((IHydrationTargetDatabase)donor.Database).SaveHydrationAsync(neutral with
+        {
+            Parent = neutral.Parent with
+            {
+                SourceProject = "FHIR",
+                SourceLastSuccessfulRefreshAt = sources[3].SourceProjectLastSuccessfulRefreshAt,
+                SourceContentRevision = sources[3].SourceContentRevision,
+                SourceIsStable = true,
+                DescriptionHtml = "<p>Neutral hydration retained without a prepared result.</p>",
+                RelatedArtifactsRaw = "Encounter",
+                RelatedPagesRaw = "encounter.html",
+            },
+        }, CancellationToken.None);
+        PublicationRefreshContext context = await CreateRetainedPublicationContextAsync(
+            donor, sources.Take(2).ToArray());
+        AuthoringRunStore donorStore = new(donor.Database);
+        _ = await donor.Database.ApplyPublicationMetadataAsync(
+            context.RefreshRunId, context.Lease, context.InputFingerprint, context.Inventory,
+            context.Inventory.Candidates.Select(candidate => PublicationMetadata(
+                candidate.TicketKey, candidate.ExpectedSourceRevision, 83,
+                new DateTimeOffset(2026, 9, 14, 12, 0, 0, TimeSpan.Zero))).ToArray());
+        await donorStore.CompleteRunStageAsync(context.Lease.StageId, context.Lease.LeaseId);
+        PreparedTicketRunPartition partition = Assert.Single(
+            await donor.Database.GetRunPartitionsAsync(context.RefreshRunId));
+        AuthoringRunStageRecord certificationStage = await donorStore.EnsureRunStageAsync(
+            context.RefreshRunId, PreparerDatabase.GroupingCertificationStageName,
+            partition.PartitionKey, partition.InputFingerprint);
+        AuthoringRunStageLease certificationLease = Assert.IsType<AuthoringRunStageLease>(
+            await donorStore.TryStartRunStageAsync(certificationStage.Id));
+        PreparedTicketGroupingCertificationEvidence certification = await donor.Database.CertifyGroupingPartitionAsync(
+            context.RefreshRunId, certificationLease, partition);
+        Assert.False(certification.IsLegacyCertification);
+        Assert.Equal(context.SourceRunId, certification.SourceReceipt.RunId);
+        Assert.Equal(certification.OutputFingerprint, certification.SourceReceipt.OutputFingerprint);
+        Assert.Null(await donor.Database.GetPartitionCertificationAsync(context.RefreshRunId, partition.PartitionKey));
+        await donorStore.CompleteRunStageAsync(certificationStage.Id, certificationLease.LeaseId);
+        await donorStore.MarkRunFinalizingAsync(context.RefreshRunId);
+
+        using TestDatabase target = CreateDatabase(initialize: false, isolated: true);
+        using (SqliteConnection connection = target.Database.OpenConnection())
+        {
+            if (missingCompletionId)
+            {
+                ExecuteFixtureSql(connection, ReportedSourceSchema);
+            }
+            else
+            {
+                JiraProcessingSourceTicketRecord.CreateTable(connection);
+            }
+            InsertRetainedSourceRows(connection, sources, includeCompletionId: !missingCompletionId);
+            // Only current companion schemas/values come from the disposable donor.
+            // The target source table above is independent of donor schema generation.
+            CopyPopulatedCompanions(donor, connection);
+            string keyTerms = missingCompletionId
+                ? "Key, SourceTicketShape"
+                : "Key COLLATE NOCASE, SourceTicketShape COLLATE NOCASE";
+            ExecuteFixtureSql(connection,
+                $"CREATE UNIQUE INDEX idx_jira_processing_source_tickets_key_shape ON {SourceTicketTable}({keyTerms})");
+            ExecuteFixtureSql(connection,
+                """
+                CREATE INDEX retained_source_status ON jira_processing_source_tickets(ProcessingStatus);
+                CREATE TRIGGER retained_source_no_update BEFORE UPDATE ON jira_processing_source_tickets
+                    BEGIN SELECT RAISE(ABORT, 'initializer must not update retained source rows'); END;
+                CREATE TRIGGER retained_source_no_delete BEFORE DELETE ON jira_processing_source_tickets
+                    BEGIN SELECT RAISE(ABORT, 'initializer must not delete retained source rows'); END;
+                CREATE TABLE unrelated_preparer_state (
+                    Id INTEGER PRIMARY KEY, TextValue TEXT, IntegerValue INTEGER,
+                    RealValue REAL, BlobValue BLOB, NullableValue TEXT);
+                """);
+            using SqliteCommand sentinel = connection.CreateCommand();
+            sentinel.CommandText =
+                """
+                INSERT INTO unrelated_preparer_state
+                VALUES(@id, @text, @integer, @real, @blob, @nullable)
+                """;
+            sentinel.Parameters.AddWithValue("@id", 19L);
+            sentinel.Parameters.AddWithValue("@text", "Keep café\nand \u001f delimiters verbatim.");
+            sentinel.Parameters.AddWithValue("@integer", 9007199254740993L);
+            sentinel.Parameters.AddWithValue("@real", 1.25);
+            sentinel.Parameters.AddWithValue("@blob", new byte[] { 0, 1, 254, 255 });
+            sentinel.Parameters.AddWithValue("@nullable", DBNull.Value);
+            sentinel.ExecuteNonQuery();
+            ExecuteFixtureSql(connection,
+                "CREATE INDEX unrelated_preparer_state_text ON unrelated_preparer_state(TextValue)");
+        }
+
+        Dictionary<string, byte[]> artifacts = CreateInitializationSentinels(target);
+        foreach ((string path, byte[] bytes) in ReadFixtureSnapshotArtifacts(donor))
+        {
+            artifacts.Add(path, bytes);
+        }
+        TypedDatabaseValues before = ReadTypedDatabaseValues(target);
+        AssertPopulatedCompanionCoverage(before);
+        Assert.Equal(4, before.Tables[SourceTicketTable].Values.Length);
+        using (SqliteConnection connection = target.Database.OpenConnection())
+        {
+            TypedRows columns = ReadTypedRows(connection, $"PRAGMA table_info({SourceTicketTable})");
+            Assert.Equal(missingCompletionId ? 24 : 25, columns.Values.Length);
+            Assert.Equal(!missingCompletionId,
+                columns.Values.Any(row => Equals(row[1], "CompletionId")));
+        }
+        // This is the first owner initialization of the target, not a reopen of a
+        // database from which the completion column was subsequently removed.
+        target.Database.Initialize();
+        TypedDatabaseValues initialized = ReadTypedDatabaseValues(target);
+        AssertTypedDatabaseValuesEqual(
+            before, initialized, allowCompletionAddition: missingCompletionId, allowNewEmptyTables: true);
+        AssertInitializationSentinels(artifacts);
+        await AssertRetainedApisEqualAsync(donor, target, sources, context, partition);
+
+        target.Database.Initialize();
+        AssertTypedDatabaseValuesEqual(initialized, ReadTypedDatabaseValues(target));
+        AssertInitializationSentinels(artifacts);
+        await AssertRetainedApisEqualAsync(donor, target, sources, context, partition);
+    }
+
+    private static JiraProcessingSourceTicketRecord[] RetainedSourceRows()
+    {
+        DateTimeOffset time = new(2026, 9, 1, 12, 0, 0, TimeSpan.Zero);
+        JiraProcessingSourceTicketRecord complete = new()
+        {
+            RowId = 101,
+            Id = "retained-source-complete-with-fallback",
+            Key = "FHIR-801",
+            Title = "Retained fallback title",
+            Description = "Expensive source description\nwith café and unchanged whitespace.",
+            Project = "FHIR",
+            Status = "Triaged",
+            WorkGroup = "FHIR-I",
+            Type = "Change Request",
+            Specification = "FHIR",
+            SourceTicketShape = "fhir",
+            LastSyncedAt = time.AddHours(2),
+            LastUpdated = null,
+            SourceProjectLastSuccessfulRefreshAt = time.AddHours(1),
+            SourceContentRevision = 73,
+            StartedProcessingAt = time.AddMinutes(10),
+            CompletedProcessingAt = time.AddMinutes(20),
+            LastProcessingAttemptAt = time.AddMinutes(10),
+            ProcessingStatus = ProcessingStatusValues.Complete,
+            ProcessingAttemptCount = 3,
+        };
+        return
+        [
+            complete,
+            complete with
+            {
+                RowId = 205, Id = "retained-source-complete-with-timestamp",
+                Key = "FHIR-802", Title = "Retained timestamp title",
+                Description = "Another retained description", LastUpdated = time,
+                ProcessingAttemptCount = 2,
+            },
+            complete with
+            {
+                RowId = 309, Id = "retained-source-error", Key = "FHIR-803",
+                Title = "Retained error title", LastUpdated = time.AddMinutes(-1),
+                CompletedProcessingAt = null, ProcessingStatus = ProcessingStatusValues.Error,
+                ProcessingAttemptCount = 7, ProcessingError = "retained processing error",
+                ErrorMessage = "Retained diagnostic\nincluding detail", AgentExitCode = 23,
+                ErrorOccurredAt = time.AddMinutes(15),
+            },
+            complete with
+            {
+                RowId = 413, Id = "retained-source-pending", Key = "FHIR-804",
+                Title = "Retained pending title", Description = null,
+                StartedProcessingAt = null, CompletedProcessingAt = null,
+                LastProcessingAttemptAt = null, ProcessingStatus = null, ProcessingAttemptCount = 0,
+            },
+        ];
+    }
+
+    private static void InsertRetainedSourceRows(
+        SqliteConnection connection,
+        IReadOnlyList<JiraProcessingSourceTicketRecord> sources,
+        bool includeCompletionId)
+    {
+        foreach (JiraProcessingSourceTicketRecord source in sources)
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                $"""
+                INSERT INTO jira_processing_source_tickets (
+                    RowId, Id, Key, Title, Description, Project, Status, WorkGroup, Type,
+                    Specification, SourceTicketShape, LastSyncedAt, LastUpdated,
+                    SourceProjectLastSuccessfulRefreshAt, SourceContentRevision,
+                    StartedProcessingAt, CompletedProcessingAt, LastProcessingAttemptAt,
+                    ProcessingStatus, ProcessingError, ProcessingAttemptCount,
+                    ErrorMessage, AgentExitCode, ErrorOccurredAt{(includeCompletionId ? ", CompletionId" : "")})
+                VALUES (
+                    @rowId, @id, @key, @title, @description, @project, @status, @workGroup, @type,
+                    @specification, @shape, @synced, @updated, @refresh, @revision,
+                    @started, @completed, @attempted, @processingStatus, @processingError,
+                    @attempts, @error, @exitCode, @errorAt{(includeCompletionId ? ", @completionId" : "")})
+                """;
+            (string Name, object? Value)[] values =
+            [
+                ("@rowId", source.RowId), ("@id", source.Id), ("@key", source.Key),
+                ("@title", source.Title), ("@description", source.Description), ("@project", source.Project),
+                ("@status", source.Status), ("@workGroup", source.WorkGroup), ("@type", source.Type),
+                ("@specification", source.Specification), ("@shape", source.SourceTicketShape),
+                ("@synced", source.LastSyncedAt.ToString("O", CultureInfo.InvariantCulture)),
+                ("@updated", source.LastUpdated?.ToString("O", CultureInfo.InvariantCulture)),
+                ("@refresh", source.SourceProjectLastSuccessfulRefreshAt?.ToString("O", CultureInfo.InvariantCulture)),
+                ("@revision", source.SourceContentRevision),
+                ("@started", source.StartedProcessingAt?.ToString("O", CultureInfo.InvariantCulture)),
+                ("@completed", source.CompletedProcessingAt?.ToString("O", CultureInfo.InvariantCulture)),
+                ("@attempted", source.LastProcessingAttemptAt?.ToString("O", CultureInfo.InvariantCulture)),
+                ("@processingStatus", source.ProcessingStatus), ("@processingError", source.ProcessingError),
+                ("@attempts", source.ProcessingAttemptCount), ("@error", source.ErrorMessage),
+                ("@exitCode", source.AgentExitCode),
+                ("@errorAt", source.ErrorOccurredAt?.ToString("O", CultureInfo.InvariantCulture)),
+            ];
+            foreach ((string name, object? value) in values)
+            {
+                command.Parameters.AddWithValue(name, value ?? DBNull.Value);
+            }
+            if (includeCompletionId)
+            {
+                command.Parameters.AddWithValue("@completionId", (object?)source.CompletionId ?? DBNull.Value);
+            }
+            command.ExecuteNonQuery();
+        }
+    }
+
+    private static async Task<PublicationRefreshContext> CreateRetainedPublicationContextAsync(
+        TestDatabase database,
+        IReadOnlyList<JiraProcessingSourceTicketRecord> sources)
+    {
+        AuthoringRunStore store = new(database.Database);
+        await store.EnsureProcessorModeAsync("jira-fhir");
+        DateTimeOffset provenanceAt = new(2026, 9, 1, 13, 0, 0, TimeSpan.Zero);
+        await database.Database.SaveWorkGroupCatalogAsync(
+            [new("fhir-i", "FHIR-I", Hl7WorkGroupNameCleaner.Clean("FHIR-I"), provenanceAt)]);
+        await store.TransitionProcessorModeAsync(
+            "jira-fhir", AuthoringStatusValues.ProcessorModes.Legacy,
+            AuthoringStatusValues.ProcessorModes.CuttingOver);
+        await store.TransitionProcessorModeAsync(
+            "jira-fhir", AuthoringStatusValues.ProcessorModes.CuttingOver,
+            AuthoringStatusValues.ProcessorModes.RunBacked);
+        foreach (JiraProcessingSourceTicketRecord source in sources)
+        {
+            await database.Database.SaveHydrationAsync(RetainedHydration(source));
+        }
+        AuthoringRunRecord sourceRun = await store.CreateRunAsync(
+            "jira-fhir",
+            sources.Select(source => new AuthoringRunItemDefinition(
+                source.Key, source.SourceTicketShape,
+                JiraProcessingSourceTicketStore.GetSourceRevision(source))).ToArray(),
+            inputProvenance: [new("jira", provenanceAt, 73), new("zulip", provenanceAt.AddDays(-1), 19)]);
+        Assert.True(await store.TryAcquireMutationFenceAsync("jira-fhir", sourceRun.Id));
+        foreach (AuthoringRunItemRecord item in await store.GetRunItemsAsync(sourceRun.Id))
+        {
+            AuthoringOperationClaim claim = Assert.IsType<AuthoringOperationClaim>(
+                await store.ClaimItemAsync(sourceRun.Id, item.Id));
+            PreparedTicketPayload payload = SamplePayload(item.BusinessKey);
+            payload.RequestSummary = $"Request {item.BusinessKey}\n\nKeep café and exact authored text.";
+            string contentHash = PreparedTicketAuthoringDtos.ComputeContentHash(payload);
+            AuthoringReceiptAcceptance accepted = await store.AcceptResultAsync(
+                new(sourceRun.Id, item.Id, claim.OperationId, item.ExpectedSourceRevision, contentHash),
+                claim.OperationToken,
+                (connection, ct) => database.Database.SavePreparedTicketForAuthoringAsync(
+                    connection, payload, contentHash, sourceRun.Id, item.Id, claim.OperationId, ct));
+            Assert.False(accepted.IsReplay);
+            await store.MarkItemCompleteAsync(item.Id, accepted.Receipt.ReceiptId);
+        }
+
+        await store.MarkRunFinalizingAsync(sourceRun.Id);
+        PreparedTicketRunPartition partition = Assert.Single(
+            await database.Database.GetRunPartitionsAsync(sourceRun.Id));
+        Assert.Equal(sources.Select(source => source.Key).Order(StringComparer.Ordinal), partition.TicketKeys);
+        AuthoringRunStageRecord grouping = await store.EnsureRunStageAsync(
+            sourceRun.Id, "grouping", partition.PartitionKey, partition.InputFingerprint);
+        AuthoringRunStageLease groupingLease = Assert.IsType<AuthoringRunStageLease>(
+            await store.TryStartRunStageAsync(grouping.Id));
+        PreparedTicketGroupingPayload groupingPayload = new()
+        {
+            WorkGroupClean = partition.WorkGroupClean,
+            WorkGroupDisplay = partition.WorkGroupDisplay,
+            Specification = partition.Specification,
+            Type = partition.Type,
+            SavedAt = new DateTimeOffset(2026, 9, 2, 0, 0, 0, TimeSpan.Zero),
+            Topics =
+            [
+                new()
+                {
+                    ShortDescription = "Retained topic",
+                    LongerDescription = "Retained topic detail\nand discussion rationale.",
+                    RenderOrderHint = 4,
+                    LinkedTicketGroups =
+                    [
+                        new()
+                        {
+                            FirstTicketKey = partition.TicketKeys[0],
+                            Rationale = "These retained tickets must be considered together.",
+                            Members = partition.TicketKeys.Select((key, index) =>
+                                new PreparedTicketTopicGroupMemberPayload
+                                {
+                                    TicketKey = key,
+                                    Order = index,
+                                }).ToList(),
+                        },
+                    ],
+                },
+            ],
+        };
+        await database.Database.SaveGroupingForRunAsync(
+            groupingPayload, sourceRun.Id, grouping.Id, groupingLease.LeaseId, partition.InputFingerprint);
+        await store.CompleteRunStageAsync(grouping.Id, groupingLease.LeaseId);
+
+        // Complete a genuine source run and snapshot so maintenance admission uses
+        // the real source/snapshot gate as well as real accepted graph receipts.
+        PreparedTicketSnapshotMaterializer materializer = new(
+            database.Database, store, new SqliteReviewSnapshotReconciler(store),
+            Options.Create(new PreparerServiceOptions
+            {
+                SnapshotDirectory = Path.Combine(database.Directory, "snapshots"),
+                SnapshotSchemaVersion = PreparedTicketSnapshotSchemaV3.Version,
+            }));
+        AuthoringSnapshotDescriptor snapshot = await materializer.MaterializeAsync(
+            Assert.IsType<AuthoringRunRecord>(await store.GetRunAsync(sourceRun.Id)),
+            PreparedTicketSnapshotSchemaV3.Catalog);
+        await store.CompleteRunAsync(sourceRun.Id, snapshot.SnapshotId);
+
+        PreparedTicketPublicationRefreshInventory inventory =
+            await database.Database.GetPublicationRefreshInventoryAsync();
+        Assert.Equal(sources.Count, inventory.Candidates.Count);
+        AuthoringRunRecord refreshRun = await store.CreateMaintenanceRunAsync(
+            "jira-fhir", PreparerDatabase.GetPublicationRefreshMaintenanceItemsAsync,
+            AuthoringRunPurposeValues.PublicationRefresh, databaseOnly: false, sourceRunId: sourceRun.Id);
+        string fingerprint = PreparedTicketPublicationContract.ComputePublicationRefreshInputFingerprint(
+            sourceRun.Id, inventory.Candidates.Select(candidate => candidate.ToPublicationCorpusItem()));
+        AuthoringRunStageRecord stage = await store.EnsureRunStageAsync(
+            refreshRun.Id, PreparerDatabase.PublicationMetadataStageName, string.Empty, fingerprint);
+        AuthoringRunStageLease lease = Assert.IsType<AuthoringRunStageLease>(
+            await store.TryStartRunStageAsync(stage.Id));
+        return new(sourceRun.Id, refreshRun.Id, inventory, fingerprint, lease);
+    }
+
+    private static PreparedTicketHydrationBatch RetainedHydration(JiraProcessingSourceTicketRecord source)
+    {
+        DateTimeOffset hydratedAt = new(2026, 9, 1, 14, 0, 0, TimeSpan.Zero);
+        PreparedTicketHydrationBatch batch = SampleBatch(source.Key, source.Key);
+        PreparedJiraHydrationRow self = batch.JiraRows[0] with
+        {
+            Title = source.Title,
+            Status = source.Status,
+            Type = source.Type,
+            WorkGroup = source.WorkGroup,
+            Specification = source.Specification,
+            UpdatedAt = source.LastUpdated,
+            Resolution = "Persuasive",
+            ResolutionDescriptionPlain = "Retained self resolution",
+            DescriptionHtml = $"<p>Self content {source.Key}</p>",
+            ResolutionDescriptionHtml = "<p>Retained self resolution</p>",
+            Reporter = "Self Reporter",
+            Assignee = "Self Assignee",
+            CreatedAt = hydratedAt.AddYears(-2),
+            RelatedArtifactsRaw = "Patient",
+            RelatedPagesRaw = "patient.html",
+            HydratedAt = hydratedAt,
+            PublicDisplayNamePolicyVersion = PublicDisplayNamePolicy.CurrentVersion,
+        };
+        return batch with
+        {
+            Parent = batch.Parent with
+            {
+                Labels = "retained, reviewed",
+                DescriptionPlain = $"Retained plain content {source.Key}",
+                DescriptionHtml = $"<p>Parent content {source.Key}</p>",
+                ResolutionDescriptionHtml = "<p>Retained parent resolution</p>",
+                Reporter = "Parent Reporter",
+                Assignee = "Parent Assignee",
+                CreatedAt = hydratedAt.AddYears(-2),
+                RelatedArtifactsRaw = "Patient, Observation",
+                RelatedPagesRaw = "patient.html; observation.html",
+                SourceProject = source.Project,
+                SourceLastSuccessfulRefreshAt = source.SourceProjectLastSuccessfulRefreshAt ?? hydratedAt.AddHours(-1),
+                SourceContentRevision = source.SourceContentRevision ?? 73,
+                HydratedAt = hydratedAt,
+                PublicDisplayNamePolicyVersion = PublicDisplayNamePolicy.CurrentVersion,
+            },
+            JiraRows =
+            [
+                self,
+                self with
+                {
+                    JiraKey = "FHIR-999",
+                    Title = "Retained related Jira content",
+                    DescriptionHtml = "<p>Linked content, not publication metadata.</p>",
+                    Reporter = "Linked Reporter",
+                    Assignee = "Linked Assignee",
+                    Url = "https://jira.example.com/browse/FHIR-999",
+                },
+            ],
+            ZulipRows = [batch.ZulipRows[0] with { ZulipThreadId = "123", HydratedAt = hydratedAt }],
+            GitHubRows =
+            [
+                batch.GitHubRows[0] with
+                {
+                    Path = "source/patient.xml", IsPullRequest = true,
+                    Labels = "retained-github-label", HydratedAt = hydratedAt,
+                },
+            ],
+            RepoRows =
+            [
+                batch.RepoRows[0] with
+                {
+                    WorkGroup = source.WorkGroup, Specification = source.Specification, HydratedAt = hydratedAt,
+                },
+            ],
+            JiraXrefRows = [new(source.Key, "FHIR-999", "RelatedIssues")],
+        };
+    }
+
+    private static async Task AssertRetainedApisEqualAsync(
+        TestDatabase donor,
+        TestDatabase target,
+        IReadOnlyList<JiraProcessingSourceTicketRecord> sources,
+        PublicationRefreshContext context,
+        PreparedTicketRunPartition partition)
+    {
+        JiraProcessingSourceTicketStore sourceStore = new(target.Database.DatabasePath);
+        foreach (JiraProcessingSourceTicketRecord source in sources)
+        {
+            Assert.Equal(source, await sourceStore.GetByIdAsync(source.Id, CancellationToken.None));
+            Assert.Equal(source, await sourceStore.GetByKeyAsync(
+                source.Key, source.SourceTicketShape, CancellationToken.None));
+            PreparedTicketHydrationReadModel? expected = await donor.Database.GetHydrationAsync(source.Key);
+            PreparedTicketHydrationReadModel? actual = await target.Database.GetHydrationAsync(source.Key);
+            if (expected is null)
+            {
+                Assert.Null(actual);
+                continue;
+            }
+            Assert.NotNull(actual);
+            Assert.Equal(expected.Parent, actual.Parent);
+            Assert.Equal(expected.JiraRows, actual.JiraRows);
+            Assert.Equal(expected.ZulipRows, actual.ZulipRows);
+            Assert.Equal(expected.GitHubRows, actual.GitHubRows);
+            Assert.Equal(expected.RepoRows, actual.RepoRows);
+            Assert.Equal(expected.JiraXrefRows, actual.JiraXrefRows);
+            Assert.Equal(expected.InPersonRequesters, actual.InPersonRequesters);
+        }
+        foreach (PreparedTicketPublicationRefreshCandidate candidate in context.Inventory.Candidates)
+        {
+            PreparedTicketDetail expected = Assert.IsType<PreparedTicketDetail>(
+                await donor.Database.GetPreparedTicketAsync(candidate.TicketKey));
+            PreparedTicketDetail actual = Assert.IsType<PreparedTicketDetail>(
+                await target.Database.GetPreparedTicketAsync(candidate.TicketKey));
+            Assert.Equal(expected.Ticket, actual.Ticket);
+            Assert.Equal(expected.RelatedItems.Repos, actual.RelatedItems.Repos);
+            Assert.Equal(expected.RelatedItems.JiraTickets, actual.RelatedItems.JiraTickets);
+            Assert.Equal(expected.RelatedItems.ZulipThreads, actual.RelatedItems.ZulipThreads);
+            Assert.Equal(expected.RelatedItems.GitHubItems, actual.RelatedItems.GitHubItems);
+        }
+        PreparedTicketGroupingPartition expectedGrouping = Assert.IsType<PreparedTicketGroupingPartition>(
+            await donor.Database.GetGroupingAsync(partition.WorkGroupClean, partition.Specification, partition.Type));
+        PreparedTicketGroupingPartition actualGrouping = Assert.IsType<PreparedTicketGroupingPartition>(
+            await target.Database.GetGroupingAsync(partition.WorkGroupClean, partition.Specification, partition.Type));
+        Assert.Equal(
+            expectedGrouping with { Topics = Array.Empty<PreparedTicketTopic>(), IndividualTicketKeys = Array.Empty<string>() },
+            actualGrouping with { Topics = Array.Empty<PreparedTicketTopic>(), IndividualTicketKeys = Array.Empty<string>() });
+        Assert.Equal(expectedGrouping.IndividualTicketKeys, actualGrouping.IndividualTicketKeys);
+        PreparedTicketTopic expectedTopic = Assert.Single(expectedGrouping.Topics);
+        PreparedTicketTopic actualTopic = Assert.Single(actualGrouping.Topics);
+        Assert.Equal(
+            expectedTopic with { LinkedTicketGroups = Array.Empty<PreparedTicketTopicGroup>(), RemainingTicketKeys = Array.Empty<string>() },
+            actualTopic with { LinkedTicketGroups = Array.Empty<PreparedTicketTopicGroup>(), RemainingTicketKeys = Array.Empty<string>() });
+        Assert.Equal(expectedTopic.RemainingTicketKeys, actualTopic.RemainingTicketKeys);
+        PreparedTicketTopicGroup expectedGroup = Assert.Single(expectedTopic.LinkedTicketGroups);
+        PreparedTicketTopicGroup actualGroup = Assert.Single(actualTopic.LinkedTicketGroups);
+        Assert.Equal(
+            expectedGroup with { Members = Array.Empty<PreparedTicketTopicGroupMember>() },
+            actualGroup with { Members = Array.Empty<PreparedTicketTopicGroupMember>() });
+        Assert.Equal(expectedGroup.Members, actualGroup.Members);
+        Assert.Equal(2, actualGroup.Members.Count);
+
+        AuthoringRunStore expectedStore = new(donor.Database);
+        AuthoringRunStore actualStore = new(target.Database);
+        Assert.Equal(
+            await expectedStore.GetProcessorModeAsync("jira-fhir"),
+            await actualStore.GetProcessorModeAsync("jira-fhir"));
+        foreach (string runId in new[] { context.SourceRunId, context.RefreshRunId })
+        {
+            Assert.Equal(await expectedStore.GetRunAsync(runId), await actualStore.GetRunAsync(runId));
+            Assert.Equal(await expectedStore.GetRunItemsAsync(runId), await actualStore.GetRunItemsAsync(runId));
+            Assert.Equal(await expectedStore.GetRunStagesAsync(runId), await actualStore.GetRunStagesAsync(runId));
+            Assert.Equal(
+                await expectedStore.GetRunInputProvenanceAsync(runId),
+                await actualStore.GetRunInputProvenanceAsync(runId));
+        }
+        foreach (AuthoringRunItemRecord item in await actualStore.GetRunItemsAsync(context.SourceRunId))
+        {
+            string operationId = Assert.IsType<string>(item.CurrentOperationId);
+            AuthoringResultReceipt expected = Assert.IsType<AuthoringResultReceipt>(
+                await expectedStore.GetReceiptByOperationAsync(operationId));
+            Assert.Equal(expected, await actualStore.GetReceiptByOperationAsync(operationId));
+            Assert.Equal(item.AcceptedReceiptId, expected.ReceiptId);
+            JiraProcessingSourceTicketRecord source = Assert.Single(sources, row => row.Key == item.BusinessKey);
+            Assert.Equal(JiraProcessingSourceTicketStore.GetSourceRevision(source), item.ExpectedSourceRevision);
+        }
+        Assert.Equal(await expectedStore.GetSnapshotRecordsAsync(), await actualStore.GetSnapshotRecordsAsync());
+        Assert.Equal(
+            await donor.Database.GetLatestGroupingReceiptAsync(partition.PartitionKey),
+            await target.Database.GetLatestGroupingReceiptAsync(partition.PartitionKey));
+        Assert.Equal(
+            await donor.Database.GetPublicationRefreshReceiptAsync(context.RefreshRunId, context.Lease.StageId),
+            await target.Database.GetPublicationRefreshReceiptAsync(context.RefreshRunId, context.Lease.StageId));
+        PreparedTicketPublicationRefreshInventory actualInventory =
+            await target.Database.GetPublicationRefreshInventoryAsync();
+        Assert.Equal(context.Inventory.CorpusFingerprint, actualInventory.CorpusFingerprint);
+        Assert.Equal(context.Inventory.Candidates, actualInventory.Candidates);
+        PreparedTicketRunPartition actualPartition = Assert.Single(
+            await target.Database.GetRunPartitionsAsync(context.RefreshRunId));
+        Assert.Equal(
+            partition with { TicketKeys = Array.Empty<string>() },
+            actualPartition with { TicketKeys = Array.Empty<string>() });
+        Assert.Equal(partition.TicketKeys, actualPartition.TicketKeys);
+    }
+
+    private static void CopyPopulatedCompanions(TestDatabase donor, SqliteConnection target)
+    {
+        using SqliteConnection source = donor.Database.OpenConnection();
+        using SqliteCommand schema = source.CreateCommand();
+        schema.CommandText =
+            """
+            SELECT type, name, tbl_name, sql
+            FROM sqlite_schema
+            WHERE tbl_name <> @sourceTable AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+            ORDER BY type, name
+            """;
+        schema.Parameters.AddWithValue("@sourceTable", SourceTicketTable);
+        List<(string Type, string Name, string Table, string Sql)> definitions = [];
+        using (SqliteDataReader reader = schema.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                definitions.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3)));
+            }
+        }
+        Dictionary<string, TypedRows> companions = [];
+        foreach (var definition in definitions.Where(value => value.Type == "table"))
+        {
+            Assert.NotEqual(SourceTicketTable, definition.Table);
+            TypedRows rows = ReadTypedTable(source, definition.Name);
+            if (rows.Values.Length > 0)
+            {
+                companions.Add(definition.Name, rows);
+                ExecuteFixtureSql(target, definition.Sql);
+            }
+        }
+        foreach ((string table, TypedRows rows) in companions)
+        {
+            foreach (object?[] row in rows.Values)
+            {
+                using SqliteCommand insert = target.CreateCommand();
+                insert.CommandText =
+                    $"INSERT INTO {QuoteFixtureIdentifier(table)} " +
+                    $"({string.Join(", ", rows.Columns.Select(QuoteFixtureIdentifier))}) " +
+                    $"VALUES ({string.Join(", ", Enumerable.Range(0, row.Length).Select(index => $"@v{index}"))})";
+                for (int index = 0; index < row.Length; index++)
+                {
+                    insert.Parameters.AddWithValue($"@v{index}", row[index] ?? DBNull.Value);
+                }
+                insert.ExecuteNonQuery();
+            }
+        }
+        // Explicit indexes and triggers follow all seed rows, never the donor's
+        // source table or any index/trigger belonging to it.
+        foreach (var definition in definitions.Where(value =>
+                     (value.Type is "index" or "trigger") && companions.ContainsKey(value.Table)))
+        {
+            Assert.NotEqual(SourceTicketTable, definition.Table);
+            ExecuteFixtureSql(target, definition.Sql);
+        }
+    }
+
+    private static void AssertPopulatedCompanionCoverage(TypedDatabaseValues values)
+    {
+        string[] required =
+        [
+            "prepared_tickets", "prepared_ticket_repos", "prepared_ticket_related_jira",
+            "prepared_ticket_related_zulip", "prepared_ticket_related_github",
+            "prepared_ticket_hydration", "prepared_jira_hydration", "prepared_zulip_hydration",
+            "prepared_github_hydration", "prepared_repo_hydration", "prepared_ticket_jira_xref",
+            "prepared_ticket_in_person_requesters", "prepared_ticket_jira_content",
+            "prepared_ticket_artifacts", "prepared_ticket_pages", "prepared_ticket_topics",
+            "prepared_ticket_topic_groups", "prepared_ticket_topic_members", "jira_review_workgroups",
+            "prepared_ticket_authoring_state", "prepared_ticket_partition_receipts",
+            "prepared_ticket_run_item_partitions", "prepared_ticket_publication_refresh_receipts",
+            "authoring_processor_modes", "authoring_runs",
+            "authoring_run_items", "authoring_run_attempts", "authoring_result_receipts",
+            "authoring_mutation_fences", "authoring_run_stages", "authoring_run_input_provenance",
+            "authoring_review_snapshots", "schema_migrations", "unrelated_preparer_state",
+        ];
+        foreach (string table in required)
+        {
+            Assert.True(values.Tables.ContainsKey(table), $"Missing populated companion {table}.");
+            Assert.NotEmpty(values.Tables[table].Values);
+        }
+        Assert.Equal(
+            [
+                "prepared-hydration-structured-people-v2",
+                "prepared-jira-hydration-clean-v1",
+                "ticket-topics-clean-v1",
+            ],
+            values.Tables["schema_migrations"].Values.Select(row => Assert.IsType<string>(row[0])));
+    }
+
+    private static Dictionary<string, byte[]> CreateInitializationSentinels(TestDatabase database)
+    {
+        Dictionary<string, byte[]> artifacts = new()
+        {
+            [Path.Combine(database.Directory, "preparer.pre-run-authoring.bak")] =
+                Encoding.UTF8.GetBytes("synthetic backup sentinel; not a retained user database"),
+            [Path.Combine(database.Directory, "immutable-snapshot.db")] = [0, 17, 254, 255, 13, 10],
+            [Path.Combine(database.Directory, "immutable-snapshot.json")] =
+                Encoding.UTF8.GetBytes("""{"snapshotId":"synthetic-retained-descriptor","unchanged":true}"""),
+        };
+        foreach ((string path, byte[] bytes) in artifacts)
+        {
+            File.WriteAllBytes(path, bytes);
+        }
+        return artifacts;
+    }
+
+    private static void AssertInitializationSentinels(IReadOnlyDictionary<string, byte[]> artifacts)
+    {
+        foreach ((string path, byte[] bytes) in artifacts)
+        {
+            Assert.Equal(bytes, File.ReadAllBytes(path));
+        }
+    }
+
+    private static Dictionary<string, byte[]> ReadFixtureSnapshotArtifacts(TestDatabase database)
+    {
+        string[] paths = Directory.GetFiles(Path.Combine(database.Directory, "snapshots"));
+        Assert.NotEmpty(paths);
+        return paths.ToDictionary(path => path, File.ReadAllBytes, StringComparer.Ordinal);
+    }
+
+    private sealed record TypedRows(string[] Columns, object?[][] Values);
+    private sealed record TypedDatabaseValues(IReadOnlyDictionary<string, TypedRows> Tables);
+
+    private static string QuoteFixtureIdentifier(string value)
+        => $"\"{value.Replace("\"", "\"\"")}\"";
+
+    private static void ExecuteFixtureSql(SqliteConnection connection, string sql)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.ExecuteNonQuery();
+    }
+
+    private static TypedRows ReadTypedRows(SqliteConnection connection, string sql)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = sql;
+        using SqliteDataReader reader = command.ExecuteReader();
+        string[] columns = Enumerable.Range(0, reader.FieldCount).Select(reader.GetName).ToArray();
+        List<object?[]> rows = [];
+        while (reader.Read())
+        {
+            rows.Add(Enumerable.Range(0, reader.FieldCount)
+                .Select(index => reader.IsDBNull(index) ? null : reader.GetValue(index)).ToArray());
+        }
+        return new(columns, rows.ToArray());
+    }
+
+    private static TypedRows ReadTypedTable(SqliteConnection connection, string table)
+    {
+        int columnCount = ReadTypedRows(
+            connection, $"PRAGMA table_info({QuoteFixtureIdentifier(table)})").Values.Length;
+        return ReadTypedRows(connection,
+            $"SELECT * FROM {QuoteFixtureIdentifier(table)} ORDER BY {string.Join(", ", Enumerable.Range(1, columnCount))}");
+    }
+
+    private static TypedDatabaseValues ReadTypedDatabaseValues(TestDatabase database)
+    {
+        using SqliteConnection connection = database.Database.OpenConnection();
+        TypedRows tables = ReadTypedRows(connection,
+            "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
+        return new(tables.Values.ToDictionary(
+            row => Assert.IsType<string>(row[0]),
+            row => ReadTypedTable(connection, Assert.IsType<string>(row[0])),
+            StringComparer.Ordinal));
+    }
+
+    private static TypedRows ProjectTypedRows(TypedRows rows, IEnumerable<string> columns)
+    {
+        string[] projection = columns.ToArray();
+        int[] indices = projection.Select(column => Array.IndexOf(rows.Columns, column)).ToArray();
+        Assert.All(indices, index => Assert.True(index >= 0));
+        return new(projection, rows.Values.Select(row => indices.Select(index => row[index]).ToArray()).ToArray());
+    }
+
+    private static void AssertTypedRowsEqual(string table, TypedRows expected, TypedRows actual)
+    {
+        Assert.Equal(expected.Columns, actual.Columns);
+        Assert.True(expected.Values.Length == actual.Values.Length, $"Row count changed for {table}.");
+        for (int row = 0; row < expected.Values.Length; row++)
+        {
+            for (int column = 0; column < expected.Columns.Length; column++)
+            {
+                object? expectedValue = expected.Values[row][column];
+                object? actualValue = actual.Values[row][column];
+                Assert.True(expectedValue?.GetType() == actualValue?.GetType(),
+                    $"SQLite value type changed for {table}[{row}].{expected.Columns[column]}.");
+                if (expectedValue is byte[] bytes)
+                {
+                    Assert.Equal(bytes, Assert.IsType<byte[]>(actualValue));
+                }
+                else
+                {
+                    Assert.True(Equals(expectedValue, actualValue),
+                        $"Value changed for {table}[{row}].{expected.Columns[column]}: expected {expectedValue ?? "<null>"}, actual {actualValue ?? "<null>"}.");
+                }
+            }
+        }
+    }
+
+    private static void AssertTypedDatabaseValuesEqual(
+        TypedDatabaseValues expected,
+        TypedDatabaseValues actual,
+        bool allowCompletionAddition = false,
+        bool allowNewEmptyTables = false)
+    {
+        if (!allowNewEmptyTables)
+        {
+            Assert.Equal(expected.Tables.Keys.Order(StringComparer.Ordinal), actual.Tables.Keys.Order(StringComparer.Ordinal));
+        }
+        foreach ((string table, TypedRows rows) in expected.Tables)
+        {
+            Assert.True(actual.Tables.ContainsKey(table), $"Retained table {table} disappeared.");
+            TypedRows current = actual.Tables[table];
+            if (allowCompletionAddition && table == SourceTicketTable)
+            {
+                Assert.Equal(rows.Columns.Append("CompletionId"), current.Columns);
+                int completionIndex = Array.IndexOf(current.Columns, "CompletionId");
+                Assert.All(current.Values, row => Assert.Null(row[completionIndex]));
+                current = ProjectTypedRows(current, rows.Columns);
+            }
+            AssertTypedRowsEqual(table, rows, current);
+        }
+        foreach (string table in actual.Tables.Keys.Except(expected.Tables.Keys))
+        {
+            Assert.Empty(actual.Tables[table].Values);
+        }
+    }
+
+    private static void AssertPublicationProtectedValuesEqual(TypedDatabaseValues before, TypedDatabaseValues after)
+    {
+        Assert.Equal(before.Tables.Keys, after.Tables.Keys);
+        foreach ((string table, TypedRows rows) in before.Tables)
+        {
+            TypedRows actual = after.Tables[table];
+            string[] mutableColumns = table switch
+            {
+                "prepared_ticket_hydration" =>
+                [
+                    "Reporter", "Assignee", "PublicDisplayNamePolicyVersion", "SourceProject",
+                    "SourceLastSuccessfulRefreshAt", "SourceContentRevision", "HydratedAt",
+                    "HydrationStatus", "HydrationReason",
+                ],
+                "prepared_jira_hydration" => ["Reporter", "Assignee", "PublicDisplayNamePolicyVersion"],
+                _ => [],
+            };
+            if (mutableColumns.Length > 0)
+            {
+                string[] protectedColumns = rows.Columns.Except(mutableColumns).ToArray();
+                AssertTypedRowsEqual(table,
+                    ProjectTypedRows(rows, protectedColumns), ProjectTypedRows(actual, protectedColumns));
+                if (table == "prepared_jira_hydration")
+                {
+                    int ticketIndex = Array.IndexOf(rows.Columns, "TicketKey");
+                    int jiraIndex = Array.IndexOf(rows.Columns, "JiraKey");
+                    AssertTypedRowsEqual(table,
+                        rows with { Values = rows.Values.Where(row => !Equals(row[ticketIndex], row[jiraIndex])).ToArray() },
+                        actual with { Values = actual.Values.Where(row => !Equals(row[ticketIndex], row[jiraIndex])).ToArray() });
+                }
+            }
+            else if (table == "authoring_run_input_provenance")
+            {
+                int runIndex = Array.IndexOf(rows.Columns, "RunId");
+                object?[] historicalRunIds = rows.Values.Select(row => row[runIndex]).ToArray();
+                AssertTypedRowsEqual(table, rows,
+                    actual with { Values = actual.Values.Where(row => historicalRunIds.Contains(row[runIndex])).ToArray() });
+                Assert.Equal(rows.Values.Length + 1, actual.Values.Length);
+            }
+            else if (table is not ("prepared_ticket_in_person_requesters" or "prepared_ticket_publication_refresh_receipts"))
+            {
+                AssertTypedRowsEqual(table, rows, actual);
+            }
+        }
+    }
+
+    private sealed class PublicationMetadataHandler(
+        IReadOnlyList<JiraProcessingSourceTicketRecord> sources,
+        string variedTicketKey,
+        string upstreamId,
+        DateTimeOffset refreshedAt) : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Assert.Equal(HttpMethod.Get, request.Method);
+            Uri uri = Assert.IsType<Uri>(request.RequestUri);
+            Assert.Equal("preparer-publication.invalid", uri.Host);
+            Assert.Empty(uri.Query);
+            JiraProcessingSourceTicketRecord source = Assert.Single(
+                sources, row => uri.AbsolutePath == $"/api/v1/jira/items/{row.Key}");
+            RequestCount++;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(new
+                {
+                    Id = source.Key == variedTicketKey ? upstreamId : source.Key,
+                    source.Title,
+                    UpdatedAt = source.LastUpdated,
+                    Metadata = new Dictionary<string, string>
+                    {
+                        ["status"] = source.Status,
+                        ["work_group"] = source.WorkGroup,
+                        ["type"] = source.Type,
+                        ["specification"] = source.Specification,
+                    },
+                    People = new
+                    {
+                        Reporter = $"Current Reporter {source.Key}",
+                        Assignee = $"Current Assignee {source.Key}",
+                        InPersonRequesters = new[] { $"Current Requester {source.Key}" },
+                        PublicDisplayNamePolicyVersion = PublicDisplayNamePolicy.CurrentVersion,
+                    },
+                    Provenance = new
+                    {
+                        Source = "jira",
+                        ContentRevision = 811L,
+                        IsStable = true,
+                        ProjectLastSuccessfulRefreshAt = new Dictionary<string, DateTimeOffset?>
+                        {
+                            [source.Project] = refreshedAt,
+                        },
+                    },
+                }),
+            });
+        }
+    }
+
     private static async Task<string> SeedCanonicalEpochRecoverySourceAsync(
         TestDatabase database)
     {
@@ -3060,14 +4137,30 @@ public sealed class PreparerDatabaseTests
         return Convert.ToInt32(command.ExecuteScalar());
     }
 
-    private static TestDatabase CreateDatabase()
+    private static TestDatabase CreateDatabase(bool initialize = true, bool isolated = false)
     {
-        string directory = Path.Combine(Environment.CurrentDirectory, "temp", "preparer-tests", Guid.NewGuid().ToString("N"));
+        // Snapshot filenames must also fit SQLite's Windows path limit when
+        // VSTest's working directory is a deeply nested verification checkout.
+        string directory = isolated
+            ? Path.Combine(Path.GetTempPath(), $"fhir-augury-preparer-state-{Guid.NewGuid():N}")
+            : Path.Combine(Environment.CurrentDirectory, "temp", "preparer-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         string path = Path.Combine(directory, "preparer.db");
         PreparerDatabase database = new(path, NullLogger<PreparerDatabase>.Instance);
-        database.Initialize();
-        return new TestDatabase(directory, database);
+        TestDatabase fixture = new(directory, database, strictCleanup: isolated);
+        try
+        {
+            if (initialize)
+            {
+                database.Initialize();
+            }
+            return fixture;
+        }
+        catch when (isolated)
+        {
+            fixture.Dispose();
+            throw;
+        }
     }
 
     private static PreparedTicketPayload SamplePayload(string key) => new()
@@ -3534,7 +4627,10 @@ public sealed class PreparerDatabaseTests
         TestFileCleanup.SafeDeleteDirectory(directory);
     }
 
-    private sealed class TestDatabase(string directory, PreparerDatabase database) : IDisposable
+    private sealed class TestDatabase(
+        string directory,
+        PreparerDatabase database,
+        bool strictCleanup = false) : IDisposable
     {
         public PreparerDatabase Database { get; } = database;
         public string Directory { get; } = directory;
@@ -3542,7 +4638,17 @@ public sealed class PreparerDatabaseTests
         public void Dispose()
         {
             Database.Dispose();
-            TestFileCleanup.SafeDeleteDirectory(Directory);
+            if (strictCleanup)
+            {
+                // New fixtures use only non-pooled connections. Fail on a leaked
+                // handle instead of invoking the shared cleanup's global pool retry.
+                System.IO.Directory.Delete(Directory, recursive: true);
+                Assert.False(System.IO.Directory.Exists(Directory));
+            }
+            else
+            {
+                TestFileCleanup.SafeDeleteDirectory(Directory);
+            }
         }
     }
 }
