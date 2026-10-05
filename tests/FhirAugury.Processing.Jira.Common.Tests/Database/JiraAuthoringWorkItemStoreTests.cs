@@ -1,9 +1,12 @@
+using FhirAugury.Common.Api;
 using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Database.Records;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Contracts;
 using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Database;
+using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Tests.Authoring;
 using Microsoft.Data.Sqlite;
 
@@ -12,9 +15,10 @@ namespace FhirAugury.Processing.Jira.Common.Tests.Database;
 public sealed class JiraAuthoringWorkItemStoreTests
 {
     [Fact]
-    public async Task SchemaMigrationMergesMixedCaseLegacyShapes()
+    public async Task SchemaMigrationRefusesMixedCaseLegacyShapesWithoutMutation()
     {
-        using JiraAuthoringTestFixture fixture = new();
+        using AuthoringFixtureScope scope = new();
+        JiraAuthoringTestFixture fixture = scope.Fixture;
         await fixture.SeedAsync(
             "FHIR-1",
             new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
@@ -47,22 +51,143 @@ public sealed class JiraAuthoringWorkItemStoreTests
         command.Parameters.AddWithValue("@lastUpdated", "2026-09-02T00:00:00.0000000+00:00");
         command.ExecuteNonQuery();
 
-        JiraProcessingSourceTicketStore.EnsureCompositeUniqueIndex(connection);
+        object?[][] rows = ReadTypedRows(connection, "SELECT * FROM jira_processing_source_tickets ORDER BY RowId");
+        object?[][] schema = ReadTypedRows(connection, "SELECT type, name, tbl_name, rootpage, sql FROM sqlite_schema ORDER BY type, name");
+        object?[][] index = ReadTypedRows(connection, "PRAGMA index_xinfo(idx_jira_processing_source_tickets_key_shape)");
+        object?[][] version = ReadTypedRows(connection, "PRAGMA schema_version");
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            InvalidOperationException failure = Assert.Throws<InvalidOperationException>(
+                () => JiraProcessingSourceTicketStore.EnsureCompositeUniqueIndex(connection));
+            Assert.Contains("identity collision", failure.Message);
+            Assert.Contains(fixture.DatabasePath, failure.Message);
+            Assert.DoesNotContain("FHIR-1", failure.Message);
+            Assert.Throws<InvalidOperationException>(
+                () => JiraProcessingSourceTicketStore.EnsureSchema(connection));
+            Assert.Throws<InvalidOperationException>(
+                () => new JiraProcessingSourceTicketStore(fixture.DatabasePath));
 
-        command.Parameters.Clear();
-        command.CommandText =
-            "SELECT COUNT(*), MIN(SourceTicketShape), MAX(Title) FROM jira_processing_source_tickets WHERE Key = 'FHIR-1'";
-        using SqliteDataReader reader = command.ExecuteReader();
-        Assert.True(reader.Read());
-        Assert.Equal(1, reader.GetInt32(0));
-        Assert.Equal("fhir", reader.GetString(1));
-        Assert.Equal("Newest", reader.GetString(2));
+            AssertTypedRowsEqual(rows, ReadTypedRows(connection, "SELECT * FROM jira_processing_source_tickets ORDER BY RowId"));
+            AssertTypedRowsEqual(schema, ReadTypedRows(connection, "SELECT type, name, tbl_name, rootpage, sql FROM sqlite_schema ORDER BY type, name"));
+            AssertTypedRowsEqual(index, ReadTypedRows(connection, "PRAGMA index_xinfo(idx_jira_processing_source_tickets_key_shape)"));
+            AssertTypedRowsEqual(version, ReadTypedRows(connection, "PRAGMA schema_version"));
+            Assert.Equal(1, SQLitePCL.raw.sqlite3_get_autocommit(connection.Handle));
+        }
+        connection.Close();
+        using (new FileStream(fixture.DatabasePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task NewCanonicalKey_FreezesPersistedAuthoringRevision(bool timestamped)
+    {
+        using AuthoringFixtureScope scope = new();
+        JiraAuthoringTestFixture fixture = scope.Fixture;
+        await fixture.ActivateAsync();
+        JiraIssueSummaryEntry input = new()
+        {
+            Key = "fHiR-91",
+            ProjectKey = "FHIR",
+            Title = "Canonical authoring input",
+            Status = "Triaged",
+            WorkGroup = "FHIR-I",
+            Type = "Change Request",
+            Specification = "FHIR Core",
+            UpdatedAt = timestamped ? new DateTimeOffset(2026, 9, 5, 12, 0, 0, TimeSpan.Zero) : null,
+        };
+        JiraProcessingSourceTicketRecord inserted = await fixture.SourceStore.UpsertAsync(
+            input, " FHIR ", false, CancellationToken.None);
+        Assert.Equal("FHIR-91", inserted.Key);
+        string persistedRevision = JiraProcessingSourceTicketStore.GetSourceRevision(inserted);
+        string rawRevision = JiraSourceRevision.Compute(inserted with { Key = input.Key });
+        Assert.Equal(timestamped, JiraSourceRevision.AreEquivalent(persistedRevision, rawRevision));
+
+        JiraAuthoringRunCreation creation = await fixture.Coordinator.CreateOneItemRunAsync(inserted);
+        AuthoringRunItemRecord frozen = Assert.Single(creation.Items);
+        Assert.Equal(inserted.Key, frozen.BusinessKey);
+        Assert.Equal("fhir", frozen.ItemKind);
+        Assert.Equal(persistedRevision, frozen.ExpectedSourceRevision);
+        JiraProcessingSourceTicketRecord stored = Assert.IsType<JiraProcessingSourceTicketRecord>(
+            await fixture.SourceStore.GetByIdAsync(inserted.Id, CancellationToken.None));
+
+        JiraProcessingSourceTicketStore reopened = new(fixture.DatabasePath);
+        _ = new JiraProcessingSourceTicketStore(fixture.DatabasePath);
+        AuthoringRunStore reopenedAuthoring = new(fixture.SourceStoreConnection);
+        Assert.Equal(frozen, Assert.Single(await reopenedAuthoring.GetRunItemsAsync(creation.Run.Id)));
+        Assert.Equal(stored, await reopened.GetByIdAsync(stored.Id, CancellationToken.None));
+        using (SqliteConnection connection = fixture.SourceStoreConnection())
+        {
+            object?[][] before = ReadTypedRows(connection, "SELECT * FROM authoring_run_items ORDER BY RowId");
+            await JiraProcessingSourceTicketStore.EnsureCurrentSourceRevisionAsync(
+                connection, input.Key, "FHIR", frozen.ExpectedSourceRevision, CancellationToken.None);
+            if (!timestamped)
+            {
+                AuthoringConflictException conflict = await Assert.ThrowsAsync<AuthoringConflictException>(
+                    () => JiraProcessingSourceTicketStore.EnsureCurrentSourceRevisionAsync(
+                        connection, input.Key, "fhir", rawRevision, CancellationToken.None));
+                Assert.Equal(AuthoringConflictCode.SourceRevisionMismatch, conflict.Code);
+            }
+            AssertTypedRowsEqual(before, ReadTypedRows(connection, "SELECT * FROM authoring_run_items ORDER BY RowId"));
+        }
+
+        Assert.True(await reopenedAuthoring.TryAcquireMutationFenceAsync(
+            fixture.Coordinator.ProcessorKind, creation.Run.Id));
+        JiraAuthoringWorkItemStore workItems = new(reopenedAuthoring, reopened);
+        JiraAuthoringWorkItem item = Assert.Single(
+            await workItems.GetPendingAsync(creation.Run.Id, 10, CancellationToken.None));
+        Assert.Equal(stored, item.SourceTicket);
+        AuthoringQueueClaim claim = Assert.IsType<AuthoringQueueClaim>(
+            await workItems.TryClaimAsync(item, DateTimeOffset.UtcNow, CancellationToken.None));
+        AuthoringResultSubmission submission = new(
+            creation.Run.Id, item.RunItem.Id, claim.OperationId,
+            persistedRevision, AuthoringResultHasher.HashNormalizedUtf8("canonical payload"));
+        if (!timestamped)
+        {
+            using SqliteConnection connection = fixture.SourceStoreConnection();
+            IReadOnlyDictionary<string, object?[][]> before = ReadProtectedTables(connection);
+            AuthoringConflictException conflict = await Assert.ThrowsAsync<AuthoringConflictException>(
+                () => reopenedAuthoring.AcceptResultAsync(
+                    submission with { ObservedSourceRevision = rawRevision }, claim.OperationToken));
+            Assert.Equal(AuthoringConflictCode.SourceRevisionMismatch, conflict.Code);
+            AssertProtectedTablesEqual(before, ReadProtectedTables(connection));
+        }
+        AuthoringReceiptAcceptance accepted = await reopenedAuthoring.AcceptResultAsync(
+            submission, claim.OperationToken);
+        await workItems.ApplyResultAsync(
+            item, claim, AuthoringWorkResult.Complete(accepted.Receipt.ReceiptId),
+            DateTimeOffset.UtcNow, CancellationToken.None);
+
+        JiraProcessingSourceTicketRecord repeated = await reopened.UpsertAsync(
+            input with { Key = "fhIR-91" }, "FhIr", false, CancellationToken.None);
+        Assert.Equal(stored.Id, repeated.Id);
+        Assert.Equal(stored.RowId, repeated.RowId);
+        Assert.Equal(stored.Key, repeated.Key);
+        Assert.Equal(persistedRevision, JiraSourceRevision.Compute(repeated));
+        AuthoringRunItemRecord completed = Assert.Single(
+            await reopenedAuthoring.GetRunItemsAsync(creation.Run.Id));
+        Assert.Equal(frozen.BusinessKey, completed.BusinessKey);
+        Assert.Equal(frozen.ExpectedSourceRevision, completed.ExpectedSourceRevision);
+        Assert.Equal(accepted.Receipt.ReceiptId, completed.AcceptedReceiptId);
+        Assert.Equal(AuthoringStatusValues.Items.Complete, completed.Status);
+        using (SqliteConnection connection = fixture.SourceStoreConnection())
+        {
+            IReadOnlyDictionary<string, object?[][]> before = ReadProtectedTables(connection);
+            _ = new JiraProcessingSourceTicketStore(fixture.DatabasePath);
+            await JiraProcessingSourceTicketStore.EnsureCurrentSourceRevisionAsync(
+                connection, repeated.Key, repeated.SourceTicketShape,
+                completed.ExpectedSourceRevision, CancellationToken.None);
+            AssertProtectedTablesEqual(before, ReadProtectedTables(connection));
+        }
     }
 
     [Fact]
     public async Task ClaimAndReceiptDrivenCompletionUseRunItemState()
     {
-        using JiraAuthoringTestFixture fixture = new();
+        using AuthoringFixtureScope scope = new();
+        JiraAuthoringTestFixture fixture = scope.Fixture;
         await fixture.ActivateAsync();
         await fixture.SeedAsync(
             "FHIR-1",
@@ -104,7 +229,8 @@ public sealed class JiraAuthoringWorkItemStoreTests
     [Fact]
     public async Task ResetOrphanedItemsSupersedesClaimAndAllowsNewOperation()
     {
-        using JiraAuthoringTestFixture fixture = new();
+        using AuthoringFixtureScope scope = new();
+        JiraAuthoringTestFixture fixture = scope.Fixture;
         await fixture.ActivateAsync();
         await fixture.SeedAsync(
             "FHIR-1",
@@ -146,7 +272,8 @@ public sealed class JiraAuthoringWorkItemStoreTests
     [Fact]
     public async Task ResetOrphanedItems_UsesPostPersistenceLeaseAcquiredAt()
     {
-        using JiraAuthoringTestFixture fixture = new();
+        using AuthoringFixtureScope scope = new();
+        JiraAuthoringTestFixture fixture = scope.Fixture;
         await fixture.ActivateAsync();
         await fixture.SeedAsync(
             "FHIR-1",
@@ -228,7 +355,8 @@ public sealed class JiraAuthoringWorkItemStoreTests
     [Fact]
     public async Task PersistedReceiptResumesWithoutRelaunchingAuthoring()
     {
-        using JiraAuthoringTestFixture fixture = new();
+        using AuthoringFixtureScope scope = new();
+        JiraAuthoringTestFixture fixture = scope.Fixture;
         await fixture.ActivateAsync();
         await fixture.SeedAsync(
             "FHIR-1",
@@ -275,7 +403,8 @@ public sealed class JiraAuthoringWorkItemStoreTests
     [Fact]
     public async Task PersistedReceiptResume_DoesNotConsultLabelMatcher()
     {
-        using JiraAuthoringTestFixture fixture = new();
+        using AuthoringFixtureScope scope = new();
+        JiraAuthoringTestFixture fixture = scope.Fixture;
         await fixture.ActivateAsync();
         fixture.Options.Value.LabelsToInclude = ["cohort"];
         await fixture.SeedAsync(
@@ -343,7 +472,8 @@ public sealed class JiraAuthoringWorkItemStoreTests
     [Fact]
     public async Task LateOldClaimCannotFailReplacementOperation()
     {
-        using JiraAuthoringTestFixture fixture = new();
+        using AuthoringFixtureScope scope = new();
+        JiraAuthoringTestFixture fixture = scope.Fixture;
         await fixture.ActivateAsync();
         await fixture.SeedAsync(
             "FHIR-1",
@@ -395,7 +525,8 @@ public sealed class JiraAuthoringWorkItemStoreTests
     [Fact]
     public async Task LatePostPersistenceLeaseCannotCompleteReplacementLease()
     {
-        using JiraAuthoringTestFixture fixture = new();
+        using AuthoringFixtureScope scope = new();
+        JiraAuthoringTestFixture fixture = scope.Fixture;
         await fixture.ActivateAsync();
         await fixture.SeedAsync(
             "FHIR-1",
@@ -451,5 +582,69 @@ public sealed class JiraAuthoringWorkItemStoreTests
         Assert.Equal(AuthoringConflictCode.StaleOperation, conflict.Code);
         Assert.Equal(replacementLease.OperationId, current.PostPersistenceLeaseId);
         Assert.Equal(AuthoringStatusValues.Items.InProgress, current.Status);
+    }
+
+    private static IReadOnlyDictionary<string, object?[][]> ReadProtectedTables(SqliteConnection connection)
+    {
+        Dictionary<string, object?[][]> tables = [];
+        foreach (object?[] row in ReadTypedRows(
+                     connection,
+                     "SELECT name FROM sqlite_schema WHERE type = 'table' AND (name LIKE 'authoring_%' OR name = 'jira_processing_source_tickets') ORDER BY name"))
+        {
+            string name = Assert.IsType<string>(row[0]);
+            tables.Add(name, ReadTypedRows(connection, $"SELECT * FROM \"{name.Replace("\"", "\"\"")}\" ORDER BY 1"));
+        }
+        return tables;
+    }
+
+    private static void AssertProtectedTablesEqual(
+        IReadOnlyDictionary<string, object?[][]> expected,
+        IReadOnlyDictionary<string, object?[][]> actual)
+    {
+        Assert.Equal(expected.Keys, actual.Keys);
+        foreach ((string table, object?[][] rows) in expected)
+        {
+            AssertTypedRowsEqual(rows, actual[table]);
+        }
+    }
+
+    private static object?[][] ReadTypedRows(SqliteConnection connection, string sql)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = sql;
+        using SqliteDataReader reader = command.ExecuteReader();
+        List<object?[]> rows = [];
+        while (reader.Read())
+        {
+            rows.Add(Enumerable.Range(0, reader.FieldCount)
+                .Select(index => reader.IsDBNull(index) ? null : reader.GetValue(index)).ToArray());
+        }
+        return rows.ToArray();
+    }
+
+    private static void AssertTypedRowsEqual(object?[][] expected, object?[][] actual)
+    {
+        Assert.Equal(expected.Length, actual.Length);
+        for (int row = 0; row < expected.Length; row++)
+        {
+            Assert.Equal(expected[row].Length, actual[row].Length);
+            for (int column = 0; column < expected[row].Length; column++)
+            {
+                Assert.Equal(expected[row][column]?.GetType(), actual[row][column]?.GetType());
+                Assert.Equal(expected[row][column], actual[row][column]);
+            }
+        }
+    }
+
+    private sealed class AuthoringFixtureScope : IDisposable
+    {
+        public JiraAuthoringTestFixture Fixture { get; } = new();
+
+        // Connections are operation-scoped and non-pooled; clean only this
+        // fixture directory, not the shared fixture's process-global pools.
+        public void Dispose() => Directory.Delete(
+            Path.GetDirectoryName(Fixture.DatabasePath)
+                ?? throw new InvalidOperationException("The fixture has no parent directory."),
+            recursive: true);
     }
 }
