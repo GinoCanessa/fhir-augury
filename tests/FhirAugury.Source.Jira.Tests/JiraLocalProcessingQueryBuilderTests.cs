@@ -97,6 +97,38 @@ public class JiraLocalProcessingQueryBuilderTests
         Assert.Equal(2, parameters.Count(p => p.Value is string s && (s == "FHIR" || s == "XYZ")));
     }
 
+    [Theory]
+    [InlineData("Example\u0020Specification")]
+    [InlineData("Example\u00A0Specification")]
+    public void BuildListAndSelectionList_PreserveSpecificationWhitespaceInParameters(string specification)
+    {
+        JiraLocalProcessingListRequest listRequest = new() { Specifications = [specification] };
+        JiraLocalProcessingSelectionRequest selectionRequest = new()
+        {
+            Specifications = [specification],
+            LabelText = new JiraLabelTextFilter { Excludes = ["ex-01"] },
+        };
+
+        (string listSql, List<SqliteParameter> listParameters) =
+            JiraLocalProcessingQueryBuilder.BuildList(listRequest);
+        (string selectionSql, List<SqliteParameter> selectionParameters) =
+            JiraLocalProcessingQueryBuilder.BuildSelectionList(selectionRequest);
+
+        Assert.Contains("AND Specification IN (@p0)", listSql);
+        Assert.Equal(
+            specification,
+            Assert.IsType<string>(listParameters.Single(p => p.ParameterName == "@p0").Value),
+            StringComparer.Ordinal);
+        Assert.DoesNotContain(specification, listSql, StringComparison.Ordinal);
+
+        Assert.Contains("AND Specification IN (@p0)", selectionSql);
+        Assert.Equal(
+            specification,
+            Assert.IsType<string>(selectionParameters.Single(p => p.ParameterName == "@p0").Value),
+            StringComparer.Ordinal);
+        Assert.DoesNotContain(specification, selectionSql, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void BuildList_MultipleFacets_AreAndJoined()
     {
