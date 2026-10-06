@@ -212,7 +212,8 @@ endpoint, another service's database client, or a normal startup option.
 See `docs/technical/processors.md`, "Owner-controlled retained-state capture",
 for the owner attestation, clean-process driver, evidence and refusal rules.
 This operation does not authorize retained use by development tests or live
-activation. Rehearsal is future work, not an implemented verb.
+activation. `rehearse` consumes a completed, reverified capture and runs only
+the committed pre-host startup sequence on independently created copies.
 
 Direct invocation uses an already-built, pinned candidate DLL in an isolated
 checkout; it does not build or restore:
@@ -220,6 +221,7 @@ checkout; it does not build or restore:
 ```powershell
 dotnet $plannerDll retained-state --help
 dotnet $plannerDll retained-state capture --help
+dotnet $plannerDll retained-state rehearse --help
 dotnet $plannerDll retained-state capture `
     --database $databasePath `
     --pre-cutover-backup $backupPath `
@@ -233,6 +235,11 @@ dotnet $plannerDll retained-state capture `
     --candidate-commit $candidate `
     --candidate-tree $candidateTree `
     --confirm-owner-settings
+dotnet $plannerDll retained-state rehearse `
+    --bundle $bundle `
+    --output $rehearsal `
+    --candidate-commit $candidate `
+    --candidate-tree $candidateTree
 ```
 
 Every setting is explicit and owner-attested, not loaded from appsettings,
@@ -266,6 +273,25 @@ verified bundle read handles; mere marker existence is not proof. Preserve
 incomplete reports/raw evidence, never overwrite/reuse a bundle, and never
 publish the sensitive typed inventories.
 
+Rehearsal accepts **only** its four options above. Use the same source labels
+and actual assembly/dependency/runtime fingerprints as capture, with no
+intervening rebuild and a new disjoint output (normally `rehearsal-1`).
+Original paths are opaque provenance, not rehearsal I/O destinations. The
+verified bundle remains read-locked; mutable work starts from raw DB/WAL,
+never the normalized safety copy, and regenerates only work-local SHM.
+Every stage has typed evidence and an executable, pre-stage delta check.
+There is no host, configuration load, worker, network call or original-path
+probe. The recorded activation setting is not an override opportunity.
+
+For rehearsal, exit `0` requires `passed` / `complete` / `passed`;
+exit `20` requires `blocked` / `complete` / `guarded-refusal` and a proven
+named existing guard. `schema-admission-refused`, `backup-hash-mismatch`,
+`backup-missing-or-invalid`, `missing-revalidation-source` and
+`unknown-processor-mode` are the only such guards. Other failures are
+incomplete and nonzero. A refusal never runs the second pass or authorizes
+repair/activation. Inspect `rehearsal.result.json`, checkpoint/delta catalogs
+and (for a mismatch) the separately regenerated diagnostic backup evidence.
+
 Focused Phase 3 verification uses the existing xUnit/VSTest runner:
 
 ```powershell
@@ -273,7 +299,14 @@ dotnet test tests\FhirAugury.Processor.Jira.Fhir.Planner.Tests --filter "FullyQu
 ```
 
 The prefix covers `PlannerRetainedStateCommandTests` and
-`PlannerRetainedStateCaptureTests`. Run from the isolated candidate checkout
+`PlannerRetainedStateCaptureTests`, plus `PlannerRetainedStateRehearsalTests`.
+Phase 4's exact combined regression command is:
+
+```powershell
+dotnet test tests\FhirAugury.Processor.Jira.Fhir.Planner.Tests --filter "FullyQualifiedName~PlannerRetainedState|FullyQualifiedName~PlannerPersistenceTests|FullyQualifiedName~PlannerCutoverTests"
+```
+
+Run from the isolated candidate checkout
 only after copying the literal owned candidate files, comparing their
 SHA256 identities, and confirming no unowned tracked changes. Synthetic
 fixtures have unique short roots and non-pooled connections; never use a

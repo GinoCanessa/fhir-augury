@@ -92,6 +92,61 @@ internal sealed record PlannerRetainedStateCompletion(
     string ManifestSha256, IReadOnlyList<PlannerRetainedEvidenceFile> Files,
     IReadOnlyList<string> Directories, IReadOnlyList<PlannerRetainedBinary> Binaries);
 
+internal sealed record PlannerRetainedRehearsalRequest(
+    string Bundle, string Output, string CandidateCommit, string CandidateTree);
+
+internal sealed record PlannerRetainedRehearsalMap(
+    string Database, string? PreCutoverBackup, string Snapshots, string Temp,
+    IReadOnlyList<PlannerRetainedRehearsalArtifact> Artifacts);
+
+internal sealed record PlannerRetainedRehearsalArtifact(
+    string ArtifactId, string Path, string Disposition, long Length, string Sha256);
+
+internal sealed record PlannerRetainedRehearsalDelta(
+    string Table, string Rule, string Status, long BeforeRows, long AfterRows,
+    PlannerRetainedRows? Before, PlannerRetainedRows? After, PlannerRetainedRows? Expected);
+
+internal sealed record PlannerRetainedRehearsalCheckpoint(
+    string Name, string Status, DateTimeOffset StartedAt, DateTimeOffset FinishedAt,
+    string? Previous, PlannerRetainedDatabaseInventory Inventory,
+    IReadOnlyList<PlannerRetainedRehearsalDelta> Deltas, string DeltaDetails);
+
+internal sealed record PlannerRetainedRehearsalStage(
+    int Pass, string Name, string Status, string? Checkpoint, string? Category);
+
+internal sealed record PlannerRetainedRehearsalGuard(
+    string Name, string Source, string BeforeCheckpoint, string FailureCheckpoint,
+    string Facts, PlannerRetainedEvidenceFile? PreservedBackup,
+    string? BackupMode, PlannerRetainedEvidenceFile? RegeneratedCandidate,
+    string? CandidateAuthority);
+
+internal sealed record PlannerRetainedRehearsalPreservation(
+    string CaptureOriginals, string Bundle, string CopiedArtifacts,
+    IReadOnlyList<PlannerRetainedRehearsalArtifact> Artifacts,
+    IReadOnlyList<PlannerRetainedEvidenceFile> NewWorkFiles);
+
+internal sealed record PlannerRetainedRehearsalResult(
+    int FormatVersion, string Status, string EvidenceStatus, string StartupOutcome, string? GuardName,
+    string CandidateCommit, string CandidateTree, string CaptureManifestSha256,
+    IReadOnlyList<PlannerRetainedBinary> Binaries, PlannerRetainedStateSettings CapturedSettings,
+    PlannerRetainedRehearsalMap PathMap, PlannerRetainedDatabaseInventory Baseline,
+    IReadOnlyList<PlannerRetainedRehearsalStage> Stages,
+    IReadOnlyList<PlannerRetainedRehearsalCheckpoint> Checkpoints,
+    PlannerRetainedRehearsalGuard? Guard, PlannerRetainedRehearsalPreservation Preservation,
+    IReadOnlyList<PlannerRetainedEvidenceFile> EvidenceFiles, string? FailureCategory,
+    string? FailureDetail)
+{
+    [JsonIgnore]
+    internal int ExitCode => (Status, EvidenceStatus, StartupOutcome, GuardName) switch
+    {
+        ("passed", "complete", "passed", null) when Guard is null => 0,
+        ("blocked", "complete", "guarded-refusal",
+            "schema-admission-refused" or "backup-hash-mismatch" or "backup-missing-or-invalid" or
+            "missing-revalidation-source" or "unknown-processor-mode") when Guard?.Name == GuardName => 20,
+        _ => 1,
+    };
+}
+
 internal sealed class PlannerRetainedVerifiedCapture(
     PlannerRetainedStateManifest manifest, PlannerRetainedStateCompletion completion, List<IDisposable> handles)
     : IDisposable

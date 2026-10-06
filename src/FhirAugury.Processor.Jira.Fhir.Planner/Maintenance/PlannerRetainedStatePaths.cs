@@ -145,6 +145,152 @@ internal sealed class PlannerRetainedStatePaths : IDisposable
 
     internal static PlannerRetainedStatePaths Admit(PlannerRetainedStateSettings settings) => new(settings);
 
+    // This context owns OUTPUT only. In particular it must not call Admit, Map,
+    // Enumerate or Absolute on any captured original path, even an absent one.
+    private PlannerRetainedStatePaths(string bundle, string output, PlannerRetainedStateManifest manifest)
+    {
+        try
+        {
+            if (!OperatingSystem.IsWindows() || RuntimeInformation.ProcessArchitecture != Architecture.X64)
+            {
+                throw Refuse("unsupported-platform-file-identity");
+            }
+            bundle = Absolute(bundle);
+            Bundle = Absolute(output);
+            Roots = [];
+            SettingsPaths = manifest.SettingsPaths;
+            if (Path.GetDirectoryName(Bundle)!.Length > 60)
+            {
+                throw Refuse("path-budget-exceeded");
+            }
+            if (Overlaps(bundle, Bundle) || manifest.Roots.Any(root =>
+                    Overlaps(AbsoluteSyntax(root.OriginalDirectory), Bundle)))
+            {
+                throw Refuse("overlapping-roots");
+            }
+            foreach (string binaryRoot in new[]
+            {
+                Path.GetDirectoryName(typeof(PlannerRetainedStatePaths).Assembly.Location)!,
+                Path.GetDirectoryName(typeof(object).Assembly.Location)!,
+                Path.GetDirectoryName(typeof(Microsoft.AspNetCore.Builder.WebApplication).Assembly.Location)!,
+            })
+            {
+                if (Overlaps(binaryRoot, Bundle))
+                {
+                    throw Refuse("overlapping-roots");
+                }
+            }
+            PinAncestors(bundle);
+            PinDirectory(bundle);
+            PinAncestors(Bundle);
+            if (TryAttributes(Bundle, out _))
+            {
+                throw Refuse("destination-exists");
+            }
+            if (!TryAttributes(Path.GetDirectoryName(Bundle)!, out FileAttributes parent) ||
+                !parent.HasFlag(FileAttributes.Directory))
+            {
+                throw Refuse("evidence-parent-missing");
+            }
+
+            HashSet<string> files = new(StringComparer.OrdinalIgnoreCase);
+            foreach (PlannerRetainedArtifact artifact in manifest.Artifacts)
+            {
+                string work = Work(new(artifact.RootId, artifact.RelativePath, true));
+                if (!files.Add(work))
+                {
+                    throw Refuse("output-map-alias");
+                }
+                foreach (string suffix in SqliteSuffixes.Prepend("").Append(".owner.lock"))
+                {
+                    Budget(work + suffix);
+                }
+            }
+            foreach (PlannerRetainedDirectory directory in manifest.Directories)
+            {
+                string work = Work(new(directory.RootId, directory.RelativePath, true));
+                if (files.Contains(work) || files.Any(file => Contains(file, work)))
+                {
+                    throw Refuse("output-map-alias");
+                }
+                Budget(work);
+            }
+            if (files.Any(file => files.Any(other => !SamePath(file, other) && Contains(file, other))))
+            {
+                throw Refuse("output-map-alias");
+            }
+            string database = Work(SettingsPaths.Database);
+            OwnerLockPath = database + ".owner.lock";
+            Budget(OwnerLockPath);
+            if (files.Contains(OwnerLockPath))
+            {
+                throw Refuse("output-map-alias");
+            }
+            PlannerRetainedArtifact input = manifest.Artifacts.Single(artifact =>
+                artifact.RootId == SettingsPaths.Database.RootId &&
+                artifact.RelativePath == SettingsPaths.Database.RelativePath);
+            DatabaseIdentity = InspectFile(Under(bundle, input.RawPath));
+            if (SettingsPaths.PreCutoverBackup is { } backup)
+            {
+                string work = Work(backup);
+                if (backup.RelativePath.Length == 0 || SamePath(work, database) || SamePath(work, OwnerLockPath) ||
+                    SqliteSuffixes.Any(suffix => SamePath(work, database + suffix)) ||
+                    files.Contains(work + ".owner.lock") || manifest.Directories.Any(directory =>
+                        SamePath(work, Work(new(directory.RootId, directory.RelativePath, true)))))
+                {
+                    throw Refuse("output-map-alias");
+                }
+                foreach (string suffix in SqliteSuffixes.Prepend(""))
+                {
+                    Budget(work + suffix);
+                    Budget(work + "." + new string('0', 32) + ".tmp" + suffix);
+                }
+            }
+            string snapshot = Work(SettingsPaths.Snapshots);
+            if (files.Contains(snapshot) || files.Any(file => Contains(file, snapshot)) ||
+                Contains(OwnerLockPath, snapshot) ||
+                (SettingsPaths.PreCutoverBackup is { } mappedBackup && Contains(Work(mappedBackup), snapshot)))
+            {
+                throw Refuse("output-map-alias");
+            }
+            foreach (string suffix in SqliteSuffixes.Prepend(""))
+            {
+                Budget(snapshot + "/jira-fhir-" + new string('0', 32) + ".db.tmp" + suffix);
+                Budget(InBundle("diagnostics/cutover-candidate.db") + suffix);
+                Budget(InBundle("checkpoints/pass2-post-initialization/state.db") + suffix);
+            }
+            foreach (string name in new[]
+            {
+                "temp", "rehearsal.started.json", "rehearsal.result.json",
+                "checkpoints/pass2-post-initialization/inventory/t000000-index000000.rows",
+                "checkpoints/pass2-post-initialization/expected/t000000.rows",
+                "checkpoints/pass2-post-initialization/deltas.ndjson",
+                "checkpoints/pass2-post-initialization/checkpoint.json",
+                "checkpoints/pass2-first-open/direct/database.rows",
+            })
+            {
+                Budget(InBundle(name));
+            }
+
+            string Work(PlannerRetainedPath map)
+            {
+                if (!manifest.Roots.Any(root => root.Id == map.RootId))
+                {
+                    throw Refuse("unmapped-retained-path");
+                }
+                return Under(Bundle, ("work/" + map.RootId + "/" + map.RelativePath).TrimEnd('/'));
+            }
+        }
+        catch
+        {
+            Dispose();
+            throw;
+        }
+    }
+
+    internal static PlannerRetainedStatePaths AdmitRehearsal(
+        string bundle, string output, PlannerRetainedStateManifest manifest) => new(bundle, output, manifest);
+
     internal PlannerRetainedPath Map(string original, bool existed)
     {
         original = Absolute(original);

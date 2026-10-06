@@ -20,12 +20,18 @@ internal static class PlannerRetainedStateCommand
           --candidate-commit <40-hex> --candidate-tree <40-hex>
           [--retained-root <absolute-Planner-owned-directory>]...
           --confirm-owner-settings
+        retained-state rehearse
+          --bundle <verified-capture-directory> --output <new-absolute-directory>
+          --candidate-commit <40-hex> --candidate-tree <40-hex>
         retained-state --help
         retained-state capture --help
+        retained-state rehearse --help
         Settings are owner-attested, not discovered from service configuration.
-        No host, initialization, recovery, activation, workers, or network.
+        Capture never initializes originals. Rehearsal runs startup on independent copies only.
+        No host, workers, network, or original-path access during rehearsal.
         Exit codes: 0 verified/help; 2 arguments; 20 safety refusal; 1 error/mismatch/cancellation.
-        Retain incomplete evidence. Never reuse a bundle. Rehearsal is not implemented here.
+        Rehearsal 20 is complete evidence only for a proven named guard, never startup approval.
+        Retain incomplete evidence. Never reuse a bundle or rehearsal output.
         """;
 
     internal static async Task<int?> TryRunAsync(string[] args)
@@ -35,16 +41,25 @@ internal static class PlannerRetainedStateCommand
             return null;
         }
 
-        if (args is ["retained-state", "--help"] or ["retained-state", "capture", "--help"])
+        if (args is ["retained-state", "--help"] or ["retained-state", "capture", "--help"] or
+            ["retained-state", "rehearse", "--help"])
         {
             Console.Out.WriteLine(Help);
             return 0;
         }
 
-        PlannerRetainedStateSettings settings;
+        PlannerRetainedStateSettings? settings = null;
+        PlannerRetainedRehearsalRequest? rehearsal = null;
         try
         {
-            settings = Parse(args);
+            if (args.Length > 1 && args[1] == "rehearse")
+            {
+                rehearsal = ParseRehearsal(args);
+            }
+            else
+            {
+                settings = Parse(args);
+            }
         }
         catch (ArgumentException)
         {
@@ -61,24 +76,32 @@ internal static class PlannerRetainedStateCommand
         Console.CancelKeyPress += handler;
         try
         {
-            await new PlannerRetainedStateCapture().CaptureAsync(settings, cancellation.Token, configureProcessTemp: true);
+            if (rehearsal is not null)
+            {
+                PlannerRetainedRehearsalResult result = await new PlannerRetainedStateRehearsal()
+                    .RehearseAsync(rehearsal, cancellation.Token, configureProcessTemp: true);
+                Console.Out.WriteLine($"retained-state rehearse: {result.Status}; evidence {result.EvidenceStatus}; " +
+                    $"startup {result.StartupOutcome}. Live activation unverified.");
+                return result.ExitCode;
+            }
+            await new PlannerRetainedStateCapture().CaptureAsync(settings!, cancellation.Token, configureProcessTemp: true);
             Console.Out.WriteLine("retained-state capture: complete. Live activation unverified.");
             return 0;
         }
         catch (PlannerRetainedStateException ex)
         {
             Console.Error.WriteLine($"retained-state {ex.Stage}: {ex.Category}.");
-            return ex.ExitCode;
+            return rehearsal is null ? ex.ExitCode : 1;
         }
         catch (OperationCanceledException)
         {
-            Console.Error.WriteLine("retained-state capture: cancelled; evidence incomplete.");
+            Console.Error.WriteLine("retained-state: cancelled; evidence incomplete.");
             return 1;
         }
         catch (Exception)
         {
             // Payloads, connection strings and ambient configuration never go to the console.
-            Console.Error.WriteLine("retained-state capture: unexpected-error; evidence incomplete.");
+            Console.Error.WriteLine("retained-state: unexpected-error; evidence incomplete.");
             return 1;
         }
         finally
@@ -167,4 +190,29 @@ internal static class PlannerRetainedStateCommand
     }
 
     internal static bool IsObjectId(string value) => value.Length == 40 && value.All(Uri.IsHexDigit);
+
+    internal static PlannerRetainedRehearsalRequest ParseRehearsal(string[] args)
+    {
+        string[] names = ["--bundle", "--output", "--candidate-commit", "--candidate-tree"];
+        if (args.Length != 10 || args[0] != "retained-state" || args[1] != "rehearse")
+        {
+            throw new ArgumentException("Expected only the four rehearsal options.");
+        }
+        Dictionary<string, string> values = new(StringComparer.Ordinal);
+        for (int index = 2; index < args.Length; index += 2)
+        {
+            if (!names.Contains(args[index], StringComparer.Ordinal) ||
+                string.IsNullOrWhiteSpace(args[index + 1]) || args[index + 1].StartsWith("--", StringComparison.Ordinal) ||
+                !values.TryAdd(args[index], args[index + 1]))
+            {
+                throw new ArgumentException("Invalid or duplicate rehearsal option.");
+            }
+        }
+        if (!IsObjectId(values["--candidate-commit"]) || !IsObjectId(values["--candidate-tree"]))
+        {
+            throw new ArgumentException("Full source identities are required.");
+        }
+        return new(values["--bundle"], values["--output"],
+            values["--candidate-commit"].ToLowerInvariant(), values["--candidate-tree"].ToLowerInvariant());
+    }
 }

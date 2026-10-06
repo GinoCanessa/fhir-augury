@@ -270,8 +270,9 @@ storage. Actual retained capture requires a separate owner confirmation of
 every effective setting. No retained capture or live activation is claimed
 by implementing or testing the command. The ordered startup gates above are
 adoption criteria for a later separately authorized live operation, not
-automatic actions after capture. The `rehearse` verb and startup checkpoint
-classifier are future work; this version refuses that verb with exit 2.
+automatic actions after capture. The separate `rehearse` verb below consumes
+only verified capture input and independent mutable copies. It does not
+authorize live startup or resolve a guard refusal.
 
 **A — Pin the candidate and keep outputs isolated.** The stage owner freezes
 the committed candidate and tree, verifies the complete candidate path scope
@@ -464,14 +465,127 @@ in an untrusted/non-admitted destination. Never reuse a destination or delete
 failed evidence as a retry strategy. Detailed reports and typed inventories
 are sensitive local owner data: protect them, never stage or publish them.
 
-**D — Rehearsal remains a separate future operation.** A completed capture is
-not initialization, cutover, startup eligibility or authority to start Aspire.
-The future host-free rehearsal consumes only this verified bundle, the same
-candidate/binary fingerprints and a new disjoint mutable output root. It must
-start from raw DB/WAL with regenerated SHM, preserve the configured backup's
-exact bytes, and distinguish initializer, recovery and cutover checkpoints.
-No Phase 3 result claims that operation ran or that live deployment, background
-work eligibility, serving state or retained incident recovery was verified.
+**D — Rehearse in a separate clean process.** Do not rebuild between capture
+and rehearsal. Set `$rehearsal = Join-Path $caseRoot 'rehearsal-1'`; this must
+be a new disjoint directory, not a reused experiment. No original paths,
+configuration, branch overrides or repair options are accepted:
+
+```powershell
+$rehearsalArguments = @(
+    'retained-state', 'rehearse',
+    '--bundle', $bundle,
+    '--output', $rehearsal,
+    '--candidate-commit', $candidate,
+    '--candidate-tree', $candidateTree
+)
+$rehearsalExit = Invoke-PlannerRetainedState -TemporaryRoot (Join-Path $rehearsal 'temp') -ToolArguments $rehearsalArguments -AllowedExitCodes @(0, 20)
+$result = Get-Content -LiteralPath (Join-Path $rehearsal 'rehearsal.result.json') -Raw | ConvertFrom-Json
+$namedGuards = @(
+    'schema-admission-refused', 'backup-hash-mismatch', 'backup-missing-or-invalid',
+    'missing-revalidation-source', 'unknown-processor-mode'
+)
+$passed = $rehearsalExit -eq 0 -and $result.status -eq 'passed' -and $result.startupOutcome -eq 'passed'
+$refused = $rehearsalExit -eq 20 -and $result.status -eq 'blocked' -and
+    $result.startupOutcome -eq 'guarded-refusal' -and $result.guardName -in $namedGuards
+if ($result.formatVersion -ne 1 -or $result.evidenceStatus -ne 'complete' -or
+    (-not $passed -and -not $refused) -or
+    $result.candidateCommit -ne $candidate -or
+    $result.candidateTree -ne $candidateTree -or
+    $result.captureManifestSha256 -ne $captureProof.manifestSha256) {
+    throw 'Incomplete or unclassified rehearsal evidence; stop without repair or activation.'
+}
+if ($passed) {
+    Write-Output "Offline evidence complete; rehearsal passed. Live activation unverified. Evidence: $caseRoot"
+}
+else {
+    Write-Output "Offline evidence complete; activation blocked by $($result.guardName). Evidence: $caseRoot"
+}
+```
+
+The command revalidates and holds the bundle's read handles through result
+publication and checks the complete executed binary/dependency/runtime catalog.
+Source labels alone are insufficient. Original absolute strings remain opaque:
+even existence, drive-type checks and enumeration are prohibited on them.
+The output-only path context reuses the physical identity, ancestor pins,
+expanded path budgets, disjointness and create-new guards without manufacturing
+capture settings or admitting original roots.
+
+`work/` recreates the captured root/relative layout in independently allocated
+files. The mutable database starts from **raw DB/WAL**, not `safety/planner.db`.
+Captured SHM stays only in the bundle; every working family regenerates its
+own SHM. Existing backup, snapshot, descriptor and other retained bytes are
+protected and compared; absent-backup simulation and new sidecars are cataloged
+separately. Nothing rewrites persisted snapshot paths to relocate them.
+
+One `PlannerDatabase` owner is retained from `AcquireStartupOwnership` through
+first-open validation, `Initialize`, `RecoverInterruptedMaintenanceLeasesAsync`
+and the captured activation/mode branch. First-open uses an ordinary
+non-immutable, non-pooled ReadOnly connection with `query_only=ON` and
+`trusted_schema=OFF`, not the owner's WAL-setting `OpenConnection`. It compares
+every typed row and schema/index definition with the capture inventory and
+requires unchanged DB/WAL bytes before closing that reader, not the owner.
+The SQLite backup destination's schema cookie is physical header metadata,
+recorded separately from logical equality. A discrepancy is incomplete
+`wal-materialization-divergence`, never a successful schema refusal.
+When an ordinary ReadOnly open finds a WAL-mode header but no captured WAL,
+SQLite can create a zero-length copy-local WAL along with SHM. The result
+records that new empty sidecar explicitly, not as regenerated captured WAL
+content. Existing DB/WAL bytes must still be identical; any new WAL frames,
+removed captured WAL or changed bytes fail the first-open check.
+
+Each reached boundary has a create-new, standalone committed-state checkpoint,
+complete streamed typed inventory, per-table expected/actual catalog and
+streamed cell-delta details. The classifier's schema catalog and row predicates
+are declarative; it does **not** obtain an expected result by initializing
+another database or excluding entire authoring tables:
+
+Typed comparisons stream arbitrarily large ordinary values in chunks.
+Classifier coordinates are bounded to 64 KiB per scalar; graph-hash text
+normalization is bounded to 16 Mi UTF-16 units per scalar and streamed across
+rows rather than collecting a whole graph. An unsupported policy scalar
+leaves evidence incomplete; it is not omitted or treated as equal.
+
+| Boundary | Copy-only permitted delta |
+|-|-|
+| Initialization | Exact existing additive columns/defaults, owner table/index/trigger definitions and the recognized source index replacement. Old source, graph, receipt, epoch and identity values remain equal. |
+| Purpose backfills | Ordered existing predicates only: authoring → grouping-maintenance for database-only, nonempty all-complete maintenance membership; then remaining authoring → initial-revalidation for mode/lineage-linked runs. All other run fields remain equal. |
+| Recovery | Only `jira-fhir` fences matched by the owner's old-maintenance-generation predicate. Its actual process generation is observed read-only; no generation is invented or written. Authoring, revalidation and current-generation fences remain. |
+| Missing mode | Precisely legacy/epoch zero/no required revalidation/no run, with its actual timestamp. This can commit before refusal. |
+| Activation | Exact coordinator/participant classification and legacy coordinate recapture, epoch +1, and exact initial-revalidation membership/revisions with fresh simulation IDs. Current receipt-backed state and all old graph/source/receipt values are preserved. No accepted receipt is created. |
+| Refusal | Earlier committed initialization/recovery and any legitimate missing-mode/cutting-over commit remain visible. Participant rollback is not reported as all-startup rollback. |
+| Already run-backed / disabled | The recorded branch, with no fresh epoch/run/receipt allocation and no invented requirement to match an historic backup against the current database. |
+
+Pure existing plan, hydration and grouping read APIs are followed by another
+inventory equality check. No provenance-writing partition getter, snapshot
+generation, scheduling, source fetch, receipt submission, host or worker runs.
+After a passing first sequence, ownership closes and the **same mutable copy**
+is reopened for the second sequence, with independent checkpoints and no
+repeated allocation. There is no second pass after refusal.
+
+`rehearsal.result.json` separates `evidenceStatus` from `startupOutcome`.
+Only the exact combinations checked by the driver complete offline evidence.
+A named guard requires its actual throwing owner method and independently
+checked pre-stage/failure facts, not a matching message substring. Source
+admission proof uses only the unchanged transaction-free admission readers on
+the frozen pre-stage snapshot; it never reruns initialization. A backup hash
+mismatch additionally records the unchanged backup hash/size/mode and a
+**separately regenerated** `BackupDatabase` candidate from the frozen failure
+checkpoint. This diagnostic is not the coordinator's discarded temporary
+file. Activation is not invoked again, and the configured backup is not
+substituted, omitted, normalized or repaired. Diagnostic failure leaves
+evidence incomplete.
+
+Cancellation, path/materialization/ownership failure, an unknown exception,
+an unexplained delta or failed evidence verification are incomplete and
+nonzero; mere exit 20 from a preflight failure is never completion. Preserve
+every failed output. A classified refusal completes evidence collection only
+and remains an activation blocker requiring a separate owner-authorized plan.
+
+No actual effective-settings attestation, retained capture or retained
+rehearsal is claimed by these synthetic tooling tests. Live deployment,
+automatic-work eligibility, serving state and retained incident recovery
+remain unverified. The procedure deliberately ends without Aspire startup,
+original-state mutation or evidence cleanup.
 
 #### Rollback of the schema compatibility change
 
