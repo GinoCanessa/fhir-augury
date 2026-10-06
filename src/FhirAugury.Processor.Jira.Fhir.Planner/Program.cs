@@ -20,6 +20,13 @@ using FhirAugury.Processor.Jira.Fhir.Planner.Processing;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Options;
 
+int? retainedStateExitCode = await FhirAugury.Processor.Jira.Fhir.Planner.Maintenance.PlannerRetainedStateCommand.TryRunAsync(args);
+if (retainedStateExitCode is int exitCode)
+{
+    Environment.ExitCode = exitCode;
+    return;
+}
+
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
 builder.Configuration

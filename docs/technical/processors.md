@@ -62,6 +62,433 @@ blocked until initial revalidation succeeds. If source revisions change, the
 processor replaces the revalidation run while retaining unchanged accepted
 provenance in the logical revalidation corpus.
 
+### Source-ticket schema compatibility
+
+Planner and Preparer share the `JiraProcessingSourceTicketStore` bootstrap for
+`jira_processing_source_tickets`. Compatibility is schema-only and deliberately
+bounded, not universal support for historical database schemas. For an existing
+supported table, only these missing columns are added, before generated
+table/index creation:
+
+| Column | Permitted addition |
+|-|-|
+| `Specification` | `TEXT NOT NULL DEFAULT ''` |
+| `SourceProjectLastSuccessfulRefreshAt` | `TEXT NULL` |
+| `SourceContentRevision` | `INTEGER NULL` |
+| `CompletionId` | `TEXT NULL` |
+
+Historical rows receive SQL `NULL` for a newly added `CompletionId`, including
+already-complete tickets. No completion GUID or authoring receipt is
+fabricated. The bootstrap preserves existing completion IDs and all other
+pre-existing values, including identities, content, processing states,
+timestamps, errors, source revisions/provenance, and relationships.
+
+Admission requires the current read/insert schema contract:
+
+- `RowId` must be an automatically generated SQLite **rowid alias** because
+  current inserts omit it. Integer affinity alone is insufficient:
+  `INT PRIMARY KEY`, `WITHOUT ROWID`, and the non-alias
+  `INTEGER PRIMARY KEY DESC` form are refused.
+- `Id` must be non-null with non-partial, single-column uniqueness that
+  guarantees uniqueness under the column's actual equality semantics for
+  unqualified `WHERE Id = @Id` lookups. An `Id COLLATE NOCASE` column with only
+  a unique BINARY index does not meet that contract.
+- All non-additive current fields must already exist, including `ErrorMessage`,
+  `AgentExitCode`, and `ErrorOccurredAt`. Existing columns, including any
+  already-present additions above, must have compatible text/integer affinities
+  and nullability for current reads and inserts. Additional columns/indexes are
+  admitted only when they preserve that contract; they are not repaired or
+  removed. A view or another object occupying the table name is not a fresh
+  database.
+
+Business-key uniqueness is exactly
+`(Key COLLATE NOCASE, SourceTicketShape COLLATE NOCASE)` across **all shapes**,
+not just FHIR. For retained rows identified by
+`LOWER(TRIM(SourceTicketShape)) = 'fhir'`, the stored shape must be exactly
+`fhir` and the key must equal SQLite `UPPER(Key)` byte for byte. Even a lone,
+collision-free noncanonical FHIR row refuses startup. Table and retained-identity
+checks run before source-ticket DDL. Unsupported contracts, conflicting
+identities, and noncanonical retained FHIR identities are diagnosed and refused,
+not reconciled. Startup does not select a winning duplicate, delete tickets,
+reset processing, or rewrite identities.
+No identity-reconciliation utility is supplied; this refusal can cost
+availability and must not be bypassed with automatic cleanup.
+
+The managed `idx_jira_processing_source_tickets_key_shape` index must be unique,
+non-partial, and contain exactly the ordinary column terms `Key` then
+`SourceTicketShape`, both with NOCASE collation. A correct definition, including
+descending terms, is preserved, as are compatible unrelated indexes/objects.
+An absent managed index is created. The **only** replacement allowed is the
+recognized old unique, non-partial, ascending two-column BINARY/BINARY
+definition in that same order. Other definitions or ownership/name conflicts
+are refused, never dropped merely because the name looks managed. The
+completion index must cover the actual `CompletionId` column, not a constant
+expression; an incompatible obstruction is refused rather than silently
+declared repaired.
+
+The shared schema operation reserves the writer with `BEGIN IMMEDIATE`
+**before** metadata inspection and retained-row scans, then commits its schema
+changes together or rolls them back on failure. Scans, repeated construction,
+and any old-index replacement add real writer contention even when little or
+no DDL is needed; there is no benchmarked latency or zero-cost promise. This is
+**source-table-local atomicity**, not an all-owner startup transaction. WAL
+setup, other owner migrations, maintenance recovery, and authoring cutover are
+outside it. A later startup refusal can leave an earlier successful schema
+upgrade committed.
+
+#### New keys and source revisions
+
+Only newly inserted FHIR keys are converted to uppercase with SQLite-equivalent
+ASCII semantics. This does not trim keys, introduce Unicode/culture-dependent
+folding, or change non-FHIR keys. An upsert of an existing row retains its
+`RowId`, `Id`, `Key`, and `SourceTicketShape`; existing frozen receipts are not
+rewritten. The returned record carries the key actually stored, and new
+authoring coordinates must use that record rather than the incoming DTO.
+Ordinary completion, error, and reset behavior is unchanged.
+
+With `LastUpdated`, source revisions remain timestamp-based. Without it,
+`JiraSourceRevision` hashes the fields including the **persisted key**.
+`OrchestratorHydrationFetcher.FetchPublicationMetadataAsync` instead computes
+the observed revision using the external response's raw `item.Id`. A
+mixed-case upstream ID can therefore produce a different no-timestamp hash
+even when the other fields match. Publication verification must retain the
+strict `SourceRevisionMismatch` refusal, without a new publication receipt or
+partial metadata apply. Canonical source IDs with matching fields and valid
+provenance remain the successful path. Do not change the general hasher, accept
+case-different field hashes as equivalent, or rewrite historical receipts or
+provenance to hide the conflict. This accepted limitation is especially
+relevant to Preparer publication verification; it is not an observed cause of
+the Planner missing-`CompletionId` startup failure.
+
+#### Safe retained Planner startup
+
+The following gates are ordered prerequisites, not authorization for ad-hoc
+database access. Obtain retained-state evidence through the owning
+processor/operator's authorized preservation procedure. Development fixtures
+and probes must never open user-owned retained storage, and another service
+must not inspect the database directly. Synthetic test success proves code
+behavior, not safe deployment or preservation of the actual retained state.
+
+1. **Identify the launch and candidate outputs.** Follow the existing Aspire
+   guidance and discover the current AppHost, explicit-start Planner resource,
+   available resource command, endpoints, state, and logs. Do not reuse an old
+   resource suffix or guess command arguments. Establish the effective working
+   directory, `Processing:DatabasePath`, pre-cutover backup and snapshot paths,
+   and relevant local/environment overrides. Verify the actual launch command
+   and the candidate binaries selected by an existing `--no-build` launch;
+   passing tests in another output tree does not update those outputs. If a
+   sanctioned scoped build is needed, use the documented `AGENTS.md` build
+   form for the inspected Planner project only after **all transitive
+   outputs** are known to be free. If launch outputs cannot be updated safely,
+   stop and report the environmental blocker. Do not copy DLLs over held
+   outputs, invent output-redirection switches, or stop unrelated services.
+2. **Establish a recoverable retention baseline.** Have an authorized,
+   consistent, owner-controlled safety copy separate from the configured
+   pre-cutover backup. Inventory the complete retained database schema,
+   identities, typed values, and relationships, plus byte/hash or manifest
+   inventories for backups, snapshots, descriptors, and other immutable
+   artifacts. Counts alone are insufficient. Working database bytes naturally
+   change with DDL/WAL setup; preserve and compare values/relationships rather
+   than requiring its old file hash to remain equal. Never overwrite, consume,
+   replace, reset, or stage retained storage or the existing pre-cutover file.
+   Never naively copy a live SQLite file without accounting for open owners
+   and WAL/journal state. Use the explicit owner-controlled `retained-state
+   capture` operation below, with the owner's attested paths/settings and a
+   pinned isolated candidate. A failed/incomplete capture stops this gate;
+   it is not permission to checkpoint or repair an original.
+3. **Rehearse on an isolated retained copy.** Through that authorized
+   procedure, exercise owner initialization and the actual recovery/cutover
+   branch with the same candidate and effective configuration branch. Use no
+   service host, hosted workers, network calls, or access to original paths.
+   Compare all retained values/relationships and immutable artifacts. Separate
+   expected additive schema defaults from the cutover's permitted metadata
+   transitions; the shared transaction does not make the whole rehearsal
+   atomic. Synthetic fixtures, including populated fixtures, do not substitute
+   for this retained-copy evidence.
+4. **Establish ownership and cutover eligibility.** No competing owner may
+   hold the Planner database. Preserve the existing mode-specific guards:
+   - In `legacy`, activation creates/verifies a candidate backup. An existing
+     configured backup must pass integrity and operational-legacy metadata
+     checks and match that candidate's SHA256. Additive initialization can
+     make a prior backup differ, but existence or file size alone does not
+     establish a mismatch.
+   - In `cutting-over`, the verified backup must still exist and pass the
+     integrity and operational-legacy metadata checks: legacy mode, epoch zero,
+     no required revalidation, and no revalidation run.
+   - In `run-backed`, the existing early return does not reallocate the
+     epoch/run or require the old backup to match the current working database.
+
+   Keep epoch, receipt, and initial-revalidation safeguards intact. Missing
+   source rows required for plan revalidation or another domain invariant are
+   real blockers. A verified backup refusal is not permission to delete or
+   rename the backup, select a fresh backup path, disable activation, or change
+   the epoch.
+5. **Establish automatic-work safety.** Confirm effective startup behavior and
+   retained queues, mutation fences, and leases before starting. Checked-in
+   Planner settings enable `StartProcessingOnStartup`,
+   `ReconcileSnapshotsOnStartup`, and hydration `BackfillOnStartup`. Startup
+   can therefore do real work after initialization. Pausing processing alone
+   is insufficient: reconciliation and finalization of a fenced run can still
+   proceed. No configuration/mode override, forced work, receipt synthesis, or
+   bypass of initial revalidation is authorized by this checklist. If the
+   required startup branch conflicts with preservation, stop rather than
+   starting the service as a probe.
+6. **Only after gates 1–5 pass, start Planner alone** through the discovered
+   existing Aspire resource command. Do not create another AppHost, restart
+   dependencies, install a workload, or launch hosted workers manually.
+   Verify the actual candidate survives the full startup sequence: exclusive
+   ownership, owner schema initialization, interrupted-maintenance recovery,
+   and the applicable cutover/mode branch, then remains available. Inspect new
+   console/structured logs and real existing owner/Orchestrator read APIs for
+   inventoried plans, summaries/proposals, hydration, groupings, runs/receipts,
+   and snapshots. Compare the retained inventory and immutable backup/snapshot
+   hashes. `Running`, a health response, or absence of the `CompletionId` error
+   alone is not sufficient. Leave other resources undisturbed.
+
+At any missing or failed gate, record the precise blocker and evidence; do not
+make a speculative live start or claim that the incident is repaired. A
+legitimately closed gate making retained content unavailable must be reported,
+not hidden by a replacement empty database. No ad-hoc live SQL/schema repair,
+forced enqueue, rehydrate, regroup, revalidate, receipt synthesis, or artifact
+regeneration is a preservation check. Documentation and green schema tests
+alone cannot establish successful retained-runtime startup.
+
+#### Owner-controlled retained-state capture
+
+The Planner now supplies the pre-initialization preservation operation.
+`retained-state capture` is dispatched before `WebApplication.CreateBuilder`,
+configuration loading/watchers, DI, telemetry or hosted-service construction.
+It constructs only the existing **read-only Planner ownership instance** and
+offline evidence machinery. It never invokes that instance's `OpenConnection`,
+`Initialize`, recovery, cutover, scheduler, hydration, snapshot reconciliation
+or network clients. Malformed command arguments terminate too; they cannot
+fall through to normal service startup.
+
+This is an operation **by the owning Planner**, not permission for another
+service, aggregate CLI, development fixture or SQL console to inspect its
+storage. Actual retained capture requires a separate owner confirmation of
+every effective setting. No retained capture or live activation is claimed
+by implementing or testing the command. The ordered startup gates above are
+adoption criteria for a later separately authorized live operation, not
+automatic actions after capture. The `rehearse` verb and startup checkpoint
+classifier are future work; this version refuses that verb with exit 2.
+
+**A — Pin the candidate and keep outputs isolated.** The stage owner freezes
+the committed candidate and tree, verifies the complete candidate path scope
+and unchanged completed repair/owner/coordinator dependencies, and builds the
+Planner in a fresh detached checkout using the scoped `AGENTS.md` build form.
+The only normal-entrypoint delta is early nullable exit-code dispatch. A
+timestamp-derived assembly version is expected; capture records the actual
+executed assembly, `.deps.json`, `.runtimeconfig.json`, application/native
+dependencies and selected .NET/ASP.NET runtime hashes. Do not rebuild between
+capture and any later consumer. Owner-supplied commit/tree labels are recorded
+as provenance, **not independently observed Git or Aspire configuration**.
+
+Allocate a new short local evidence root (`$caseRoot`, at most 60 UTF-16 code
+units), with an existing parent for the new `$bundle` (normally
+`Join-Path $caseRoot 'capture'`). Neither bundle nor future `rehearsal-1`
+layout may overlap originals. Set `$plannerDll` to that already-built
+candidate's DLL and `$dotnet` to the local `dotnet` executable. Development
+verification uses only the focused command in `AGENTS.md`, in its separate
+candidate checkout, not any retained path.
+
+**B — Use a clean process, not inherited application hooks.** This driver is
+for the later owner-authorized operation. It neither builds nor starts a
+service. The command creates its bundle-local temp directory before SQLite:
+
+```powershell
+function Invoke-PlannerRetainedState {
+    param(
+        [Parameter(Mandatory)] [string] $TemporaryRoot,
+        [Parameter(Mandatory)] [string[]] $ToolArguments,
+        [int[]] $AllowedExitCodes = @(0)
+    )
+    $start = [System.Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $dotnet
+    $start.WorkingDirectory = $caseRoot
+    $start.UseShellExecute = $false
+    $start.ArgumentList.Add($plannerDll)
+    foreach ($argument in $ToolArguments) { $start.ArgumentList.Add($argument) }
+    $start.Environment.Clear()
+    foreach ($name in @('SystemRoot', 'WINDIR')) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if (-not [string]::IsNullOrWhiteSpace($value)) { $start.Environment[$name] = $value }
+    }
+    $start.Environment['TEMP'] = $TemporaryRoot
+    $start.Environment['TMP'] = $TemporaryRoot
+    $start.Environment['DOTNET_CLI_TELEMETRY_OPTOUT'] = '1'
+    $start.Environment['DOTNET_NOLOGO'] = '1'
+    $start.Environment['DOTNET_EnableDiagnostics'] = '0'
+    $process = [System.Diagnostics.Process]::Start($start)
+    if ($null -eq $process) { throw 'Owner command did not start.' }
+    try {
+        $process.WaitForExit()
+        $code = $process.ExitCode
+    }
+    finally {
+        $process.Dispose()
+    }
+    if ($code -notin $AllowedExitCodes) {
+        throw "Owner command exited $code. Retain its report; do not retry, repair, or start a service."
+    }
+    return $code
+}
+```
+
+No OS sandbox is claimed. Isolation comes from the call graph, explicit
+settings, physical path checks, file-set exclusion, independent materialization
+and the negative child-process tests.
+
+**C — Attest settings and capture once.** Resolve relative settings against the
+actual Planner service working directory, not the shell or checkout. No report
+default, checked-in path or assumed Aspire environment is effective-setting
+authority. The three startup-work flags are evidence only and never acted on.
+
+```powershell
+$databasePath = Read-Host 'Confirmed existing DatabasePath, resolved against the Planner service working directory'
+$backupPath = Read-Host 'Confirmed effective absolute PreCutoverBackupPath (blank only if unset)'
+$snapshotPath = Read-Host 'Confirmed effective absolute SnapshotDirectory'
+$activate = Read-Host 'Effective ActivateRunBackedAuthoring (true or false)'
+$snapshotSchema = Read-Host 'Effective SnapshotSchemaVersion (positive integer)'
+$startProcessing = Read-Host 'Effective StartProcessingOnStartup (true or false)'
+$reconcile = Read-Host 'Effective ReconcileSnapshotsOnStartup (true or false)'
+$backfill = Read-Host 'Effective Hydration:BackfillOnStartup (true or false)'
+$captureArguments = @(
+    'retained-state', 'capture',
+    '--database', $databasePath,
+    '--pre-cutover-backup', $backupPath,
+    '--snapshots', $snapshotPath,
+    '--activate-run-backed', $activate,
+    '--snapshot-schema-version', $snapshotSchema,
+    '--start-processing-on-startup', $startProcessing,
+    '--reconcile-snapshots-on-startup', $reconcile,
+    '--hydration-backfill-on-startup', $backfill,
+    '--bundle', $bundle,
+    '--candidate-commit', $candidate,
+    '--candidate-tree', $candidateTree
+)
+while ($true) {
+    $extraRoot = Read-Host 'Additional confirmed Planner-owned retained root (blank when complete)'
+    if ([string]::IsNullOrWhiteSpace($extraRoot)) { break }
+    $captureArguments += @('--retained-root', $extraRoot)
+}
+$confirmation = Read-Host 'Type CAPTURE to attest these effective settings and authorize read-only owner capture'
+if ($confirmation -cne 'CAPTURE') { throw 'Owner capture is not authorized.' }
+$captureArguments += '--confirm-owner-settings'
+$captureExit = Invoke-PlannerRetainedState -TemporaryRoot (Join-Path $bundle 'normalization\temp') -ToolArguments $captureArguments
+$captureProof = Get-Content -LiteralPath (Join-Path $bundle 'capture.complete.json') -Raw | ConvertFrom-Json
+if ($captureProof.status -ne 'complete' -or
+    $captureProof.candidateCommit -ne $candidate -or
+    $captureProof.candidateTree -ne $candidateTree) {
+    throw 'Capture completion does not identify the committed candidate.'
+}
+```
+
+All booleans must be exactly `true`/`false`; schema version is a positive
+integer. The backup argument is required even when empty; empty is allowed
+only if effectively unset and activation is disabled. Additional retained
+roots are explicitly attested Planner-owned directories. No repository,
+home or drive-root sweep is performed.
+
+Before ownership, capture requires an existing regular database and parent,
+local absolute paths, no traversal/device/UNC/stream aliases, no reparse
+ancestors/members, supported Windows x64 fixed-volume identities and single
+file links. It checks the **expanded** raw, normalization, safety, inventory,
+future rehearsal, coordinator `.<32-hex>.tmp`, generated snapshot, diagnostic
+and SQLite sidecar paths against a conservative 240-UTF-16-unit budget.
+`path-budget-exceeded` refuses; nothing is truncated or renamed.
+
+The existing `<database>.owner.lock` protocol supplies owner exclusion.
+Presence of the file alone is not a competing owner. Pre-existing lock bytes
+are preserved; the manifest records prior existence versus normal lock
+creation. That coordination acquisition/release is the **sole original-side
+effect**. Every retained regular file is held with `FileShare.Read`, denying
+writers/deletion. Directory pins prevent ancestor replacement. Membership,
+physical identity, length and hashes are rechecked while those handles and
+ownership remain held; stopped-host status alone is not quiescence.
+
+`raw/` preserves the complete frozen family: DB, WAL, SHM, journals, backups,
+snapshots, descriptors, temps, unknown files and empty directories, mapped by
+root ID and original relative path. Backup/snapshot absence and every SQLite
+sidecar absence are explicit. Original bytes never enter SQLite.
+`normalization/` duplicates each admitted family, consumes committed WAL with
+ordinary non-pooled SQLite connections and regenerates **only disposable SHM**.
+It does not use `immutable=1` to hide WAL. Nonempty rollback/super-journals,
+orphan sidecars and unclassified SQLite families refuse **before any SQLite
+open**, retaining raw evidence; no live checkpoint or multi-database recovery
+is attempted.
+
+`BackupDatabase` operates only between disposable copies and distinct new
+`safety/` files. `safety/planner.db` is additional preservation, never a
+replacement/normalization of the configured pre-cutover file. Standalone
+safety/snapshot verification may use the existing read-only validator after
+sidecar and self-containment checks. Raw pre-cutover bytes stay exact for a
+later byte-sensitive cutover comparison.
+
+Inventories include every persistent schema object, table (unknown, internal,
+shadow and virtual), table/index metadata, declared foreign keys, complete
+typed rows and duplicate multiplicity. `.rows` files have `FAROWS1` format:
+little-endian column count and length-prefixed UTF-8 names, row markers, native
+SQLite storage-class tags, 64-bit byte lengths and exact integer/IEEE-real/
+UTF-8/blob bytes, followed by an end marker and row count. Rowid or actual
+WITHOUT ROWID primary-key order makes comparison deterministic. Virtual
+hidden command/rank columns are metadata rather than persistent values;
+generated columns are included. Native row spans are streamed in bounded
+chunks, not accumulated as a database-sized managed dump.
+
+Full integrity/foreign-key results and required graph, run/item, receipt,
+partition and snapshot relationships are checked. Nonempty foreign processor
+kinds refuse; absent legacy tables are recorded, not initialized. Persisted
+snapshot paths are map references, never paths to follow. Required files,
+checksums, epochs, provenance, counts and any descriptors must close over the
+captured map. Finalized absent temp files are distinguished from missing final
+artifacts. A verified published snapshot's intentionally projected history is
+not confused with the operational store's full run/attempt/stage membership.
+Unsupported readers or broken required relationships leave evidence incomplete.
+
+`manifest.json` records owner-attested settings separately from unobserved
+runtime configuration, original/raw/safety hashes and binary provenance.
+`capture.complete.json` has camel-case `formatVersion: 1`, `status: complete`,
+`candidateCommit`, `candidateTree`, `manifestSha256`, the directory membership,
+and file/inventory/binary hash catalogs. It is flushed to a create-new pending
+file and published by a non-overwriting rename only after preservation and
+inventory checks, then internally revalidated. Every consumer must rehash the catalog and
+candidate binaries and hold the verified input handles. The driver's small
+status check and a marker's mere existence are not substitutes.
+
+Exit codes are `0` verified/help, `2` arguments, `20` safety/eligibility refusal,
+and `1` unexpected error, mismatch or cancellation. An admitted failed capture
+keeps `capture.started.json`, `capture.incomplete.json` and any copied evidence,
+with **no completion marker**. A path-preflight refusal cannot create evidence
+in an untrusted/non-admitted destination. Never reuse a destination or delete
+failed evidence as a retry strategy. Detailed reports and typed inventories
+are sensitive local owner data: protect them, never stage or publish them.
+
+**D — Rehearsal remains a separate future operation.** A completed capture is
+not initialization, cutover, startup eligibility or authority to start Aspire.
+The future host-free rehearsal consumes only this verified bundle, the same
+candidate/binary fingerprints and a new disjoint mutable output root. It must
+start from raw DB/WAL with regenerated SHM, preserve the configured backup's
+exact bytes, and distinguish initializer, recovery and cutover checkpoints.
+No Phase 3 result claims that operation ran or that live deployment, background
+work eligibility, serving state or retained incident recovery was verified.
+
+#### Rollback of the schema compatibility change
+
+Normal rollback is a reviewed revert of the code commits only, not a data
+rollback. Leave the additive schema, including nullable `CompletionId` and
+its index, retained data, backups, and snapshots intact. Do not drop the
+additions, reconstruct historical completion IDs, remove/replace the
+pre-cutover backup, or restore an older database over newer results/receipts.
+
+Reverting the shared-store code reinstates the old lossy startup cleanup.
+Consequently, **do not launch an old/reverted binary on retained storage**
+merely because the code revert succeeded. Stop at the owner-controlled safety
+gate and preserve the database, artifacts, and evidence. Any later restore or
+identity reconciliation needs a separate owner-approved procedure accounting
+for newer receipts, epochs, and retained work; this change supplies no
+destructive rollback or reconciliation procedure.
+
 ### Runs, items, and receipts
 
 A run freezes its item membership and expected source/evidence revisions.

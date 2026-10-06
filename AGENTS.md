@@ -204,6 +204,100 @@ and must be started by hand from the dashboard.
 
 ---
 
+## Planner retained-state owner operation and focused verification
+
+The Planner executable has a new, explicit **offline owner** command.
+It dispatches before host/configuration construction; it is not an HTTP
+endpoint, another service's database client, or a normal startup option.
+See `docs/technical/processors.md`, "Owner-controlled retained-state capture",
+for the owner attestation, clean-process driver, evidence and refusal rules.
+This operation does not authorize retained use by development tests or live
+activation. Rehearsal is future work, not an implemented verb.
+
+Direct invocation uses an already-built, pinned candidate DLL in an isolated
+checkout; it does not build or restore:
+
+```powershell
+dotnet $plannerDll retained-state --help
+dotnet $plannerDll retained-state capture --help
+dotnet $plannerDll retained-state capture `
+    --database $databasePath `
+    --pre-cutover-backup $backupPath `
+    --snapshots $snapshotPath `
+    --activate-run-backed $activate `
+    --snapshot-schema-version $snapshotSchema `
+    --start-processing-on-startup $startProcessing `
+    --reconcile-snapshots-on-startup $reconcile `
+    --hydration-backfill-on-startup $backfill `
+    --bundle $bundle `
+    --candidate-commit $candidate `
+    --candidate-tree $candidateTree `
+    --confirm-owner-settings
+```
+
+Every setting is explicit and owner-attested, not loaded from appsettings,
+environment-derived processing options or Aspire. Resolve paths against the
+actual service working directory before supplying them. All booleans are
+exactly `true` or `false`; schema version is a positive integer; commit/tree
+are full 40-hex identities. The backup value may be an empty argument only
+when unset and activation is disabled. Repeat
+`--retained-root <absolute-Planner-owned-directory>` for additional retained
+roots. No other option, positional argument or duplicate singleton is
+accepted. Any first-token `retained-state`, even malformed, terminates.
+Use the runbook's allowlisted child-process environment for retained use,
+not an inherited interactive `dotnet run` environment.
+
+Only Windows x64 fixed local volumes with supported physical file identities
+are admitted. Existing database/parent, ancestors, links, disjoint output,
+complete expanded 240-UTF-16-unit path budgets, and an evidence parent root
+of at most 60 characters are checked before ownership/SQLite work.
+The new bundle cannot exist. The command holds Planner's existing owner
+lock and writer/delete-denying read handles, preserves all raw family
+bytes, and opens **only independent disposable copies** in SQLite.
+Nonempty rollback/super-journals and unclassified families fail closed.
+The additional `safety/planner.db` is never the configured pre-cutover file.
+
+Exit codes: `0` verified operation/help; `2` invalid arguments; `20`
+diagnosed safety/eligibility refusal; `1` unexpected error, preservation
+mismatch or cancellation. Only internally verified `capture.complete.json`
+with matching manifest, complete inventory/file catalog and actual binary
+fingerprints completes capture. A consumer must revalidate it and hold the
+verified bundle read handles; mere marker existence is not proof. Preserve
+incomplete reports/raw evidence, never overwrite/reuse a bundle, and never
+publish the sensitive typed inventories.
+
+Focused Phase 3 verification uses the existing xUnit/VSTest runner:
+
+```powershell
+dotnet test tests\FhirAugury.Processor.Jira.Fhir.Planner.Tests --filter "FullyQualifiedName~PlannerRetainedState"
+```
+
+The prefix covers `PlannerRetainedStateCommandTests` and
+`PlannerRetainedStateCaptureTests`. Run from the isolated candidate checkout
+only after copying the literal owned candidate files, comparing their
+SHA256 identities, and confirming no unowned tracked changes. Synthetic
+fixtures have unique short roots and non-pooled connections; never use a
+retained directory as a fixture or clear process-global pools.
+
+For offline verification, set these **process-local** restore/telemetry
+environment values in the same shell before the documented test command.
+They use only the already-installed hierarchical package cache as a local
+feed; do not add a feed/configuration file, install packages, contact NuGet,
+or add runner/MSBuild switches. A missing cached dependency is an
+environmental blocker, not permission to fetch it.
+
+```powershell
+$env:RestoreSources = Join-Path $env:USERPROFILE '.nuget\packages'
+$env:NuGetAudit = 'false'
+$env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
+$env:DOTNET_NOLOGO = '1'
+```
+
+Do not build/test in service-held outputs, stop services, or change
+production behavior to address an MSB3021/MSB3026/MSB3027 failure.
+
+---
+
 ## Code style
 
 There is no `.editorconfig`, so the authoritative source is
