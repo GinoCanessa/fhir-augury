@@ -1,3 +1,6 @@
+using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database.Records;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Models;
@@ -80,7 +83,19 @@ public sealed class BallotNotesDatabaseTests : IDisposable
         using BallotNotesDatabase db = NewDb();
         using SqliteConnection conn = new($"Data Source={_dbPath};Pooling=False");
         conn.Open();
-        foreach (string table in new[] { "notes", "note_source_files", "note_commits", "note_tickets", "notes_runs" })
+        foreach (string table in new[]
+        {
+            "notes",
+            "note_source_files",
+            "note_commits",
+            "note_tickets",
+            "notes_runs",
+            "notes_hydration_executions",
+            "notes_hydration_run_items",
+            "note_authoring_state",
+            "authoring_runs",
+            "authoring_result_receipts",
+        })
         {
             using SqliteCommand cmd = conn.CreateCommand();
             cmd.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=$n";
@@ -125,7 +140,7 @@ public sealed class BallotNotesDatabaseTests : IDisposable
         Seed(db, Evidence(commits: 5));
 
         NoteDetail detail = db.GetNote("hl7-fhir-artifact-observation")!;
-        Assert.Equal("authored", detail.Status);
+        Assert.Equal("legacy-unverified", detail.Status);
         Assert.NotNull(detail.Note.AuthoredAt);
         Assert.Equal("yes", detail.Note.NeedsNote);
         Assert.Equal("<blockquote class=\"ballot-note\">drafted</blockquote>", detail.Note.ProposedBallotNoteHtml);
@@ -170,13 +185,14 @@ public sealed class BallotNotesDatabaseTests : IDisposable
         Assert.Equal(2, db.ListNotes(new NoteQueryFilter { Type = "Artifact" }).Count);
         Assert.Single(db.ListNotes(new NoteQueryFilter { Type = "Page" }));
         Assert.Equal(2, db.ListNotes(new NoteQueryFilter { WorkGroupCode = "OO" }).Count);
-        Assert.Single(db.ListNotes(new NoteQueryFilter { Status = "authored" }));
+        Assert.Empty(db.ListNotes(new NoteQueryFilter { Status = "authored" }));
         Assert.Equal(2, db.ListNotes(new NoteQueryFilter { Status = "awaiting-note" }).Count);
+        Assert.Single(db.ListNotes(new NoteQueryFilter { Status = "legacy-unverified" }));
         Assert.Single(db.ListNotes(new NoteQueryFilter { NeedsNote = "yes" }));
 
-        NoteListRow authored = Assert.Single(db.ListNotes(new NoteQueryFilter { Status = "authored" }));
-        Assert.Equal("hl7-fhir-artifact-observation", authored.NoteId);
-        Assert.Equal("authored", authored.Status);
+        NoteListRow unverified = db.ListNotes(new NoteQueryFilter())
+            .Single(row => row.NoteId == "hl7-fhir-artifact-observation");
+        Assert.Equal("legacy-unverified", unverified.Status);
     }
 
     [Fact]
@@ -195,57 +211,6 @@ public sealed class BallotNotesDatabaseTests : IDisposable
             db.ListNoteIds("HL7/fhir"));
         Assert.Single(db.ListNoteIds("HL7/US-Core"));
         Assert.Empty(db.ListNoteIds("HL7/missing"));
-    }
-
-    [Fact]
-    public void UpdateNoteWorkGroups_UpdatesOnlyWgColumns_PreservesProseAndTimestamps()
-    {
-        using BallotNotesDatabase db = NewDb();
-        Seed(db, Evidence());
-
-        DateTimeOffset authoredAt = DateTimeOffset.UtcNow.AddHours(-3);
-        BallotNoteProse prose = new()
-        {
-            NeedsNote = "yes",
-            ProposedBallotNoteHtml = "<blockquote class=\"ballot-note\">drafted</blockquote>",
-            RollupSummaryMarkdown = "## Roll-up",
-            NotesForReviewerMarkdown = "reviewer note",
-        };
-        Assert.True(db.UpdateNoteProse("hl7-fhir-artifact-observation", prose, authoredAt));
-
-        NoteDetail before = db.GetNote("hl7-fhir-artifact-observation")!;
-
-        Assert.True(db.UpdateNoteWorkGroups(
-            "hl7-fhir-artifact-observation",
-            workGroup: "FHIR Infrastructure (FHIR-I)",
-            workGroupCode: "fhir",
-            workGroupNames: "FHIR Infrastructure (FHIR-I);Orders and Observations (OO)",
-            workGroupCodes: "fhir;oo"));
-
-        NoteDetail after = db.GetNote("hl7-fhir-artifact-observation")!;
-
-        // WG columns re-stamped.
-        Assert.Equal("FHIR Infrastructure (FHIR-I)", after.Note.WorkGroup);
-        Assert.Equal("fhir", after.Note.WorkGroupCode);
-        Assert.Equal("FHIR Infrastructure (FHIR-I);Orders and Observations (OO)", after.Note.WorkGroupNames);
-        Assert.Equal("fhir;oo", after.Note.WorkGroupCodes);
-
-        // Everything else preserved.
-        Assert.Equal(before.Note.ProposedBallotNoteHtml, after.Note.ProposedBallotNoteHtml);
-        Assert.Equal("yes", after.Note.NeedsNote);
-        Assert.Equal(before.Note.RollupSummaryMarkdown, after.Note.RollupSummaryMarkdown);
-        Assert.Equal(before.Note.AuthoredAt, after.Note.AuthoredAt);
-        Assert.Equal(before.Note.SavedAt, after.Note.SavedAt);
-        Assert.Equal(before.Note.GeneratedAt, after.Note.GeneratedAt);
-        Assert.Equal(before.Note.HydratedAt, after.Note.HydratedAt);
-        Assert.Equal("authored", after.Status);
-    }
-
-    [Fact]
-    public void UpdateNoteWorkGroups_returns_false_for_unknown_slug()
-    {
-        using BallotNotesDatabase db = NewDb();
-        Assert.False(db.UpdateNoteWorkGroups("does-not-exist", "wg", "code", "wg", "code"));
     }
 
     [Fact]

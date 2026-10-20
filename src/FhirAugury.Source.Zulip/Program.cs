@@ -8,6 +8,7 @@ using FhirAugury.Source.Zulip.Database.Records;
 using FhirAugury.Source.Zulip.Hosting;
 using FhirAugury.Source.Zulip.Indexing;
 using FhirAugury.Source.Zulip.Ingestion;
+using FhirAugury.Source.Zulip.Queries;
 using FhirAugury.Source.Zulip.Workers;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -61,6 +62,7 @@ builder.Services.AddSingleton(sp =>
     db.Initialize();
     return db;
 });
+builder.Services.AddSingleton<ZulipReferenceResolver>();
 
 // Cache
 builder.Services.AddSingleton<IResponseCache>(sp =>

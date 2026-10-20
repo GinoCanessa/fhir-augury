@@ -1,0 +1,341 @@
+@inject NavigationManager Navigation
+
+<article class="workflow-card"
+         aria-labelledby="@HeadingId">
+    <header class="workflow-card__header">
+        <div>
+            <p class="workflow-card__eyebrow">
+                @Workflow.ProcessingServiceName processor
+            </p>
+            <h2 id="@HeadingId" class="h3 mb-1">
+                @Workflow.DisplayName
+            </h2>
+            <p class="text-body-secondary mb-0">
+                @WorkflowDescription
+            </p>
+        </div>
+        <a class="btn btn-primary"
+           href="@($"/operations/{Workflow.RouteKey}/new")">
+            <i class="bi bi-play-circle-fill" aria-hidden="true"></i>
+            Start a run
+        </a>
+    </header>
+
+    @if (Readiness.CurrentValue is TicketWorkflowReadiness currentReadiness)
+    {
+        @if (!currentReadiness.CanStart)
+        {
+            <div class="workflow-card__warning">
+                <i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i>
+                <span>
+                    Starting is currently blocked by
+                    @currentReadiness.Blockers.Count readiness
+                    @(currentReadiness.Blockers.Count == 1 ? "check" : "checks").
+                    You can still inspect an existing run.
+                </span>
+            </div>
+        }
+    }
+    else
+    {
+        <p class="workflow-card__warning">
+            Current start readiness is not available. Check readiness on the
+            start form; you can still inspect an existing run.
+        </p>
+    }
+
+    <div class="workflow-card__section-heading">
+        <h3 class="h6 mb-0">Run history</h3>
+        <button class="btn btn-sm btn-outline-primary"
+                type="button"
+                aria-label="@($"Refresh {Workflow.DisplayName.ToLowerInvariant()} history")"
+                disabled="@History.IsLoading"
+                @onclick="OnRefresh">
+            <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+            Refresh history
+        </button>
+    </div>
+
+    @if (!History.HasLastSuccess &&
+        History.Phase is WorkspaceObservationPhase.Pending or WorkspaceObservationPhase.Loading)
+    {
+        <div class="loading-state loading-state--compact" role="status">
+            @if (History.IsLoading)
+            {
+                <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+            }
+            <span>
+                @(History.IsLoading
+                    ? $"Loading {Workflow.ProcessingServiceName} run history."
+                    : "Run history has not been read yet.")
+                Counts are unknown.
+            </span>
+        </div>
+    }
+
+    @if (History.Failure is WorkspaceReadFailure failure)
+    {
+        <div class="alert @(failure.IsUnavailable ? "alert-warning" : "alert-danger")"
+             role="alert">
+            <strong>
+                @(failure.IsUnavailable
+                    ? "Run history is unavailable."
+                    : "Run history read failed.")
+            </strong>
+            <span class="d-block">@failure.Message</span>
+        </div>
+    }
+
+    @if (History.LastSucceededAt is DateTimeOffset succeededAt)
+    {
+        <p class="text-body-secondary small">
+            Last successful history read
+            <time datetime="@succeededAt.ToString("O")">
+                @succeededAt.LocalDateTime.ToString("g")
+            </time>.
+            @if (History.IsStale)
+            {
+                <strong>
+                    Stale history — @(History.IsLoading ? "refreshing." : "the latest read did not succeed.")
+                </strong>
+                <span>Counts and links below are from that previous read.</span>
+            }
+        </p>
+    }
+
+    @if (History.IsStale && History.LastSuccessfulValue?.Runs.Count == 0)
+    {
+        <p class="empty-state">
+            Previously observed empty history; current run counts are unknown.
+        </p>
+    }
+
+    <div class="workflow-card__runs">
+        <section aria-labelledby="@ActiveHeadingId">
+            <div class="workflow-card__section-heading">
+                <h3 id="@ActiveHeadingId" class="h6 mb-0">
+                    Active and recovering
+                </h3>
+                <span class="count-badge">@(History.HasLastSuccess ? ActiveRuns.Count.ToString() : "Unknown")</span>
+            </div>
+            @if (!History.HasLastSuccess)
+            {
+                <p class="empty-state">Active runs are unknown.</p>
+            }
+            else if (ActiveRuns.Count == 0)
+            {
+                <p class="empty-state">
+                    @(History.IsCurrentSuccess
+                        ? "No active runs."
+                        : "Previously observed no active runs.")
+                </p>
+            }
+            else
+            {
+                <ul class="run-summary-list">
+                    @foreach (AuthoringRunStatus run in ActiveRuns)
+                    {
+                        <li @key="run.RunId">
+                            <div class="run-summary-list__main">
+                                <a class="run-id-link"
+                                   href="@RunUrl(run.RunId)">
+                                    @run.RunId
+                                </a>
+                                <StatusIndicator Status="@run.Status" />
+                            </div>
+                            <div class="run-summary-list__meta">
+                                <span>
+                                    @run.CompletedItems of @run.TotalItems complete
+                                </span>
+                                @if (run.RetryableErrorItems > 0)
+                                {
+                                    <span>
+                                        @run.RetryableErrorItems recoverable
+                                        @(run.RetryableErrorItems == 1 ? "error" : "errors")
+                                    </span>
+                                }
+                                <time datetime="@run.CreatedAt.ToString("O")">
+                                    Started @FormatTimestamp(run.CreatedAt)
+                                </time>
+                            </div>
+                        </li>
+                    }
+                </ul>
+            }
+        </section>
+
+        <section aria-labelledby="@RecentHeadingId">
+            <div class="workflow-card__section-heading">
+                <h3 id="@RecentHeadingId" class="h6 mb-0">
+                    Recent completed runs
+                </h3>
+                <span class="count-badge">@(History.HasLastSuccess ? TerminalRuns.Count.ToString() : "Unknown")</span>
+            </div>
+            @if (!History.HasLastSuccess)
+            {
+                <p class="empty-state">Recent completed runs are unknown.</p>
+            }
+            else if (TerminalRuns.Count == 0)
+            {
+                <p class="empty-state">
+                    @(History.IsCurrentSuccess
+                        ? "No recent completed runs."
+                        : "Previously observed no recent completed runs.")
+                </p>
+            }
+            else
+            {
+                <ul class="run-summary-list">
+                    @foreach (AuthoringRunStatus run in TerminalRuns)
+                    {
+                        <li @key="run.RunId">
+                            <div class="run-summary-list__main">
+                                <a class="run-id-link"
+                                   href="@RunUrl(run.RunId)">
+                                    @run.RunId
+                                </a>
+                                <StatusIndicator Status="@run.Status" />
+                            </div>
+                            <div class="run-summary-list__meta">
+                                <span>
+                                    @run.CompletedItems of @run.TotalItems complete
+                                </span>
+                                @if (run.SupersededItems > 0)
+                                {
+                                    <span>
+                                        @run.SupersededItems superseded
+                                    </span>
+                                }
+                                <time datetime="@run.CreatedAt.ToString("O")">
+                                    Created @FormatTimestamp(run.CreatedAt)
+                                </time>
+                            </div>
+                        </li>
+                    }
+                </ul>
+            }
+            @if (History.LastSuccessfulValue?.Truncated == true)
+            {
+                <p class="text-body-secondary small mt-2 mb-0">
+                    Only the newest bounded history is shown. Open a known
+                    run directly below.
+                </p>
+            }
+        </section>
+    </div>
+
+    <form class="open-run-form"
+          @onsubmit="OpenRun"
+          @onsubmit:preventDefault
+          novalidate>
+        <div>
+            <label class="form-label fw-semibold"
+                   for="@OpenRunInputId">
+                Open by run ID
+            </label>
+            <div class="input-group">
+                <input id="@OpenRunInputId"
+                       class="form-control @(_openAttempted && string.IsNullOrWhiteSpace(_runId) ? "is-invalid" : "")"
+                       @bind="_runId"
+                       autocomplete="off"
+                       spellcheck="false"
+                       aria-describedby="@OpenRunHelpId"
+                       aria-invalid="@(_openAttempted && string.IsNullOrWhiteSpace(_runId))" />
+                <button class="btn btn-outline-primary" type="submit">
+                    Open run
+                </button>
+            </div>
+            <div id="@OpenRunHelpId" class="form-text">
+                Use a run ID from a shared link or older, truncated history.
+            </div>
+            @if (_openAttempted && string.IsNullOrWhiteSpace(_runId))
+            {
+                <div class="invalid-feedback d-block" role="alert">
+                    Enter a run ID.
+                </div>
+            }
+        </div>
+    </form>
+</article>
+
+@code {
+    [Parameter, EditorRequired]
+    public TicketWorkflowDefinition Workflow { get; set; } = null!;
+
+    [Parameter, EditorRequired]
+    public WorkspaceObservation<AuthoringRunListResponse> History { get; set; } =
+        WorkspaceObservation<AuthoringRunListResponse>.Pending;
+
+    [Parameter, EditorRequired]
+    public WorkspaceObservation<TicketWorkflowReadiness> Readiness { get; set; } =
+        WorkspaceObservation<TicketWorkflowReadiness>.Pending;
+
+    [Parameter]
+    public EventCallback OnRefresh { get; set; }
+
+    private string _runId = "";
+    private bool _openAttempted;
+
+    private string HeadingId =>
+        $"workflow-{Workflow.RouteKey}";
+
+    private string ActiveHeadingId =>
+        $"{HeadingId}-active";
+
+    private string RecentHeadingId =>
+        $"{HeadingId}-recent";
+
+    private string OpenRunInputId =>
+        $"{HeadingId}-run-id";
+
+    private string OpenRunHelpId =>
+        $"{OpenRunInputId}-help";
+
+    private IReadOnlyList<AuthoringRunStatus> ActiveRuns =>
+        History.LastSuccessfulValue?.Runs
+            .Where(run => run.State?.IsTerminal == false)
+            .ToArray() ?? [];
+
+    private IReadOnlyList<AuthoringRunStatus> TerminalRuns =>
+        History.LastSuccessfulValue?.Runs
+            .Where(run => run.State?.IsTerminal != false)
+            .ToArray() ?? [];
+
+    private string WorkflowDescription =>
+        Workflow.RouteKey == "prepare"
+            ? "Build discussion-ready ticket snapshots and a review site."
+            : "Build application plans and an applying review site.";
+
+    private string RunUrl(string runId) =>
+        $"/operations/{Workflow.RouteKey}/{Uri.EscapeDataString(runId)}";
+
+    private void OpenRun()
+    {
+        _openAttempted = true;
+        if (string.IsNullOrWhiteSpace(_runId))
+        {
+            return;
+        }
+
+        Navigation.NavigateTo(RunUrl(_runId.Trim()));
+    }
+
+    private static string FormatTimestamp(
+        DateTimeOffset timestamp)
+    {
+        TimeSpan age = DateTimeOffset.UtcNow - timestamp;
+        if (age >= TimeSpan.Zero && age.TotalMinutes < 1)
+        {
+            return "just now";
+        }
+        if (age >= TimeSpan.Zero && age.TotalHours < 1)
+        {
+            return $"{(int)age.TotalMinutes} min ago";
+        }
+        if (age >= TimeSpan.Zero && age.TotalDays < 1)
+        {
+            return $"{(int)age.TotalHours} hr ago";
+        }
+        return timestamp.LocalDateTime.ToString("g");
+    }
+}

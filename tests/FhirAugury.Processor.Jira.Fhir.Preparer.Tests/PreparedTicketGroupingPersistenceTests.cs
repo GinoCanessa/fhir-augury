@@ -1,8 +1,20 @@
+using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Common.Database.Records;
+using FhirAugury.Processing.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Api;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Controllers;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database.Records;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Tests;
 
@@ -363,6 +375,655 @@ public sealed class PreparedTicketGroupingPersistenceTests
         Assert.Contains(view.Partitions, p => p.Type == "Comment");
     }
 
+    [Fact]
+    public async Task SaveGroupingForRun_AtomicallyRecordsFingerprintAndRejectsStaleLease()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedPreparedTicketAsync(database, "FHIR-1");
+        await SeedPreparedTicketAsync(database, "FHIR-2");
+        await SeedPreparedTicketAsync(database, "FHIR-50");
+        AuthoringRunStore authoringStore = new(database.Database);
+        await authoringStore.EnsureProcessorModeAsync("jira-fhir");
+        await authoringStore.TransitionProcessorModeAsync(
+            "jira-fhir",
+            AuthoringStatusValues.ProcessorModes.Legacy,
+            AuthoringStatusValues.ProcessorModes.CuttingOver);
+        await authoringStore.TransitionProcessorModeAsync(
+            "jira-fhir",
+            AuthoringStatusValues.ProcessorModes.CuttingOver,
+            AuthoringStatusValues.ProcessorModes.RunBacked);
+        AuthoringRunRecord run = await authoringStore.CreateRunAsync(
+            "jira-fhir",
+            [
+                new AuthoringRunItemDefinition("FHIR-1", "fhir", "revision-1"),
+                new AuthoringRunItemDefinition("FHIR-2", "fhir", "revision-2"),
+                new AuthoringRunItemDefinition("FHIR-50", "fhir", "revision-50"),
+            ],
+            databaseOnly: true);
+        Assert.True(await authoringStore.TryAcquireMutationFenceAsync("jira-fhir", run.Id));
+        foreach (AuthoringRunItemRecord item in await authoringStore.GetRunItemsAsync(run.Id))
+        {
+            AuthoringOperationClaim claim =
+                (await authoringStore.ClaimItemAsync(run.Id, item.Id))!;
+            PreparedTicketPayload authoredPayload = CreatePreparedTicketPayload(item.BusinessKey);
+            string contentHash = AuthoringResultHasher.HashNormalizedUtf8(item.BusinessKey);
+            AuthoringReceiptAcceptance receipt = await authoringStore.AcceptResultAsync(
+                new AuthoringResultSubmission(
+                    run.Id,
+                    item.Id,
+                    claim.OperationId,
+                    item.ExpectedSourceRevision,
+                    contentHash),
+                claim.OperationToken,
+                (connection, ct) => database.Database.SavePreparedTicketForAuthoringAsync(
+                    connection,
+                    authoredPayload,
+                    contentHash,
+                    run.Id,
+                    item.Id,
+                    claim.OperationId,
+                    ct));
+            await authoringStore.MarkItemCompleteAsync(item.Id, receipt.Receipt.ReceiptId);
+            await SeedHydrationSelfAsync(
+                database,
+                item.BusinessKey,
+                WorkGroupDisplay,
+                Type,
+                Specification);
+        }
+        string partitionKey = PreparerDatabase.GetPartitionKey(
+            WorkGroupClean,
+            Specification,
+            Type);
+        PreparedTicketRunPartition partition = Assert.Single(
+            await database.Database.GetRunPartitionsAsync(run.Id));
+        string inputFingerprint = partition.InputFingerprint;
+        AuthoringRunStageRecord stage = await authoringStore.EnsureRunStageAsync(
+            run.Id,
+            "grouping",
+            partitionKey,
+            inputFingerprint);
+        AuthoringRunStageLease lease = Assert.IsType<AuthoringRunStageLease>(
+            await authoringStore.TryStartRunStageAsync(stage.Id));
+
+        PreparedTicketGroupingsController controller = new(
+            database.Database,
+            authoringStore);
+        ActionResult<PreparedTicketGroupingSaveResultDto> claimed =
+            await controller.PutPartition(
+                WorkGroupClean,
+                Specification,
+                Type,
+                new PreparedTicketGroupingPutRequest(
+                    WorkGroupDisplay,
+                    [],
+                    new PreparedTicketGroupingStageContext(
+                        run.Id,
+                        stage.Id,
+                        lease.LeaseId,
+                        inputFingerprint,
+                        partitionKey,
+                        inputFingerprint,
+                        [],
+                        partition.TicketKeys)),
+                CancellationToken.None);
+        Assert.IsType<BadRequestObjectResult>(claimed.Result);
+
+        await Assert.ThrowsAsync<AuthoringConflictException>(
+            () => database.Database.SaveGroupingAsync(SamplePayload()));
+        PreparedTicketGroupingPayload wrongPartition = SamplePayload();
+        wrongPartition.Type = "Comment";
+        await Assert.ThrowsAsync<AuthoringConflictException>(
+            () => database.Database.SaveGroupingForRunAsync(
+                wrongPartition,
+                run.Id,
+                stage.Id,
+                lease.LeaseId,
+                inputFingerprint));
+
+        PreparedTicketGroupingSaveResult result =
+            await database.Database.SaveGroupingForRunAsync(
+                SamplePayload(),
+                run.Id,
+                stage.Id,
+                lease.LeaseId,
+                inputFingerprint);
+
+        Assert.Equal(1, result.TopicRows);
+        Assert.Equal(1, Count(database, "prepared_ticket_partition_receipts"));
+        string expectedOutputFingerprint =
+            PreparedTicketPublicationContract
+                .ComputeGroupingOutputFingerprint(SamplePayload());
+        using (SqliteConnection connection =
+               database.Database.OpenConnection())
+        using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                SELECT OutputFingerprint
+                FROM prepared_ticket_partition_receipts
+                WHERE RunId = @runId AND PartitionKey = @partitionKey
+                """;
+            command.Parameters.AddWithValue("@runId", run.Id);
+            command.Parameters.AddWithValue(
+                "@partitionKey",
+                partitionKey);
+            Assert.Equal(
+                expectedOutputFingerprint,
+                command.ExecuteScalar());
+        }
+        PreparedTicketGroupingPayload replacement = SamplePayload();
+        replacement.Topics = [];
+        await Assert.ThrowsAsync<AuthoringConflictException>(
+            () => database.Database.SaveGroupingForRunAsync(
+                replacement,
+                run.Id,
+                stage.Id,
+                "stale-lease",
+                inputFingerprint));
+        Assert.Equal(1, Count(database, "prepared_ticket_topics"));
+
+        using (SqliteConnection connection =
+               database.Database.OpenConnection())
+        using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                UPDATE prepared_ticket_partition_receipts
+                SET OutputFingerprint = NULL
+                WHERE RunId = @runId AND PartitionKey = @partitionKey
+                """;
+            command.Parameters.AddWithValue("@runId", run.Id);
+            command.Parameters.AddWithValue(
+                "@partitionKey",
+                partition.PartitionKey);
+            Assert.Equal(1, command.ExecuteNonQuery());
+        }
+        await authoringStore.ReleaseMutationFenceAsync(
+            "jira-fhir",
+            run.Id);
+        string refreshRunId = Guid.NewGuid().ToString("N");
+        using (SqliteConnection connection =
+               database.Database.OpenConnection())
+        using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                INSERT INTO authoring_runs(
+                    Id, ProcessorKind, AuthoringEpoch, Status, Purpose,
+                    SourceRunId, DatabaseOnly, TotalItems,
+                    CreatedAt, StartedAt)
+                SELECT @refreshRunId, ProcessorKind, AuthoringEpoch,
+                       'running', 'publication-refresh', Id, 0, 1,
+                       @createdAt, @createdAt
+                FROM authoring_runs WHERE Id = @sourceRunId;
+                INSERT INTO authoring_mutation_fences(
+                    ProcessorKind, RunId, LeaseId, AcquiredAt)
+                VALUES(
+                    'jira-fhir', @refreshRunId, @fenceLeaseId,
+                    @createdAt);
+                """;
+            command.Parameters.AddWithValue(
+                "@refreshRunId",
+                refreshRunId);
+            command.Parameters.AddWithValue("@sourceRunId", run.Id);
+            command.Parameters.AddWithValue(
+                "@createdAt",
+                DateTimeOffset.UtcNow.ToString("O"));
+            command.Parameters.AddWithValue(
+                "@fenceLeaseId",
+                Guid.NewGuid().ToString("N"));
+            command.ExecuteNonQuery();
+        }
+        AuthoringRunStageRecord certificationStage =
+            await authoringStore.EnsureRunStageAsync(
+                refreshRunId,
+                PreparerDatabase.GroupingCertificationStageName,
+                partition.PartitionKey,
+                partition.InputFingerprint);
+        AuthoringRunStageLease certificationLease =
+            Assert.IsType<AuthoringRunStageLease>(
+                await authoringStore.TryStartRunStageAsync(
+                    certificationStage.Id));
+
+        PreparedTicketGroupingCertificationEvidence evidence =
+            await database.Database.CertifyGroupingPartitionAsync(
+                refreshRunId,
+                certificationLease,
+                partition);
+
+        Assert.True(evidence.IsLegacyCertification);
+        Assert.Equal(run.Id, evidence.SourceReceipt.RunId);
+        Assert.Equal(stage.Id, evidence.SourceReceipt.StageId);
+        Assert.Equal(
+            partition.InputFingerprint,
+            evidence.SourceReceipt.InputFingerprint);
+        Assert.Equal(expectedOutputFingerprint, evidence.OutputFingerprint);
+        PreparedTicketPartitionCertificationRecord certification =
+            Assert.IsType<PreparedTicketPartitionCertificationRecord>(
+                await database.Database.GetPartitionCertificationAsync(
+                    refreshRunId,
+                    partition.PartitionKey));
+        Assert.Equal(run.Id, certification.SourceRunId);
+        Assert.Equal(stage.Id, certification.SourceStageId);
+        Assert.Equal(
+            expectedOutputFingerprint,
+            certification.OutputFingerprint);
+    }
+
+    [Fact]
+    public async Task ReconciliationGroupingStage_EmptyReplacementIsDurableAndStagedOnly()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedPreparedTicketAsync(database, "FHIR-1");
+        await SeedPreparedTicketAsync(database, "FHIR-2");
+        await SeedPreparedTicketAsync(database, "FHIR-50");
+        await database.Database.SaveGroupingAsync(SamplePayload());
+        AuthoringRunStore store = new(database.Database);
+        await store.EnsureProcessorModeAsync("jira-fhir");
+        await store.TransitionProcessorModeAsync(
+            "jira-fhir",
+            AuthoringStatusValues.ProcessorModes.Legacy,
+            AuthoringStatusValues.ProcessorModes.CuttingOver);
+        await store.TransitionProcessorModeAsync(
+            "jira-fhir",
+            AuthoringStatusValues.ProcessorModes.CuttingOver,
+            AuthoringStatusValues.ProcessorModes.RunBacked);
+
+        string hashA = new('a', 64);
+        string hashB = new('b', 64);
+        PreparedTicketPublicationReconciliationComparison comparison = new(
+            PreparedTicketPublicationReconciliationContract.CurrentVersion,
+            "source-run",
+            "source-snapshot",
+            hashA,
+            "generation-1",
+            DateTimeOffset.Parse("2026-09-17T10:00:00Z"),
+            hashA,
+            [
+                new PreparedTicketPublicationReconciliationItemDecision(
+                    "FHIR-1",
+                    PreparedTicketPublicationReconciliationDispositionValues
+                        .ReAuthor,
+                    "revision-1",
+                    "revision-2",
+                    "baseline-receipt",
+                    "baseline-item",
+                    "baseline-run",
+                    hashA,
+                    hashA,
+                    "fhir",
+                    "revision-2"),
+            ]);
+        AuthoringRunRecord run =
+            await database.Database.CreatePublicationReconciliationAsync(
+                comparison);
+        Assert.True(await store.TryAcquireMutationFenceAsync(
+            "jira-fhir",
+            run.Id));
+        string partitionKey = PreparerDatabase.GetPartitionKey(
+            WorkGroupClean,
+            Specification,
+            Type);
+        PreparedTicketPublicationReconciliationGroupingImpact impact = new(
+            partitionKey,
+            ["FHIR-1"],
+            hashA,
+            hashA,
+            hashA);
+        await database.Database
+            .SavePublicationReconciliationGroupingImpactAsync(
+                run.Id,
+                impact);
+        AuthoringRunStageRecord stage = await store.EnsureRunStageAsync(
+            run.Id,
+            PreparerDatabase.PublicationReconciliationGroupingStageName,
+            partitionKey,
+            hashB);
+        AuthoringRunStageLease lease =
+            Assert.IsType<AuthoringRunStageLease>(
+                await store.TryStartRunStageAsync(stage.Id));
+        PreparedTicketGroupingStageContext context = new(
+            run.Id,
+            stage.Id,
+            lease.LeaseId,
+            hashB,
+            partitionKey,
+            hashB,
+            ["FHIR-1"],
+            []);
+        PreparedTicketGroupingPayload replacement = new()
+        {
+            WorkGroupClean = WorkGroupClean,
+            WorkGroupDisplay = WorkGroupDisplay,
+            Specification = Specification,
+            Type = Type,
+            Topics = [],
+        };
+        PreparedTicketPublicationStagedGroupingReplacement staged = new(
+            run.Id,
+            partitionKey,
+            System.Text.Json.JsonSerializer.Serialize(replacement),
+            AuthoringResultHasher.HashNormalizedUtf8(string.Empty),
+            PreparedTicketPublicationContract
+                .ComputeGroupingOutputFingerprint(replacement),
+            hashA,
+            DateTimeOffset.Parse("2026-09-17T10:30:00Z"));
+
+        AuthoringConflictException stale =
+            await Assert.ThrowsAsync<AuthoringConflictException>(
+                () => database.Database
+                    .SavePublicationReconciliationGroupingStageAsync(
+                        context with { StageLeaseId = "stale-lease" },
+                        staged));
+        Assert.Equal(AuthoringConflictCode.StageLeaseLost, stale.Code);
+
+        AuthoringRunStageReceipt receipt =
+            await database.Database
+                .SavePublicationReconciliationGroupingStageAsync(
+                    context,
+                    staged);
+
+        Assert.Equal(run.Id, receipt.RunId);
+        Assert.Equal(stage.Id, receipt.StageId);
+        Assert.Equal(partitionKey, receipt.PartitionKey);
+        Assert.Equal(hashB, receipt.InputFingerprint);
+        Assert.Equal(0, receipt.TopicRows);
+        Assert.Equal(0, receipt.TopicGroupRows);
+        Assert.Equal(0, receipt.MemberRows);
+        Assert.Equal(
+            1,
+            Count(
+                database,
+                "prepared_ticket_publication_staged_grouping"));
+        Assert.Equal(
+            1,
+            Count(
+                database,
+                "prepared_ticket_publication_grouping_stage_receipts"));
+        Assert.Equal(1, Count(database, "prepared_ticket_topics"));
+        PreparedTicketGroupingPartition canonical =
+            Assert.IsType<PreparedTicketGroupingPartition>(
+                await database.Database.GetGroupingAsync(
+                    WorkGroupClean,
+                    Specification,
+                    Type));
+        Assert.Equal(
+            "Observation value polymorphism",
+            Assert.Single(canonical.Topics).ShortDescription);
+        PreparedTicketPublicationReconciliationGroupingImpact completed =
+            Assert.Single(
+                await database.Database
+                    .GetPublicationReconciliationGroupingImpactsAsync(
+                        run.Id));
+        Assert.True(completed.Complete);
+        Assert.Equal(
+            staged.CorpusFingerprint,
+            completed.StagedCorpusFingerprint);
+        Assert.Equal(
+            staged.OutputFingerprint,
+            completed.StagedOutputFingerprint);
+
+        AuthoringRunStageLease reclaimed =
+            Assert.IsType<AuthoringRunStageLease>(
+                await store.TryStartRunStageAsync(
+                    stage.Id,
+                    orphanedAfter: TimeSpan.FromMinutes(10),
+                    now: DateTimeOffset.UtcNow.AddHours(1)));
+        AuthoringRunStageReceipt replayed =
+            await database.Database
+                .SavePublicationReconciliationGroupingStageAsync(
+                    context with { StageLeaseId = reclaimed.LeaseId },
+                    staged);
+        Assert.Equal(receipt, replayed);
+        await Assert.ThrowsAsync<AuthoringConflictException>(
+            () => store.CompleteRunStageAsync(stage.Id, lease.LeaseId));
+        await store.CompleteRunStageAsync(stage.Id, reclaimed.LeaseId);
+        Assert.NotNull(
+            await database.Database
+                .GetPublicationReconciliationGroupingStageReceiptAsync(
+                    run.Id,
+                    stage.Id,
+                    partitionKey,
+                    hashB));
+    }
+
+    [Fact]
+    public void ReconciliationGroupingWorker_ReceivesExactOverlayStageContext()
+    {
+        string overlayFingerprint = new('a', 64);
+        PreparedTicketPublicationGroupingWorkItem workItem = new(
+            "run-1",
+            PreparerDatabase.GetPartitionKey(
+                WorkGroupClean,
+                Specification,
+                Type),
+            WorkGroupClean,
+            WorkGroupDisplay,
+            Specification,
+            Type,
+            ["FHIR-2"],
+            ["FHIR-1", "FHIR-2"],
+            overlayFingerprint);
+        AuthoringRunStageLease lease = new(
+            "stage-1",
+            "lease-1",
+            1);
+        PreviewPreparedTicketGroupingDispatcher dispatcher = new(
+            Options.Create(new PreparerServiceOptions()),
+            NullLogger<PreviewPreparedTicketGroupingDispatcher>.Instance);
+
+        System.Diagnostics.ProcessStartInfo startInfo =
+            dispatcher.CreateStartInfo(workItem, lease);
+
+        Assert.Equal(
+            "1",
+            startInfo.Environment[
+                "FHIR_AUGURY_GROUPING_RECONCILIATION"]);
+        Assert.Equal(
+            workItem.RunId,
+            startInfo.Environment["FHIR_AUGURY_GROUPING_RUN_ID"]);
+        Assert.Equal(
+            lease.StageId,
+            startInfo.Environment["FHIR_AUGURY_GROUPING_STAGE_ID"]);
+        Assert.Equal(
+            lease.LeaseId,
+            startInfo.Environment[
+                "FHIR_AUGURY_GROUPING_STAGE_LEASE_ID"]);
+        Assert.Equal(
+            workItem.PartitionKey,
+            startInfo.Environment[
+                "FHIR_AUGURY_GROUPING_PARTITION_KEY"]);
+        Assert.Equal(
+            overlayFingerprint,
+            startInfo.Environment[
+                "FHIR_AUGURY_GROUPING_INPUT_FINGERPRINT"]);
+        Assert.Equal(
+            overlayFingerprint,
+            startInfo.Environment[
+                "FHIR_AUGURY_GROUPING_OVERLAY_CORPUS_FINGERPRINT"]);
+        Assert.Equal(
+            "[\"FHIR-2\"]",
+            startInfo.Environment[
+                "FHIR_AUGURY_GROUPING_REVISED_TICKET_KEYS_JSON"]);
+        Assert.Equal(
+            "[\"FHIR-1\",\"FHIR-2\"]",
+            startInfo.Environment[
+                "FHIR_AUGURY_GROUPING_TICKET_KEYS_JSON"]);
+    }
+
+    [Fact]
+    public void ReconciliationGroupingImpactFingerprint_IsOrderIndependentAndComplete()
+    {
+        string hashA = new('a', 64);
+        string hashB = new('b', 64);
+        PreparedTicketPublicationReconciliationGroupingImpact first = new(
+            "Orders\u001fFHIR\u001fChange Request",
+            ["FHIR-2", "FHIR-1"],
+            hashA,
+            hashA,
+            hashA,
+            hashB,
+            hashB,
+            hashB,
+            Complete: true);
+        PreparedTicketPublicationReconciliationGroupingImpact second = new(
+            "Orders\u001fFHIR\u001fComment",
+            ["FHIR-3"],
+            hashA,
+            hashA,
+            hashA,
+            hashB,
+            hashB,
+            hashB,
+            Complete: true);
+
+        Assert.Equal(
+            PreparedTicketPublicationContract
+                .ComputeGroupingImpactFingerprint([first, second]),
+            PreparedTicketPublicationContract
+                .ComputeGroupingImpactFingerprint([second, first]));
+        Assert.Throws<ArgumentException>(() =>
+            PreparedTicketPublicationContract
+                .ComputeGroupingImpactFingerprint(
+                    [first with { Complete = false }]));
+    }
+
+    [Fact]
+    public void ReconciliationGroupingFingerprint_BindsCompleteOutputSeparatelyFromImpactAudit()
+    {
+        string hashA = new('a', 64);
+        string hashB = new('b', 64);
+        string hashC = new('c', 64);
+        PreparedTicketPublicationGroupingPartition unaffected = new(
+            "Orders\u001fCDA\u001fChange Request",
+            hashA);
+        PreparedTicketPublicationReconciliationGroupingImpact replacement = new(
+            "Orders\u001fFHIR\u001fChange Request",
+            ["FHIR-2", "FHIR-1"],
+            hashA,
+            hashA,
+            hashA,
+            hashB,
+            hashB,
+            hashB,
+            Complete: true);
+        PreparedTicketPublicationReconciliationGroupingImpact second = replacement with
+        {
+            PartitionKey = "Orders\u001fFHIR\u001fComment",
+            RevisedTicketKeys = ["FHIR-3"],
+            StagedOutputFingerprint = hashC,
+        };
+        string full = PreparedTicketPublicationContract
+            .ComputeReconciliationGroupingFingerprint(
+                [unaffected],
+                [replacement, second]);
+        string audit = PreparedTicketPublicationContract
+            .ComputeGroupingImpactFingerprint([replacement, second]);
+
+        Assert.Equal(
+            PreparedTicketPublicationContract.ComputeGroupingFingerprint(
+                new PreparedTicketPublicationGroupingPartition[]
+                {
+                    unaffected,
+                    new(replacement.PartitionKey, hashB),
+                    new(second.PartitionKey, hashC),
+                }),
+            full);
+        Assert.Equal(
+            full,
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [unaffected],
+                    [second, replacement]));
+        Assert.NotEqual(audit, full);
+        Assert.NotEqual(
+            full,
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [unaffected with { OutputFingerprint = hashB }],
+                    [replacement, second]));
+        Assert.NotEqual(
+            full,
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [unaffected],
+                    [replacement with { StagedOutputFingerprint = hashC }, second]));
+
+        PreparedTicketPublicationReconciliationGroupingImpact differentAudit =
+            replacement with { BaselineOutputFingerprint = hashC };
+        Assert.Equal(
+            full,
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [unaffected],
+                    [differentAudit, second]));
+        Assert.NotEqual(
+            audit,
+            PreparedTicketPublicationContract
+                .ComputeGroupingImpactFingerprint([differentAudit, second]));
+        Assert.Throws<ArgumentException>(() =>
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [unaffected],
+                    [replacement with { Complete = false }]));
+        Assert.Throws<ArgumentException>(() =>
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [unaffected],
+                    [replacement with { StagedOutputFingerprint = null }]));
+        Assert.Throws<ArgumentException>(() =>
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [unaffected],
+                    [replacement with { StagedCorpusFingerprint = null }]));
+        Assert.Throws<ArgumentException>(() =>
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [unaffected],
+                    [replacement with { StagedProtectedRowsFingerprint = null }]));
+        Assert.Throws<ArgumentException>(() =>
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [unaffected],
+                    [replacement, replacement]));
+        Assert.Throws<ArgumentException>(() =>
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [new(replacement.PartitionKey, hashA)],
+                    [replacement]));
+    }
+
+    [Fact]
+    public void ReconciliationGroupingFingerprint_RemovedPartitionRemainsOnlyInImpactAudit()
+    {
+        string hash = new('a', 64);
+        PreparedTicketPublicationGroupingPartition unaffected = new(
+            "Orders\u001fCDA\u001fChange Request",
+            hash);
+        PreparedTicketPublicationReconciliationGroupingImpact removed = new(
+            "Orders\u001fFHIR\u001fChange Request",
+            ["FHIR-1"],
+            hash,
+            hash,
+            hash,
+            AuthoringResultHasher.HashNormalizedUtf8(string.Empty),
+            hash,
+            hash,
+            Complete: true);
+
+        Assert.Equal(
+            PreparedTicketPublicationContract.ComputeGroupingFingerprint(
+                [unaffected]),
+            PreparedTicketPublicationContract
+                .ComputeReconciliationGroupingFingerprint(
+                    [unaffected],
+                    [removed]));
+        Assert.NotEqual(
+            PreparedTicketPublicationContract.ComputeGroupingImpactFingerprint([]),
+            PreparedTicketPublicationContract.ComputeGroupingImpactFingerprint([removed]));
+    }
+
     private static PreparedTicketGroupingPayload SamplePayload() => new()
     {
         WorkGroupClean = WorkGroupClean,
@@ -396,7 +1057,11 @@ public sealed class PreparedTicketGroupingPersistenceTests
 
     private static async Task SeedPreparedTicketAsync(TestDatabase database, string key)
     {
-        PreparedTicketPayload payload = new()
+        await database.Database.SavePreparedTicketAsync(CreatePreparedTicketPayload(key));
+    }
+
+    private static PreparedTicketPayload CreatePreparedTicketPayload(string key)
+        => new()
         {
             Key = key,
             RequestSummary = "summary",
@@ -419,8 +1084,6 @@ public sealed class PreparedTicketGroupingPersistenceTests
             SavedAt = DateTimeOffset.Parse("2026-05-18T00:00:00Z"),
             Repos = [new PreparedTicketRepoPayload { Repo = "HL7/fhir", RepoCategory = "FHIR Core", Justification = "r" }],
         };
-        await database.Database.SavePreparedTicketAsync(payload);
-    }
 
     private static async Task SeedHydrationSelfAsync(TestDatabase database, string ticketKey, string workGroup, string type, string specification)
     {

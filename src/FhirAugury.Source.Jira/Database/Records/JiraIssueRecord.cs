@@ -35,6 +35,7 @@ public partial record class JiraIssueRecord : JiraIssueBaseRecord
     public required string? RaisedInVersion { get; set; }
     public required string? SelectedBallot { get; set; }
     public required string? RelatedArtifacts { get; set; }
+    public string? RelatedPages { get; set; }
     public required string? RelatedIssues { get; set; }
     public required string? DuplicateOf { get; set; }
     public required string? AppliedVersions { get; set; }

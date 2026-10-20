@@ -639,28 +639,22 @@ public static class SchemaGenerator
                 },
             }
         ),
-        ["prepared-ticket-write"] = new(
-            "Persist structured ticket-prep output into a preparer SQLite database",
-            InputSchema(["command", "dbPath", "payload"], new()
-            {
-                ["command"] = Const("prepared-ticket-write"),
-                ["dbPath"] = Prop("string", "Path to the preparer SQLite database"),
-                ["payload"] = Prop("object", "PreparedTicketPayload with structured ticket-prep fields"),
-            }),
-            new
-            {
-                type = "object",
-                properties = new Dictionary<string, object>
-                {
-                    ["key"] = Prop("string", "Jira ticket key written"),
-                    ["preparedTicketRows"] = Prop("integer", "Parent rows written"),
-                    ["repoRows"] = Prop("integer", "Related repo rows written"),
-                    ["relatedJiraRows"] = Prop("integer", "Related Jira rows written"),
-                    ["relatedZulipRows"] = Prop("integer", "Related Zulip rows written"),
-                    ["relatedGitHubRows"] = Prop("integer", "Related GitHub rows written"),
-                },
-            }
-        ),
+        ["prepared-ticket-authoring"] = AuthoringSchema(
+            "prepared-ticket-authoring",
+            "Typed Preparer run control, changed-ticket publication reconciliation, metadata-only publication refresh, worker submission, retry, supersession, and snapshot download",
+            "ticketKeys",
+            "PreparedTicketPayload",
+            supportsPublicationRefresh: true),
+        ["planned-ticket-authoring"] = AuthoringSchema(
+            "planned-ticket-authoring",
+            "Typed Planner run control, worker submission, retry, supersession, and snapshot download",
+            "ticketKeys",
+            "PlannedTicketPayload"),
+        ["ballot-note-authoring"] = AuthoringSchema(
+            "ballot-note-authoring",
+            "Typed BallotNotes run control, worker submission, retry, supersession, and snapshot download",
+            "noteIds",
+            "BallotNoteProsePutRequest"),
     };
 
     // Schema builder helpers
@@ -682,6 +676,202 @@ public static class SchemaGenerator
     private static object BoolProp(string description, bool defaultValue) =>
         new { type = "boolean", description, defaultValue };
 
+    private static CommandSchema AuthoringSchema(
+        string command,
+        string description,
+        string selectionProperty,
+        string submissionType,
+        bool supportsPublicationRefresh = false)
+    {
+        string[] actions = supportsPublicationRefresh
+            ? [
+                "start",
+                "status",
+                "retry",
+                "supersede",
+                "submit",
+                "snapshot",
+                "refresh-publication",
+                "reconcile-publication",
+                "reconciliation-status",
+                "retry-reconciliation",
+                "cancel-reconciliation",
+                "abandon-reconciliation",
+                "recover-canonical-epoch",
+                "canonical-epoch-recovery-status",
+                "retry-canonical-epoch-recovery",
+            ]
+            : [
+                "start",
+                "status",
+                "retry",
+                "supersede",
+                "submit",
+                "snapshot",
+            ];
+        string runIdDescription = supportsPublicationRefresh
+            ? "Run identifier for status, retry, supersede, snapshot, reconciliation-status, retry-reconciliation, cancel-reconciliation, abandon-reconciliation, canonical-epoch-recovery-status, or retry-canonical-epoch-recovery; source run identifier for metadata-only refresh-publication"
+            : "Run identifier for status, retry, supersede, or snapshot";
+        object outputSchema = supportsPublicationRefresh
+            ? new
+            {
+                type = "object",
+                description = "Typed run, retry, supersede, receipt, snapshot, metadata-only publication-refresh, publication-reconciliation, or canonical-epoch-recovery result for the selected action",
+                properties = new Dictionary<string, object>
+                {
+                    ["run"] = Prop(
+                        "object",
+                        "Returned refresh run coordinates when refresh-publication succeeds"),
+                    ["items"] = ArrayProp(
+                        "object",
+                        "Returned refresh run items when refresh-publication succeeds"),
+                    ["outcome"] = Prop(
+                        "string",
+                        "outcome-unknown when refresh transport did not establish whether the POST succeeded"),
+                    ["sourceRunId"] = Prop(
+                        "string",
+                        "Source Preparer run selected for metadata-only refresh-publication or changed-ticket reconcile-publication, or abandoned reconciliation selected for canonical-epoch recovery"),
+                    ["comparison"] = Prop(
+                        "object",
+                        "Frozen baseline-to-current comparison, including stable Jira generation and per-ticket dispositions"),
+                    ["counts"] = Prop(
+                        "object",
+                        "Machine-readable accepted, carried, and re-authored ticket counts"),
+                    ["groupingImpacts"] = ArrayProp(
+                        "object",
+                        "Grouping containers affected by revised tickets"),
+                    ["promotion"] = Prop(
+                        "object",
+                        "Promotion state, journal state, mutation fence, and recovery failure details"),
+                    ["invalidatedTicketKeys"] = ArrayProp(
+                        "string",
+                        "Tickets whose current Jira revision no longer matches the frozen comparison"),
+                    ["publicationProof"] = new
+                    {
+                        type = new[] { "object", "null" },
+                        description =
+                            "Verified immutable replacement publication proof when reconciliation is ready",
+                    },
+                    ["sourceAbandonment"] = Prop(
+                        "object",
+                        "Immutable canonical-unpublished source reconciliation coordinate for canonical-epoch recovery"),
+                    ["frozen"] = Prop(
+                        "object",
+                        "Frozen receipt-backed corpus and complete grouping fingerprints"),
+                    ["recovery"] = Prop(
+                        "object",
+                        "Canonical-epoch recovery journal, mutation fence, and typed failure state"),
+                    ["snapshot"] = new
+                    {
+                        type = new[] { "object", "null" },
+                        description =
+                            "New verified schema-v3 snapshot after successful canonical-epoch recovery",
+                    },
+                    ["existingRun"] = Prop(
+                        "boolean",
+                        "Whether duplicate recovery start returned the existing active or retryable run"),
+                    ["failureCode"] = new
+                    {
+                        type = new[] { "string", "null" },
+                        description =
+                            "Stable reconciliation or canonical-epoch-recovery failure code, including revision-invalidation, cancellation-not-allowed, canonical-state-changed, snapshot-recovery-failure, recovery-in-progress, promotion-recovery-failure, and canonical-unpublished-restriction",
+                    },
+                    ["failureDetail"] = new
+                    {
+                        type = new[] { "string", "null" },
+                        description =
+                            "Human-readable detail accompanying the stable reconciliation failure code",
+                    },
+                    ["status"] = Prop(
+                        "object",
+                        "Machine-readable reconciliation or canonical-epoch-recovery status returned by lifecycle actions"),
+                    ["recoveryStarted"] = Prop(
+                        "boolean",
+                        "Whether a reconciliation or canonical-epoch retry started recovery"),
+                    ["abandonedAt"] = Prop(
+                        "string",
+                        "Timestamp when reconciliation entered canonical-unpublished"),
+                    ["cancelledAt"] = Prop(
+                        "string",
+                        "Timestamp when staged reconciliation was cancelled before promotion"),
+                    ["reason"] = Prop(
+                        "string",
+                        "Audited cancellation or abandonment reason"),
+                    ["reconciliation"] = Prop(
+                        "string",
+                        "succeeded or failed for the single bounded read-only reconciliation"),
+                    ["candidates"] = ArrayProp(
+                        "object",
+                        "Matching publication-refresh runs created after submission; select the single reconciled run before continuing"),
+                    ["listTruncated"] = Prop(
+                        "boolean",
+                        "Whether the bounded recent-run response was truncated"),
+                    ["message"] = Prop(
+                        "string",
+                        "Operator guidance for an unknown refresh outcome"),
+                    ["error"] = new
+                    {
+                        type = new[] { "string", "null" },
+                        description =
+                            "Read-reconciliation error when reconciliation failed; null after a successful reconciliation",
+                    },
+                },
+            }
+            : new
+            {
+                type = "object",
+                description = "Typed run, retry, supersede, receipt, or snapshot result for the selected action",
+            };
+        return new CommandSchema(
+            description,
+            InputSchema(["command", "action"], new()
+            {
+                ["command"] = Const(command),
+                ["action"] = new
+                {
+                    type = "string",
+                    enumValues = actions,
+                    description = "Authoring action",
+                },
+                [selectionProperty] = ArrayProp(
+                    "string",
+                    "Items selected when action is start"),
+                ["hydrationExecutionId"] = Prop(
+                    "string",
+                    "BallotNotes hydration execution selected when action is start"),
+                ["databaseOnly"] = BoolProp(
+                    "Complete without creating a review snapshot",
+                    false),
+                ["runId"] = Prop(
+                    "string",
+                    runIdDescription),
+                ["sourceRunId"] = Prop(
+                    "string",
+                    "Baseline source run identifier required by reconcile-publication, or abandoned reconciliation run identifier required by recover-canonical-epoch"),
+                ["itemId"] = Prop(
+                    "string",
+                    "Run item identifier for retry or supersede"),
+                ["reason"] = Prop(
+                    "string",
+                    "Required non-blank reason when action is supersede, cancel-reconciliation, or abandon-reconciliation"),
+                ["payload"] = Prop(
+                    "object",
+                    $"{submissionType} used by prepared/planned worker submit"),
+                ["prose"] = Prop(
+                    "object",
+                    $"{submissionType} used by BallotNotes worker submit"),
+                ["snapshotPath"] = Prop(
+                    "string",
+                    "Destination directory or preferred path; the trusted descriptor filename is authoritative"),
+                ["descriptorPath"] = Prop(
+                    "string",
+                    "Destination path for the trusted snapshot descriptor JSON"),
+                ["observedSourceRevision"] = Prop(
+                    "string",
+                    "Exact Jira updatedAt or BallotNotes evidence revision actually observed by a worker submit"),
+            }),
+            outputSchema);
+    }
+
     public sealed record CommandSchema(string Description, object InputSchema, object OutputSchema);
 }
-

@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Contracts;
+using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts;
 
 namespace FhirAugury.Cli.Models;
 
@@ -515,11 +517,70 @@ public sealed class JiraSpecsRequest : CliRequest
     [JsonPropertyName("pageKey")] public string? PageKey { get; set; }
 }
 
-public sealed class PreparedTicketWriteRequest : CliRequest
+public abstract class AuthoringCommandRequest : CliRequest
 {
-    [JsonPropertyName("dbPath")]
-    public string DbPath { get; set; } = string.Empty;
+    [JsonPropertyName("action")]
+    public string Action { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The selected run. For prepared-ticket-authoring
+    /// refresh-publication, this is the source run to repair. Reconciliation
+    /// and canonical-epoch recovery starts use
+    /// <see cref="PreparedTicketAuthoringRequest.SourceRunId"/> for the
+    /// source run. This property selects status/retry/cancel/abandon or the
+    /// dedicated recovery run.
+    /// </summary>
+    [JsonPropertyName("runId")]
+    public string? RunId { get; set; }
+
+    [JsonPropertyName("itemId")]
+    public string? ItemId { get; set; }
+
+    [JsonPropertyName("reason")]
+    public string? Reason { get; set; }
+
+    [JsonPropertyName("databaseOnly")]
+    public bool DatabaseOnly { get; set; }
+
+    [JsonPropertyName("snapshotPath")]
+    public string? SnapshotPath { get; set; }
+
+    [JsonPropertyName("descriptorPath")]
+    public string? DescriptorPath { get; set; }
+
+    [JsonPropertyName("observedSourceRevision")]
+    public string? ObservedSourceRevision { get; set; }
+}
+
+public sealed class PreparedTicketAuthoringRequest : AuthoringCommandRequest
+{
+    [JsonPropertyName("sourceRunId")]
+    public string? SourceRunId { get; set; }
+
+    [JsonPropertyName("ticketKeys")]
+    public IReadOnlyList<string> TicketKeys { get; set; } = [];
 
     [JsonPropertyName("payload")]
     public PreparedTicketPayload? Payload { get; set; }
+}
+
+public sealed class PlannedTicketAuthoringRequest : AuthoringCommandRequest
+{
+    [JsonPropertyName("ticketKeys")]
+    public IReadOnlyList<string> TicketKeys { get; set; } = [];
+
+    [JsonPropertyName("payload")]
+    public PlannedTicketPayload? Payload { get; set; }
+}
+
+public sealed class BallotNoteAuthoringRequest : AuthoringCommandRequest
+{
+    [JsonPropertyName("hydrationExecutionId")]
+    public string? HydrationExecutionId { get; set; }
+
+    [JsonPropertyName("noteIds")]
+    public IReadOnlyList<string>? NoteIds { get; set; }
+
+    [JsonPropertyName("prose")]
+    public BallotNoteProsePutRequest? Prose { get; set; }
 }

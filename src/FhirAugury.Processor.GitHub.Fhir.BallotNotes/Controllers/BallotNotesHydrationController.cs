@@ -29,6 +29,7 @@ public sealed class BallotNotesHydrationController(
     [HttpPost]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
     [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> Hydrate([FromBody] HydrateRequest request, CancellationToken ct)
     {
@@ -79,30 +80,49 @@ public sealed class BallotNotesHydrationController(
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
         string runKey = $"{owner}/{name}@{sinceFull}..{headSha}";
-
-        database.BeginRun(new NotesRunRecord
+        string executionId = Guid.NewGuid().ToString("N");
+        HydrationMutationLease? mutationLease =
+            database.TryAcquireHydrationLease(executionId);
+        if (mutationLease is null)
         {
-            RunKey = runKey,
-            RepoOwner = owner,
-            RepoName = name,
-            RepoCategory = request.RepoCategory?.Trim() ?? string.Empty,
-            SinceSha = sinceFull,
-            SinceShortSha = ShortSha(sinceFull),
-            HeadSha = headSha,
-            HeadShortSha = ShortSha(headSha),
-            WindowLabel = request.WindowLabel?.Trim() ?? string.Empty,
-            Status = "running",
-            UnitsTotal = 0,
-            StartedAt = now,
-            RunAt = now,
-        });
+            return Conflict(new { error = "mutation-fence-unavailable" });
+        }
+
+        try
+        {
+            database.BeginHydrationExecution(
+                new NotesHydrationExecutionRecord
+                {
+                    Id = executionId,
+                    RunKey = runKey,
+                    RepoOwner = owner,
+                    RepoName = name,
+                    RepoCategory = request.RepoCategory?.Trim() ?? string.Empty,
+                    SinceSha = sinceFull,
+                    SinceShortSha = ShortSha(sinceFull),
+                    HeadSha = headSha,
+                    HeadShortSha = ShortSha(headSha),
+                    WindowLabel = request.WindowLabel?.Trim() ?? string.Empty,
+                    Status = "running",
+                    StartedAt = now,
+                },
+                mutationLease);
+        }
+        catch
+        {
+            database.ReleaseMutationLease(mutationLease);
+            throw;
+        }
 
         BallotNotesHydrationRequest hydrationRequest = new()
         {
+            ExecutionId = executionId,
             RepoOwner = owner,
             RepoName = name,
             SinceSha = sinceFull,
             RunKey = runKey,
+            HeadSha = headSha,
+            MutationLease = mutationLease,
             RepoCategory = request.RepoCategory?.Trim() ?? string.Empty,
             WindowLabel = request.WindowLabel?.Trim() ?? string.Empty,
             WorkGroupHint = request.WorkGroupHint,
@@ -116,23 +136,56 @@ public sealed class BallotNotesHydrationController(
             t => logger.LogError(t.Exception, "BallotNotes hydration task faulted for {RunKey}", runKey),
             TaskContinuationOptions.OnlyOnFaulted);
 
-        return Accepted(new HydrateAcceptedDto { RunKey = runKey, Status = "running", UnitsTotal = 0 });
+        return Accepted(new HydrateAcceptedDto
+        {
+            ExecutionId = executionId,
+            RunKey = runKey,
+            Status = "running",
+            UnitsTotal = 0,
+        });
     }
 
     [HttpGet("status")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public IActionResult Status([FromQuery] string? runKey)
+    public IActionResult Status(
+        [FromQuery] string? executionId,
+        [FromQuery] string? runKey)
     {
-        // runKey contains '/' (owner/name@since..head), so it is a query
-        // parameter, not a path segment. Omit it to read the latest run.
-        NotesRunRecord? run = string.IsNullOrWhiteSpace(runKey)
-            ? database.GetLatestRun()
-            : database.GetRun(runKey);
+        NotesHydrationExecutionRecord? execution;
+        if (!string.IsNullOrWhiteSpace(executionId))
+        {
+            execution = database.GetHydrationExecution(executionId);
+        }
+        else if (!string.IsNullOrWhiteSpace(runKey))
+        {
+            NotesRunRecord? run = database.GetRun(runKey);
+            execution = string.IsNullOrWhiteSpace(run?.LatestExecutionId)
+                ? null
+                : database.GetHydrationExecution(run.LatestExecutionId);
+        }
+        else
+        {
+            execution = database.GetLatestHydrationExecution();
+        }
 
-        return run is null
-            ? NotFound(new { error = runKey is null ? "No hydration run has been recorded." : $"Run '{runKey}' not found." })
-            : Ok(BallotNoteDtoMapper.ToStatusDto(run));
+        return execution is null
+            ? NotFound(new { error = "No matching hydration execution was found." })
+            : Ok(new HydrationStatusDto
+            {
+                ExecutionId = execution.Id,
+                RunKey = execution.RunKey,
+                SinceSha = execution.SinceSha,
+                HeadSha = execution.HeadSha,
+                Status = execution.Status,
+                UnitsTotal = execution.UnitsTotal,
+                UnitsHydrated = execution.UnitsHydrated,
+                CommitsInWindow = execution.CommitsInWindow,
+                TicketsAttributed = execution.TicketsAttributed,
+                StartedAt = execution.StartedAt,
+                CompletedAt = execution.CompletedAt,
+                Error = execution.Error,
+            });
     }
 
     private static string ShortSha(string fullSha)

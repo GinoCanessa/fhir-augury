@@ -12,7 +12,8 @@ namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Controllers;
 [ApiController]
 [Route("api/v1/ballot-notes")]
 [Produces("application/json")]
-public sealed class BallotNotesController(BallotNotesDatabase database) : ControllerBase
+public sealed class BallotNotesController(
+    BallotNotesDatabase database) : ControllerBase
 {
     [HttpGet]
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -46,37 +47,22 @@ public sealed class BallotNotesController(BallotNotesDatabase database) : Contro
     public IActionResult Get([FromRoute] string slug)
     {
         NoteDetail? detail = database.GetNote(slug);
-        return detail is null
-            ? NotFound(new { error = $"Note '{slug}' not found." })
-            : Ok(BallotNoteDtoMapper.ToDetailDto(detail));
-    }
-
-    [HttpPut("{slug}/note")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public IActionResult PutNote([FromRoute] string slug, [FromBody] BallotNoteProsePutRequest request)
-    {
-        ArgumentNullException.ThrowIfNull(request);
-
-        BallotNoteProse prose = new()
+        if (detail is null)
         {
-            NeedsNote = NormalizeNeedsNote(request.NeedsNote),
-            ProposedBallotNoteHtml = request.ProposedBallotNoteHtml ?? string.Empty,
-            RollupSummaryMarkdown = request.RollupSummaryMarkdown ?? string.Empty,
-            NotesForReviewerMarkdown = request.NotesForReviewerMarkdown ?? string.Empty,
-            SourceFilesNote = request.SourceFilesNote ?? string.Empty,
+            return NotFound(new { error = $"Note '{slug}' not found." });
+        }
+        BallotNoteDetailDto dto = BallotNoteDtoMapper.ToDetailDto(detail) with
+        {
+            CurrentHydrationExecutionId =
+                detail.Note.CurrentHydrationExecutionId,
+            CurrentEvidenceHash = detail.Note.CurrentEvidenceHash,
+            CurrentEvidenceRevision = detail.Note.CurrentEvidenceRevision,
+            ProseHydrationExecutionId =
+                detail.Note.ProseHydrationExecutionId,
+            ProseEvidenceRevision = detail.Note.ProseEvidenceRevision,
+            ProseVerificationStatus = detail.Note.ProseVerificationStatus,
         };
-
-        bool updated = database.UpdateNoteProse(slug, prose, DateTimeOffset.UtcNow);
-        return updated
-            ? Ok(new BallotNoteProseSaveResultDto { NoteId = slug, Status = "authored" })
-            : NotFound(new { error = $"Note '{slug}' was never hydrated; prose cannot attach to a non-existent unit." });
+        return Ok(dto);
     }
 
-    private static string NormalizeNeedsNote(string? value) => value?.Trim().ToLowerInvariant() switch
-    {
-        "yes" or "true" => "yes",
-        "no" or "false" => "no",
-        _ => "unknown",
-    };
 }

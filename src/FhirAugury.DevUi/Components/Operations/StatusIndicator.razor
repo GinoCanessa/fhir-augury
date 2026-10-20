@@ -1,0 +1,96 @@
+<span class="status-indicator status-indicator--@Presentation.Tone">
+    <i class="bi @Presentation.Icon" aria-hidden="true"></i>
+    <span>@DisplayText</span>
+</span>
+
+@code {
+    [Parameter, EditorRequired]
+    public string Status { get; set; } = "";
+
+    [Parameter]
+    public string? Label { get; set; }
+
+    private StatusPresentation Presentation =>
+        GetPresentation(Status);
+
+    private string DisplayText =>
+        string.IsNullOrWhiteSpace(Label)
+            ? FormatStatus(Status)
+            : Label;
+
+    private static StatusPresentation GetPresentation(
+        string status)
+    {
+        string normalized = status.Trim().ToLowerInvariant();
+        if (normalized is
+            "healthy" or "ok" or "ready" or "complete" or
+            "completed" or "persisted" or "published" or
+            "succeeded" or "full-success")
+        {
+            return new("success", "bi-check-circle-fill");
+        }
+
+        if (normalized is
+            "running" or "in-progress" or "finalizing" or
+            "publishing" or "active")
+        {
+            return new("active", "bi-arrow-repeat");
+        }
+
+        if (normalized is
+            "degraded" or "error" or "recoverable-error" or
+            "partial-success" or "completed-with-superseded-items" or
+            "warning")
+        {
+            return new("warning", "bi-exclamation-triangle-fill");
+        }
+
+        if (normalized is
+            "unavailable" or "timeout" or "failed" or
+            "outcome-unknown")
+        {
+            return new("danger", "bi-x-octagon-fill");
+        }
+
+        if (normalized is
+            "queued" or "pending" or "unobserved" or
+            "notobserved" or "not-observed")
+        {
+            return new("pending", "bi-clock-fill");
+        }
+
+        if (normalized is
+            "superseded" or "completed-database-only" or
+            "database-only" or "disabled" or "not_configured" or
+            "unavailable-for-publication")
+        {
+            return new("muted", "bi-dash-circle-fill");
+        }
+
+        return new("neutral", "bi-info-circle-fill");
+    }
+
+    private static string FormatStatus(string status)
+    {
+        if (string.IsNullOrWhiteSpace(status))
+        {
+            return "Unknown";
+        }
+
+        string[] words = status
+            .Replace('_', '-')
+            .Split(
+                '-',
+                StringSplitOptions.RemoveEmptyEntries |
+                StringSplitOptions.TrimEntries);
+        return string.Join(
+            " ",
+            words.Select(word =>
+                char.ToUpperInvariant(word[0]) +
+                word[1..].ToLowerInvariant()));
+    }
+
+    private readonly record struct StatusPresentation(
+        string Tone,
+        string Icon);
+}

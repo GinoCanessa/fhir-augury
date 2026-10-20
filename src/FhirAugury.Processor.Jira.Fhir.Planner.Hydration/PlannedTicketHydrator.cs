@@ -25,4 +25,9 @@ public class PlannedTicketHydrator(
 
     public virtual Task HydrateAsync(string issueKey, CancellationToken ct)
         => _coordinator.HydrateAsync(issueKey, ct);
+
+    public virtual Task<HydrationAttemptResult> HydrateWithResultAsync(
+        string issueKey,
+        CancellationToken ct)
+        => _coordinator.HydrateWithResultAsync(issueKey, ct);
 }

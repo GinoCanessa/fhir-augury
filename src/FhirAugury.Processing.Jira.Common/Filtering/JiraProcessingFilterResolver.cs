@@ -16,8 +16,18 @@ public sealed class JiraProcessingFilterResolver(JiraProcessingFilterDefaults? d
             Specifications = ResolveList(options.SpecificationsToInclude, _defaults.SpecificationsToInclude),
             WorkGroups = ResolveList(options.WorkGroupsToInclude, _defaults.WorkGroupsToInclude),
             TicketTypes = ResolveList(options.TicketTypesToProcess, _defaults.TicketTypesToProcess),
+            LabelsToInclude = ResolveLabelList(options.LabelsToInclude),
+            LabelsToExclude = ResolveLabelList(options.LabelsToExclude),
             SourceTicketShape = string.IsNullOrWhiteSpace(options.SourceTicketShape) ? "fhir" : options.SourceTicketShape,
         };
+    }
+
+    private static IReadOnlyList<string>? ResolveLabelList(IReadOnlyList<string>? configured)
+    {
+        string[]? values = configured?
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .ToArray();
+        return values is { Length: > 0 } ? values : null;
     }
 
     private static IReadOnlyList<string>? ResolveList(IReadOnlyList<string>? configured, IReadOnlyList<string>? defaultValues)

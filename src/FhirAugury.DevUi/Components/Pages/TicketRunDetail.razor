@@ -1,0 +1,1583 @@
+@page "/operations/{workflow}/{runId}"
+@implements IAsyncDisposable
+@using FhirAugury.Processing.Client
+@inject TicketOperationsService Operations
+@inject TicketWorkflowCatalog Catalog
+@inject IServiceProvider Services
+@inject NavigationManager Navigation
+
+<PageTitle>@(_details is null ? "Ticket run" : $"{_details.Workflow.DisplayName} {_details.Response.Run.RunId}") — FHIR Augury Dev UI</PageTitle>
+
+@if (_definition is null)
+{
+    <div class="page-heading">
+        <div>
+            <p class="page-heading__eyebrow">Guided ticket processing</p>
+            <h1>Unknown run route</h1>
+        </div>
+    </div>
+    <div class="alert alert-danger" role="alert">
+        <strong>This workflow route is not available.</strong>
+        Return to Operations and choose Prepare tickets or Plan tickets.
+    </div>
+    <a class="btn btn-primary" href="/">Back to operations</a>
+}
+else if (_loading && _details is null)
+{
+    <div class="loading-state" role="status">
+        <span class="spinner-border" aria-hidden="true"></span>
+        <span>Opening authoritative run @RunId…</span>
+    </div>
+}
+else if (_loadError is not null && _details is null)
+{
+    <div class="page-heading">
+        <div>
+            <a class="back-link" href="/">
+                <i class="bi bi-arrow-left" aria-hidden="true"></i>
+                Operations
+            </a>
+            <p class="page-heading__eyebrow">
+                @_definition.ProcessingServiceName processor
+            </p>
+            <h1>Run could not be opened</h1>
+        </div>
+    </div>
+    <div class="alert alert-danger" role="alert">
+        <i class="bi bi-exclamation-octagon-fill" aria-hidden="true"></i>
+        <div>
+            <strong>Authoritative run @RunId was not loaded.</strong>
+            <span class="d-block">@_loadError</span>
+        </div>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+        <button class="btn btn-primary"
+                type="button"
+                @onclick="RestartCurrentRouteAsync">
+            <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+            Try again
+        </button>
+        <a class="btn btn-outline-secondary" href="/">
+            Back to operations
+        </a>
+    </div>
+}
+else if (_details is not null)
+{
+    AuthoringRunStatus run = _details.Response.Run;
+
+    <div class="run-page-heading">
+        <div>
+            <a class="back-link" href="/">
+                <i class="bi bi-arrow-left" aria-hidden="true"></i>
+                Operations
+            </a>
+            <p class="page-heading__eyebrow">
+                @_details.Workflow.DisplayName ·
+                @_details.Workflow.ProcessingServiceName processor
+            </p>
+            <h1>
+                Run <span class="run-heading-id">@run.RunId</span>
+            </h1>
+            <div class="run-heading-meta">
+                <StatusIndicator Status="@run.Status" />
+                <span>
+                    Created
+                    <time datetime="@run.CreatedAt.ToString("O")"
+                          title="@run.CreatedAt.LocalDateTime.ToString("F")">
+                        @run.CreatedAt.LocalDateTime.ToString("g")
+                    </time>
+                </span>
+                <span>
+                    Authoring epoch @run.AuthoringEpoch
+                </span>
+            </div>
+        </div>
+        <div class="run-refresh-controls">
+            @if (run.State?.IsTerminal == false)
+            {
+                <span class="polling-indicator">
+                    <i class="bi bi-arrow-repeat spin" aria-hidden="true"></i>
+                    Sequential polling active
+                </span>
+            }
+            else
+            {
+                <span class="polling-indicator polling-indicator--stopped">
+                    <i class="bi bi-stop-circle" aria-hidden="true"></i>
+                    Polling stopped at terminal state
+                </span>
+            }
+            <button @ref="_refreshButton"
+                    class="btn btn-outline-primary"
+                    type="button"
+                    disabled="@(_manualRefreshing || _refreshingPublication)"
+                    @onclick="RefreshNowAsync">
+                @if (_manualRefreshing)
+                {
+                    <span class="spinner-border spinner-border-sm"
+                          aria-hidden="true"></span>
+                }
+                else
+                {
+                    <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+                }
+                Refresh now
+            </button>
+            @if (_lastRefreshAt is DateTimeOffset refreshedAt)
+            {
+                <span class="text-body-secondary small">
+                    Last read
+                    <time datetime="@refreshedAt.ToString("O")">
+                        @refreshedAt.LocalDateTime.ToString("T")
+                    </time>
+                </span>
+            }
+        </div>
+    </div>
+
+    <div class="operation-announcer"
+         aria-live="polite"
+         aria-atomic="true">
+        @if (_manualRefreshing)
+        {
+            <span>Refreshing the complete run.</span>
+        }
+        else if (_busyItemId is not null)
+        {
+            <span>
+                @_busyAction action in progress for one ticket.
+            </span>
+        }
+        else if (_publishing)
+        {
+            <span>Generating the run-scoped review site.</span>
+        }
+        else if (_refreshingPublication)
+        {
+            <span>Updating publication workflow state.</span>
+        }
+    </div>
+
+    @if (_pollError is not null)
+    {
+        <div class="alert alert-warning" role="status">
+            <i class="bi bi-wifi-off" aria-hidden="true"></i>
+            <div>
+                <strong>The latest read failed.</strong>
+                Existing processor state remains visible and automatic
+                polling will continue for a non-terminal run.
+                <span class="d-block">@_pollError</span>
+            </div>
+        </div>
+    }
+
+    @if (!string.IsNullOrWhiteSpace(run.Error))
+    {
+        <div class="alert alert-warning" role="alert">
+            <i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i>
+            <div>
+                <strong>Processor run error.</strong>
+                <span class="d-block">@run.Error</span>
+                @if (run.State?.IsRecoverable == true)
+                {
+                    <span class="d-block mt-1">
+                        This state is recoverable and non-terminal; polling
+                        remains active.
+                    </span>
+                }
+            </div>
+        </div>
+    }
+
+    @if (_lastMutation is not null ||
+        _mutationException is not null)
+    {
+        <div class="alert @MutationAlertClass"
+             role="@MutationRole"
+             aria-live="polite">
+            <div>
+                <strong>@MutationHeading</strong>
+                @if (_lastMutation?.Message is string message)
+                {
+                    <span class="d-block">@message</span>
+                }
+                @if (_lastMutation?.Disposition ==
+                    TicketOperationDisposition.OutcomeUnknown)
+                {
+                    <span class="d-block mt-1">
+                        The mutation was not replayed. Only read
+                        reconciliation was attempted.
+                    </span>
+                }
+                @if (_lastMutation?.Reconciliation?.Outcome ==
+                    TicketReconciliationOutcome.Failed)
+                {
+                    <span class="d-block mt-1">
+                        Read reconciliation failed:
+                        @_lastMutation.Reconciliation.Error
+                    </span>
+                }
+                @if (_mutationException is not null)
+                {
+                    <span class="d-block">@_mutationException</span>
+                }
+                @if (_actionRefreshError is not null)
+                {
+                    <span class="d-block mt-1">
+                        Complete-run refresh failed:
+                        @_actionRefreshError
+                    </span>
+                }
+            </div>
+        </div>
+    }
+
+    @if (_lastPublicationRefresh is not null ||
+        _publicationRefreshException is not null)
+    {
+        <div class="alert @PublicationRefreshAlertClass"
+             role="@PublicationRefreshRole"
+             aria-live="polite">
+            <div>
+                <strong>@PublicationRefreshHeading</strong>
+                @if (_lastPublicationRefresh is
+                    TicketPublicationRefreshResult refreshResult)
+                {
+                    @if (refreshResult.Message is string message)
+                    {
+                        <span class="d-block">@message</span>
+                    }
+                    @if (refreshResult.Reconciliation?.Outcome ==
+                        TicketReconciliationOutcome.Failed)
+                    {
+                        <span class="d-block mt-1">
+                            Read reconciliation failed:
+                            @refreshResult.Reconciliation.Error
+                        </span>
+                    }
+                    @if (refreshResult.Candidates is
+                        { Count: > 0 } candidates)
+                    {
+                        <span class="d-block mt-2">
+                            Matching publication-refresh runs:
+                        </span>
+                        <ul class="mb-0">
+                            @foreach (AuthoringRunStatus candidate in candidates)
+                            {
+                                <li>
+                                    <a href="@RunUrl(
+                                        refreshResult.Workflow,
+                                        candidate.RunId)">
+                                        @candidate.RunId
+                                    </a>
+                                    <span>
+                                        — created
+                                        <time datetime="@candidate.CreatedAt.ToString("O")">
+                                            @candidate.CreatedAt.LocalDateTime.ToString("g")
+                                        </time>
+                                    </span>
+                                </li>
+                            }
+                        </ul>
+                    }
+                    @if (refreshResult.ConflictingRunIds is
+                        { Count: > 0 } conflicts)
+                    {
+                        <span class="d-block mt-2">Related runs:</span>
+                        <ul class="mb-0">
+                            @foreach (string conflict in conflicts)
+                            {
+                                <li>
+                                    <a href="@RunUrl(
+                                        refreshResult.Workflow,
+                                        conflict)">
+                                        @conflict
+                                    </a>
+                                </li>
+                            }
+                        </ul>
+                    }
+                    @if (refreshResult.Disposition ==
+                        TicketOperationDisposition.OutcomeUnknown)
+                    {
+                        <div class="d-flex flex-wrap gap-2 mt-2">
+                            <button class="btn btn-sm btn-warning"
+                                    type="button"
+                                    @onclick="AcknowledgeUnknownPublicationRefresh">
+                                I inspected the refresh result; allow another refresh
+                            </button>
+                        </div>
+                    }
+                }
+                @if (_publicationRefreshException is not null)
+                {
+                    <span class="d-block">
+                        @_publicationRefreshException
+                    </span>
+                }
+            </div>
+        </div>
+    }
+
+    @if (_lastCanonicalEpochRecovery is
+            TicketCanonicalEpochRecoveryResult recoveryResult &&
+        recoveryResult.Disposition != TicketOperationDisposition.Succeeded)
+    {
+        <div class="alert alert-warning" role="alert">
+            <strong>Recovery action was not applied.</strong>
+            @if (!string.IsNullOrWhiteSpace(recoveryResult.FailureCode))
+            {
+                <code>@recoveryResult.FailureCode</code>
+            }
+            @recoveryResult.Message
+            @if (recoveryResult.ConflictingRunIds.Count > 0)
+            {
+                <ul class="mb-0">
+                    @foreach (string relatedRunId in recoveryResult.ConflictingRunIds)
+                    {
+                        <li>
+                            <a href="@RunUrl(recoveryResult.Workflow, relatedRunId)">
+                                @relatedRunId
+                            </a>
+                        </li>
+                    }
+                </ul>
+            }
+        </div>
+    }
+
+    <div class="run-summary-grid">
+        <RunLifecycleTimeline Run="@run" />
+        <RunProgressSummary Details="@_details" />
+    </div>
+
+    @if (_details.Reconciliation is
+        PublicationReconciliationStatusResult reconciliation)
+    {
+        <section class="operation-panel"
+                 aria-labelledby="reconciliation-status-heading">
+            <div class="operation-panel__heading">
+                <div>
+                    <p class="operation-panel__eyebrow">Replacement publication</p>
+                    <h2 id="reconciliation-status-heading" class="h4 mb-0">
+                        Publication reconciliation
+                    </h2>
+                </div>
+                <StatusIndicator Status="@reconciliation.Promotion.State" />
+            </div>
+            @if (_lastReconciliation is
+                    TicketPublicationReconciliationResult operationResult &&
+                operationResult.Disposition !=
+                    TicketOperationDisposition.Succeeded)
+            {
+                <div class="alert alert-warning" role="alert">
+                    <strong>Reconciliation action was not applied.</strong>
+                    @if (!string.IsNullOrWhiteSpace(
+                        operationResult.FailureCode))
+                    {
+                        <code>@operationResult.FailureCode</code>
+                    }
+                    @operationResult.Message
+                </div>
+            }
+            <dl class="row">
+                <dt class="col-sm-6">Stable Jira generation</dt>
+                <dd class="col-sm-6"><code>@reconciliation.Comparison.StableJiraGeneration</code></dd>
+                <dt class="col-sm-6">Accepted tickets</dt>
+                <dd class="col-sm-6">@reconciliation.Counts.AcceptedTicketCount</dd>
+                <dt class="col-sm-6">Carried forward</dt>
+                <dd class="col-sm-6">@reconciliation.Counts.CarryForwardTicketCount</dd>
+                <dt class="col-sm-6">Changed / re-authored</dt>
+                <dd class="col-sm-6">@reconciliation.Counts.ReAuthorTicketCount</dd>
+                <dt class="col-sm-6">Promotion state</dt>
+                <dd class="col-sm-6"><code>@reconciliation.Promotion.State</code></dd>
+                <dt class="col-sm-6">Recovery journal</dt>
+                <dd class="col-sm-6">
+                    <code>@(reconciliation.Promotion.JournalState ?? "none")</code>
+                    · mutation fence
+                    @(reconciliation.Promotion.MutationFenceHeld ? "held" : "released")
+                </dd>
+            </dl>
+            @if (reconciliation.InvalidatedTicketKeys.Count > 0)
+            {
+                <div class="alert alert-warning" role="alert">
+                    <strong>Later Jira revisions invalidated staged work.</strong>
+                    <ul class="mb-0">
+                        @foreach (string ticketKey in reconciliation.InvalidatedTicketKeys)
+                        {
+                            <li><code>@ticketKey</code></li>
+                        }
+                    </ul>
+                </div>
+            }
+            @if (string.Equals(
+                reconciliation.Promotion.State,
+                "staged",
+                StringComparison.Ordinal))
+            {
+                <div class="callout callout--warning">
+                    <i class="bi bi-x-octagon-fill" aria-hidden="true"></i>
+                    <div>
+                        <strong>Staged reconciliation can be cancelled before promotion.</strong>
+                        Cancellation is terminal, releases mutation fences, and
+                        retains the frozen comparison and audited reason without
+                        replacing canonical data.
+                    </div>
+                </div>
+                <button class="btn btn-outline-danger"
+                        type="button"
+                        disabled="@_refreshingPublication"
+                        @onclick="ToggleCancellationConfirmation">
+                    Cancel staged reconciliation…
+                </button>
+                @if (_confirmingCancellation)
+                {
+                    <div class="alert alert-warning mt-3" role="group">
+                        <strong>No staged work will be promoted.</strong>
+                        <p>
+                            Completed and pending reconciliation workspace will
+                            be closed and only the immutable cancellation audit
+                            will remain.
+                        </p>
+                        <label for="cancellation-reason" class="form-label">
+                            Audited reason
+                        </label>
+                        <input id="cancellation-reason"
+                               class="form-control"
+                               @bind="_cancellationReason" />
+                        <button class="btn btn-danger mt-2"
+                                type="button"
+                                disabled="@string.IsNullOrWhiteSpace(_cancellationReason)"
+                                @onclick="CancelReconciliationAsync">
+                            Confirm cancellation
+                        </button>
+                    </div>
+                }
+            }
+            <div class="table-responsive">
+                <table class="table table-sm align-middle">
+                    <caption>Frozen ticket delta and source revisions.</caption>
+                    <thead>
+                        <tr>
+                            <th scope="col">Ticket</th>
+                            <th scope="col">Disposition</th>
+                            <th scope="col">Baseline revision</th>
+                            <th scope="col">Current revision</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (PublicationReconciliationItemDecision item
+                            in reconciliation.Comparison.Items)
+                        {
+                            <tr>
+                                <th scope="row"><code>@item.TicketKey</code></th>
+                                <td><code>@item.Disposition</code></td>
+                                <td><code>@item.BaselineSourceRevision</code></td>
+                                <td><code>@item.CurrentSourceRevision</code></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            @if (string.Equals(
+                reconciliation.Promotion.State,
+                "snapshot-publish-pending",
+                StringComparison.Ordinal))
+            {
+                <div class="callout callout--warning">
+                    <i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i>
+                    <div>
+                        <strong>Snapshot publication recovery is pending.</strong>
+                        Canonical database promotion has already occurred and
+                        competing mutations remain blocked.
+                    </div>
+                </div>
+                <div class="d-flex flex-wrap gap-2">
+                    <button class="btn btn-primary"
+                            type="button"
+                            disabled="@_refreshingPublication"
+                            @onclick="RetryReconciliationAsync">
+                        Retry snapshot publication
+                    </button>
+                    <button class="btn btn-outline-danger"
+                            type="button"
+                            disabled="@_refreshingPublication"
+                            @onclick="ToggleAbandonConfirmation">
+                        Abandon without publication…
+                    </button>
+                </div>
+                @if (_confirmingAbandonment)
+                {
+                    <div class="alert alert-danger mt-3" role="group">
+                        <strong>Abandonment does not roll back canonical data.</strong>
+                        <p>
+                            It leaves this database epoch canonical without a
+                            replacement publication and restricts later
+                            snapshot-producing workflows.
+                        </p>
+                        <label for="abandonment-reason" class="form-label">
+                            Audited reason
+                        </label>
+                        <input id="abandonment-reason"
+                               class="form-control"
+                               @bind="_abandonmentReason" />
+                        <button class="btn btn-danger mt-2"
+                                type="button"
+                                disabled="@string.IsNullOrWhiteSpace(_abandonmentReason)"
+                                @onclick="AbandonReconciliationAsync">
+                            Confirm canonical-unpublished abandonment
+                        </button>
+                    </div>
+                }
+            }
+            else if (string.Equals(
+                reconciliation.Promotion.State,
+                "canonical-unpublished",
+                StringComparison.Ordinal))
+            {
+                @if (reconciliation.CanonicalEpochRecovery?.State == "ready")
+                {
+                    <div class="alert alert-success" role="status">
+                        <strong>Canonical epoch recovered by a separate run.</strong>
+                        This reconciliation remains historically abandoned;
+                        its reason and time have not changed.
+                    </div>
+                }
+                else
+                {
+                    <div class="alert alert-danger" role="alert">
+                        <strong>Canonical data is unpublished.</strong>
+                        No replacement snapshot was produced; snapshot-producing
+                        workflows remain restricted for this canonical epoch until
+                        a dedicated recovery snapshot is verified.
+                    </div>
+                }
+                <p>
+                    Abandoned
+                    <time datetime="@reconciliation.Promotion.AbandonedAt?.ToString("O")">
+                        @reconciliation.Promotion.AbandonedAt?.ToLocalTime().ToString("g")
+                    </time>
+                    · @reconciliation.Promotion.AbandonmentReason
+                </p>
+                @if (reconciliation.CanonicalEpochRecovery is
+                    CanonicalEpochRecoveryLink recoveryLink)
+                {
+                    <a class="btn btn-primary"
+                       href="@RunUrl(_details.Workflow, recoveryLink.RunId)">
+                        Open canonical-epoch recovery
+                    </a>
+                    @if (recoveryLink.State == "ready")
+                    {
+                        <a class="btn btn-outline-primary"
+                           href="@Operations.GetSnapshotUrl(_details.Workflow.RouteKey, recoveryLink.RunId)">
+                            Verified recovery snapshot @recoveryLink.SnapshotId
+                        </a>
+                    }
+                }
+                else
+                {
+                    <button class="btn btn-primary"
+                            type="button"
+                            disabled="@_refreshingPublication"
+                            @onclick="StartCanonicalEpochRecoveryAsync">
+                        Start canonical-epoch recovery
+                    </button>
+                }
+            }
+            else if (string.Equals(
+                reconciliation.Promotion.State,
+                "cancelled",
+                StringComparison.Ordinal))
+            {
+                <div class="alert alert-secondary" role="status">
+                    <strong>Reconciliation was cancelled before promotion.</strong>
+                    @if (!string.IsNullOrWhiteSpace(
+                        reconciliation.Promotion.CancellationReason))
+                    {
+                        <span>
+                            Audited reason:
+                            @reconciliation.Promotion.CancellationReason
+                        </span>
+                    }
+                </div>
+            }
+        </section>
+    }
+
+    @if (_details.CanonicalEpochRecovery is
+        CanonicalEpochRecoveryStatusResult canonicalRecovery)
+    {
+        <section class="operation-panel"
+                 aria-labelledby="canonical-recovery-status-heading">
+            <div class="operation-panel__heading">
+                <div>
+                    <p class="operation-panel__eyebrow">Restricted epoch repair</p>
+                    <h2 id="canonical-recovery-status-heading"
+                        class="h4 mb-0">
+                        Canonical-epoch recovery
+                    </h2>
+                </div>
+                <StatusIndicator Status="@canonicalRecovery.Recovery.State" />
+            </div>
+            @if (!string.IsNullOrWhiteSpace(
+                canonicalRecovery.Recovery.FailureCode))
+            {
+                <div class="alert alert-warning" role="alert">
+                    <strong>Recovery remains pending.</strong>
+                    <code>@canonicalRecovery.Recovery.FailureCode</code>
+                    @canonicalRecovery.Recovery.FailureDetail
+                </div>
+            }
+            <dl class="row">
+                <dt class="col-sm-6">Source abandonment</dt>
+                <dd class="col-sm-6">
+                    <a href="@RunUrl(
+                        _details.Workflow,
+                        canonicalRecovery.SourceAbandonment.RunId)">
+                        <code>@canonicalRecovery.SourceAbandonment.RunId</code>
+                    </a>
+                </dd>
+                <dt class="col-sm-6">Authoring epoch</dt>
+                <dd class="col-sm-6">@canonicalRecovery.SourceAbandonment.AuthoringEpoch</dd>
+                <dt class="col-sm-6">Abandonment reason</dt>
+                <dd class="col-sm-6">@canonicalRecovery.SourceAbandonment.Reason</dd>
+                <dt class="col-sm-6">Abandoned at</dt>
+                <dd class="col-sm-6">
+                    <time datetime="@canonicalRecovery.SourceAbandonment.AbandonedAt.ToString("O")">
+                        @canonicalRecovery.SourceAbandonment.AbandonedAt.ToLocalTime().ToString("g")
+                    </time>
+                </dd>
+                <dt class="col-sm-6">Accepted tickets</dt>
+                <dd class="col-sm-6">@canonicalRecovery.Frozen.AcceptedTicketCount</dd>
+                <dt class="col-sm-6">Grouping partitions</dt>
+                <dd class="col-sm-6">@canonicalRecovery.Frozen.GroupingPartitionCount</dd>
+                <dt class="col-sm-6">Corpus fingerprint</dt>
+                <dd class="col-sm-6"><code>@canonicalRecovery.Frozen.CorpusFingerprint</code></dd>
+                <dt class="col-sm-6">Grouping fingerprint</dt>
+                <dd class="col-sm-6"><code>@canonicalRecovery.Frozen.GroupingFingerprint</code></dd>
+                <dt class="col-sm-6">Journal</dt>
+                <dd class="col-sm-6">
+                    <code>@canonicalRecovery.Recovery.State</code>
+                    · mutation fence
+                    @(canonicalRecovery.Recovery.MutationFenceHeld
+                        ? "held"
+                        : "released")
+                </dd>
+                @if (canonicalRecovery.Snapshot is { } recoverySnapshot)
+                {
+                    <dt class="col-sm-6">Verified snapshot</dt>
+                    <dd class="col-sm-6">
+                        <a href="@Operations.GetSnapshotUrl(_details.Workflow.RouteKey, canonicalRecovery.Run.RunId)">
+                            <code>@recoverySnapshot.SnapshotId</code>
+                        </a>
+                    </dd>
+                }
+            </dl>
+            @if (!string.Equals(
+                canonicalRecovery.Recovery.State,
+                "ready",
+                StringComparison.Ordinal))
+            {
+                <div class="callout callout--warning">
+                    <i class="bi bi-exclamation-triangle-fill"
+                       aria-hidden="true"></i>
+                    <div>
+                        <strong>The canonical restriction remains active.</strong>
+                        Retry resumes this run and its immutable snapshot
+                        journal; it does not create a replacement run.
+                    </div>
+                </div>
+                <button class="btn btn-primary"
+                        type="button"
+                        disabled="@_refreshingPublication"
+                        @onclick="RetryCanonicalEpochRecoveryAsync">
+                    Retry canonical-epoch recovery
+                </button>
+            }
+            else
+            {
+                <div class="alert alert-success" role="status">
+                    <strong>Canonical epoch recovered.</strong>
+                    The new snapshot was verified before the matching
+                    restriction was released.
+                </div>
+            }
+        </section>
+    }
+
+    <RunItemsTable Items="@VisibleRunItems"
+                   BusyItemId="@_busyItemId"
+                   BusyAction="@_busyAction"
+                   Disabled="@(_publishing || _refreshingPublication)"
+                   OnRetry="RetryItemAsync"
+                   OnSupersede="SupersedeItemAsync" />
+
+    <PublicationPanel Details="@_details"
+                      LastResult="@_lastPublication"
+                      Busy="@_publishing"
+                      Refreshing="@_refreshingPublication"
+                      Disabled="@(_busyItemId is not null)"
+                      RefreshDisabled="@(_lastPublicationRefresh?.Disposition ==
+                          TicketOperationDisposition.OutcomeUnknown)"
+                      OnPublish="PublishAsync"
+                      OnReconcilePublication="ReconcilePublicationAsync"
+                      OnRefreshPublication="RefreshPublicationAsync" />
+}
+
+@code {
+    [Parameter]
+    public string Workflow { get; set; } = "";
+
+    [Parameter]
+    public string RunId { get; set; } = "";
+
+    private TicketWorkflowDefinition? _definition;
+    private TicketRunDetails? _details;
+    private RunPollingSession? _polling;
+    private CancellationTokenSource? _routeLifetime;
+    private TicketItemMutationResult? _lastMutation;
+    private TicketPublicationResult? _lastPublication;
+    private TicketPublicationRefreshResult? _lastPublicationRefresh;
+    private TicketPublicationReconciliationResult? _lastReconciliation;
+    private TicketCanonicalEpochRecoveryResult?
+        _lastCanonicalEpochRecovery;
+    private ElementReference _refreshButton;
+    private string? _coordinate;
+    private string? _loadError;
+    private string? _pollError;
+    private string? _mutationException;
+    private string? _publicationRefreshException;
+    private string? _actionRefreshError;
+    private string? _busyItemId;
+    private string? _busyAction;
+    private DateTimeOffset? _lastRefreshAt;
+    private int _generation;
+    private bool _loading = true;
+    private bool _focusRefreshAfterSupersession;
+    private bool _manualRefreshing;
+    private bool _publishing;
+    private bool _refreshingPublication;
+    private bool _confirmingCancellation;
+    private string _cancellationReason = "";
+    private bool _confirmingAbandonment;
+    private string _abandonmentReason = "";
+    private bool _sessionStarted;
+    private bool _disposed;
+
+    private IReadOnlyList<AuthoringRunItemStatus> VisibleRunItems =>
+        _details?.Reconciliation is null &&
+        _details?.CanonicalEpochRecovery is null
+            ? _details?.Response.Items ?? []
+            : (_details?.Response.Items ?? [])
+                .Select(item => item with
+                {
+                    AllowedActions = new AuthoringAllowedActions(
+                        item.AllowedActions?.CanRetryNow == true,
+                        CanSupersede: false),
+                })
+                .ToArray();
+
+    private string MutationAlertClass =>
+        _mutationException is not null
+            ? "alert-danger"
+            : _lastMutation?.Disposition switch
+            {
+                TicketOperationDisposition.Succeeded =>
+                    "alert-success",
+                TicketOperationDisposition.Conflict =>
+                    "alert-warning",
+                TicketOperationDisposition.NotAllowed =>
+                    "alert-warning",
+                TicketOperationDisposition.Busy =>
+                    "alert-warning",
+                TicketOperationDisposition.OutcomeUnknown =>
+                    "alert-warning",
+                _ => "alert-danger",
+            };
+
+    private string MutationRole =>
+        _mutationException is not null ||
+        _lastMutation?.Disposition is
+            TicketOperationDisposition.OutcomeUnknown or
+            TicketOperationDisposition.Failed
+            ? "alert"
+            : "status";
+
+    private string MutationHeading =>
+        _mutationException is not null
+            ? "The item action failed."
+            : _lastMutation?.Disposition switch
+            {
+                TicketOperationDisposition.Succeeded =>
+                    $"{ActionLabel} succeeded; the complete run was refreshed.",
+                TicketOperationDisposition.Conflict =>
+                    $"{ActionLabel} was rejected because processor state changed.",
+                TicketOperationDisposition.NotAllowed =>
+                    $"{ActionLabel} is no longer allowed.",
+                TicketOperationDisposition.Busy =>
+                    "Another mutation is already in progress.",
+                TicketOperationDisposition.OutcomeUnknown =>
+                    "Outcome unknown.",
+                TicketOperationDisposition.InvalidInput =>
+                    "The item action is invalid.",
+                _ => "The item action failed.",
+            };
+
+    private string ActionLabel =>
+        string.Equals(
+            _busyAction,
+            "supersede",
+            StringComparison.Ordinal)
+            ? "Supersession"
+            : "Retry";
+
+    private string PublicationRefreshAlertClass =>
+        _publicationRefreshException is not null
+            ? "alert-danger"
+            : _lastPublicationRefresh?.Disposition switch
+            {
+                TicketOperationDisposition.Conflict =>
+                    "alert-warning",
+                TicketOperationDisposition.NotAllowed =>
+                    "alert-warning",
+                TicketOperationDisposition.Busy =>
+                    "alert-warning",
+                TicketOperationDisposition.OutcomeUnknown =>
+                    "alert-warning",
+                _ => "alert-danger",
+            };
+
+    private string PublicationRefreshRole =>
+        _publicationRefreshException is not null ||
+        _lastPublicationRefresh?.Disposition is
+            TicketOperationDisposition.OutcomeUnknown or
+            TicketOperationDisposition.Failed
+            ? "alert"
+            : "status";
+
+    private string PublicationRefreshHeading =>
+        _publicationRefreshException is not null
+            ? "Publication refresh failed."
+            : _lastPublicationRefresh?.Disposition switch
+            {
+                TicketOperationDisposition.Conflict =>
+                    "Publication refresh was rejected because processor state changed.",
+                TicketOperationDisposition.NotAllowed =>
+                    "Publication refresh is no longer allowed.",
+                TicketOperationDisposition.Busy =>
+                    "Another mutation is already in progress.",
+                TicketOperationDisposition.OutcomeUnknown =>
+                    "Publication refresh outcome unknown.",
+                _ => "Publication refresh failed.",
+            };
+
+    protected override async Task OnParametersSetAsync()
+    {
+        string coordinate = $"{Workflow}\n{RunId}";
+        if (string.Equals(
+            _coordinate,
+            coordinate,
+            StringComparison.Ordinal))
+        {
+            return;
+        }
+        _coordinate = coordinate;
+        await LoadRouteAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(
+        bool firstRender)
+    {
+        if (!_focusRefreshAfterSupersession ||
+            _manualRefreshing ||
+            _details is null ||
+            _disposed)
+        {
+            return;
+        }
+
+        _focusRefreshAfterSupersession = false;
+        await _refreshButton.FocusAsync(
+            preventScroll: true);
+    }
+
+    private async Task LoadRouteAsync()
+    {
+        int generation = ++_generation;
+        await StopPollingAsync();
+        ResetPageState();
+
+        if (!Catalog.TryGet(
+                Workflow,
+                out TicketWorkflowDefinition definition) ||
+            string.IsNullOrWhiteSpace(RunId))
+        {
+            _definition = null;
+            _loading = false;
+            return;
+        }
+
+        _definition = definition;
+        _lastPublicationRefresh =
+            Operations.GetUnknownPublicationRefreshReview(
+                definition.RouteKey,
+                RunId);
+        await StartPollingAsync(
+            definition.RouteKey,
+            RunId,
+            generation);
+    }
+
+    private void ResetPageState()
+    {
+        _details = null;
+        _lastMutation = null;
+        _lastPublication = null;
+        _lastPublicationRefresh = null;
+        _lastReconciliation = null;
+        _lastCanonicalEpochRecovery = null;
+        _loadError = null;
+        _pollError = null;
+        _mutationException = null;
+        _publicationRefreshException = null;
+        _actionRefreshError = null;
+        _busyItemId = null;
+        _busyAction = null;
+        _lastRefreshAt = null;
+        _loading = true;
+        _focusRefreshAfterSupersession = false;
+        _manualRefreshing = false;
+        _publishing = false;
+        _refreshingPublication = false;
+        _confirmingCancellation = false;
+        _cancellationReason = "";
+        _confirmingAbandonment = false;
+        _abandonmentReason = "";
+        _sessionStarted = false;
+    }
+
+    private async Task StartPollingAsync(
+        string workflow,
+        string runId,
+        int generation)
+    {
+        CancellationTokenSource routeLifetime = new();
+        _routeLifetime = routeLifetime;
+        _polling =
+            Services.GetRequiredService<RunPollingSession>();
+        try
+        {
+            await _polling.StartAsync(
+                ct => ReadRunAsync(
+                    workflow,
+                    runId,
+                    generation,
+                    ct),
+                routeLifetime.Token);
+            if (IsCurrent(generation))
+            {
+                _sessionStarted = true;
+                _loading = false;
+            }
+        }
+        catch (OperationCanceledException)
+            when (routeLifetime.IsCancellationRequested ||
+                _disposed)
+        {
+        }
+        catch (Exception ex)
+        {
+            if (IsCurrent(generation))
+            {
+                _loadError = ex.Message;
+                _loading = false;
+                _sessionStarted = false;
+            }
+        }
+    }
+
+    private async Task<AuthoringRunResponse> ReadRunAsync(
+        string workflow,
+        string runId,
+        int generation,
+        CancellationToken ct)
+    {
+        try
+        {
+            TicketRunDetails details =
+                await Operations.OpenRunAsync(
+                    workflow,
+                    runId,
+                    ct);
+            if (IsCurrent(generation))
+            {
+                await InvokeAsync(() =>
+                {
+                    if (!IsCurrent(generation))
+                    {
+                        return;
+                    }
+                    _details = details;
+                    _loadError = null;
+                    _pollError = null;
+                    _lastRefreshAt = DateTimeOffset.Now;
+                    _loading = false;
+                    StateHasChanged();
+                });
+            }
+            return details.Response;
+        }
+        catch (OperationCanceledException)
+            when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (IsCurrent(generation))
+            {
+                await InvokeAsync(() =>
+                {
+                    if (_details is null)
+                    {
+                        _loadError = ex.Message;
+                    }
+                    else
+                    {
+                        _pollError = ex.Message;
+                    }
+                    StateHasChanged();
+                });
+            }
+            throw;
+        }
+    }
+
+    private async Task RefreshNowAsync()
+    {
+        if (_manualRefreshing)
+        {
+            return;
+        }
+        _manualRefreshing = true;
+        _pollError = null;
+        try
+        {
+            if (_sessionStarted && _polling is not null)
+            {
+                await _polling.RefreshNowAsync(
+                    _routeLifetime?.Token ?? default);
+            }
+            else
+            {
+                await RestartCurrentRouteAsync();
+            }
+        }
+        catch (OperationCanceledException)
+            when (_routeLifetime?.IsCancellationRequested == true ||
+                _disposed)
+        {
+        }
+        catch (Exception ex)
+        {
+            _pollError = ex.Message;
+        }
+        finally
+        {
+            _manualRefreshing = false;
+        }
+    }
+
+    private async Task RestartCurrentRouteAsync()
+    {
+        if (_definition is null || _disposed)
+        {
+            return;
+        }
+        int generation = ++_generation;
+        await StopPollingAsync();
+        _loading = true;
+        _loadError = null;
+        _pollError = null;
+        _sessionStarted = false;
+        await StartPollingAsync(
+            _definition.RouteKey,
+            RunId,
+            generation);
+    }
+
+    private Task RetryItemAsync(string itemId) =>
+        MutateItemAsync(
+            itemId,
+            "retry",
+            reason: null);
+
+    private Task SupersedeItemAsync(
+        (string ItemId, string Reason) request) =>
+        MutateItemAsync(
+            request.ItemId,
+            "supersede",
+            request.Reason);
+
+    private async Task MutateItemAsync(
+        string itemId,
+        string action,
+        string? reason)
+    {
+        if (_definition is null ||
+            _busyItemId is not null ||
+            _publishing ||
+            _refreshingPublication)
+        {
+            return;
+        }
+
+        _busyItemId = itemId;
+        _busyAction = action;
+        _lastMutation = null;
+        _mutationException = null;
+        _actionRefreshError = null;
+        StateHasChanged();
+        try
+        {
+            TicketItemMutationResult result =
+                action == "retry"
+                    ? await Operations.RetryItemAsync(
+                        _definition.RouteKey,
+                        RunId,
+                        itemId,
+                        _routeLifetime?.Token ?? default)
+                    : await Operations.SupersedeItemAsync(
+                        _definition.RouteKey,
+                        RunId,
+                        itemId,
+                        reason ?? "",
+                        _routeLifetime?.Token ?? default);
+            _lastMutation = result;
+
+            if (result.Disposition is
+                TicketOperationDisposition.Succeeded or
+                TicketOperationDisposition.Conflict or
+                TicketOperationDisposition.NotAllowed or
+                TicketOperationDisposition.OutcomeUnknown)
+            {
+                await RefreshAfterActionAsync();
+            }
+        }
+        catch (OperationCanceledException)
+            when (_routeLifetime?.IsCancellationRequested == true ||
+                _disposed)
+        {
+        }
+        catch (Exception ex)
+        {
+            _mutationException = ex.Message;
+        }
+        finally
+        {
+            _busyItemId = null;
+            if (string.Equals(
+                action,
+                "supersede",
+                StringComparison.Ordinal))
+            {
+                _focusRefreshAfterSupersession = true;
+            }
+            StateHasChanged();
+        }
+    }
+
+    private async Task RefreshAfterActionAsync()
+    {
+        if (_polling is null || !_sessionStarted)
+        {
+            return;
+        }
+        try
+        {
+            await _polling.RefreshNowAsync(
+                _routeLifetime?.Token ?? default);
+        }
+        catch (OperationCanceledException)
+            when (_routeLifetime?.IsCancellationRequested == true ||
+                _disposed)
+        {
+        }
+        catch (Exception ex)
+        {
+            _actionRefreshError = ex.Message;
+        }
+    }
+
+    private async Task PublishAsync(bool force)
+    {
+        if (_definition is null ||
+            _publishing ||
+            _refreshingPublication ||
+            _busyItemId is not null)
+        {
+            return;
+        }
+
+        _publishing = true;
+        _lastPublication = null;
+        StateHasChanged();
+        try
+        {
+            TicketPublicationResult result =
+                await Operations.PublishAsync(
+                    _definition.RouteKey,
+                    RunId,
+                    force,
+                    _routeLifetime?.Token ?? default);
+            _lastPublication = result;
+            if (result.Disposition ==
+                TicketOperationDisposition.Succeeded)
+            {
+                await RefreshAfterActionAsync();
+            }
+        }
+        catch (OperationCanceledException)
+            when (_routeLifetime?.IsCancellationRequested == true ||
+                _disposed)
+        {
+        }
+        catch (Exception ex)
+        {
+            _lastPublication =
+                new TicketPublicationResult(
+                    TicketOperationDisposition.Failed,
+                    _definition,
+                    RunId,
+                    Publication: null,
+                    VerifiedPairAvailable: false,
+                    Message: ex.Message);
+        }
+        finally
+        {
+            _publishing = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task RefreshPublicationAsync()
+    {
+        if (_definition is null ||
+            _refreshingPublication ||
+            _publishing ||
+            _busyItemId is not null ||
+            _lastPublicationRefresh?.Disposition ==
+                TicketOperationDisposition.OutcomeUnknown)
+        {
+            return;
+        }
+
+        _refreshingPublication = true;
+        _lastPublicationRefresh = null;
+        _publicationRefreshException = null;
+        StateHasChanged();
+        try
+        {
+            TicketPublicationRefreshResult result =
+                await Operations.RefreshPublicationAsync(
+                    _definition.RouteKey,
+                    RunId,
+                    _routeLifetime?.Token ?? default);
+            _lastPublicationRefresh = result;
+            if (result.Disposition ==
+                TicketOperationDisposition.Succeeded)
+            {
+                AuthoringRunResponse refreshRun = result.Run ??
+                    throw new InvalidOperationException(
+                        "The successful publication refresh did not return its run coordinates.");
+                Navigation.NavigateTo(
+                    RunUrl(
+                        result.Workflow,
+                        refreshRun.Run.RunId));
+            }
+        }
+        catch (OperationCanceledException)
+            when (_routeLifetime?.IsCancellationRequested == true ||
+                _disposed)
+        {
+        }
+        catch (Exception ex)
+        {
+            _publicationRefreshException = ex.Message;
+        }
+        finally
+        {
+            _refreshingPublication = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ReconcilePublicationAsync()
+    {
+        if (_definition is null ||
+            _refreshingPublication ||
+            _publishing ||
+            _busyItemId is not null)
+        {
+            return;
+        }
+
+        _refreshingPublication = true;
+        _lastReconciliation = null;
+        StateHasChanged();
+        try
+        {
+            TicketPublicationReconciliationResult result =
+                await Operations.StartPublicationReconciliationAsync(
+                    _definition.RouteKey,
+                    RunId,
+                    _routeLifetime?.Token ?? default);
+            _lastReconciliation = result;
+            if (result.Disposition ==
+                TicketOperationDisposition.Succeeded)
+            {
+                Navigation.NavigateTo(
+                    RunUrl(result.Workflow, result.RunId));
+            }
+        }
+        catch (OperationCanceledException)
+            when (_routeLifetime?.IsCancellationRequested == true ||
+                _disposed)
+        {
+        }
+        catch (Exception ex)
+        {
+            _publicationRefreshException = ex.Message;
+        }
+        finally
+        {
+            _refreshingPublication = false;
+            StateHasChanged();
+        }
+    }
+
+    private Task RetryReconciliationAsync() =>
+        MutateReconciliationAsync(ReconciliationMutation.Retry);
+
+    private Task CancelReconciliationAsync() =>
+        MutateReconciliationAsync(ReconciliationMutation.Cancel);
+
+    private Task AbandonReconciliationAsync() =>
+        MutateReconciliationAsync(ReconciliationMutation.Abandon);
+
+    private async Task StartCanonicalEpochRecoveryAsync()
+    {
+        if (_definition is null || _refreshingPublication)
+        {
+            return;
+        }
+        _refreshingPublication = true;
+        _lastCanonicalEpochRecovery = null;
+        StateHasChanged();
+        try
+        {
+            TicketCanonicalEpochRecoveryResult result =
+                await Operations.StartCanonicalEpochRecoveryAsync(
+                    _definition.RouteKey,
+                    RunId,
+                    _routeLifetime?.Token ?? default);
+            _lastCanonicalEpochRecovery = result;
+            if (result.Disposition ==
+                TicketOperationDisposition.Succeeded)
+            {
+                Navigation.NavigateTo(
+                    RunUrl(result.Workflow, result.RunId));
+            }
+        }
+        catch (OperationCanceledException)
+            when (_routeLifetime?.IsCancellationRequested == true ||
+                _disposed)
+        {
+        }
+        catch (Exception ex)
+        {
+            _publicationRefreshException = ex.Message;
+        }
+        finally
+        {
+            _refreshingPublication = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task RetryCanonicalEpochRecoveryAsync()
+    {
+        if (_definition is null || _refreshingPublication)
+        {
+            return;
+        }
+        _refreshingPublication = true;
+        StateHasChanged();
+        try
+        {
+            TicketCanonicalEpochRecoveryResult result =
+                await Operations.RetryCanonicalEpochRecoveryAsync(
+                    _definition.RouteKey,
+                    RunId,
+                    _routeLifetime?.Token ?? default);
+            _lastCanonicalEpochRecovery = result;
+            if (result.Status is
+                    CanonicalEpochRecoveryStatusResult status &&
+                _details is not null)
+            {
+                _details = _details with
+                {
+                    Response = new(status.Run, status.Items),
+                    CanonicalEpochRecovery = status,
+                    Outcome = new RunOutcomeClassifier().Classify(
+                        status.Run,
+                        _details.Publication,
+                        publicationError: _details.PublicationError),
+                };
+            }
+        }
+        catch (OperationCanceledException)
+            when (_routeLifetime?.IsCancellationRequested == true ||
+                _disposed)
+        {
+        }
+        catch (Exception ex)
+        {
+            _publicationRefreshException = ex.Message;
+        }
+        finally
+        {
+            _refreshingPublication = false;
+            StateHasChanged();
+        }
+    }
+
+    private void ToggleCancellationConfirmation() =>
+        _confirmingCancellation = !_confirmingCancellation;
+
+    private void ToggleAbandonConfirmation() =>
+        _confirmingAbandonment = !_confirmingAbandonment;
+
+    private async Task MutateReconciliationAsync(
+        ReconciliationMutation mutation)
+    {
+        if (_definition is null || _refreshingPublication)
+        {
+            return;
+        }
+
+        _refreshingPublication = true;
+        StateHasChanged();
+        try
+        {
+            TicketPublicationReconciliationResult result =
+                mutation switch
+                {
+                    ReconciliationMutation.Cancel =>
+                        await Operations
+                            .CancelPublicationReconciliationAsync(
+                                _definition.RouteKey,
+                                RunId,
+                                _cancellationReason,
+                                _routeLifetime?.Token ?? default),
+                    ReconciliationMutation.Abandon =>
+                        await Operations
+                            .AbandonPublicationReconciliationAsync(
+                                _definition.RouteKey,
+                                RunId,
+                                _abandonmentReason,
+                                _routeLifetime?.Token ?? default),
+                    _ => await Operations
+                        .RetryPublicationReconciliationAsync(
+                            _definition.RouteKey,
+                            RunId,
+                            _routeLifetime?.Token ?? default),
+                };
+            _lastReconciliation = result;
+            if (result.Status is
+                PublicationReconciliationStatusResult status &&
+                _details is not null)
+            {
+                _details = _details with
+                {
+                    Response = new(status.Run, status.Items),
+                    Reconciliation = status,
+                };
+            }
+            _confirmingCancellation = false;
+            _confirmingAbandonment = false;
+        }
+        catch (OperationCanceledException)
+            when (_routeLifetime?.IsCancellationRequested == true ||
+                _disposed)
+        {
+        }
+        catch (Exception ex)
+        {
+            _publicationRefreshException = ex.Message;
+        }
+        finally
+        {
+            _refreshingPublication = false;
+            StateHasChanged();
+        }
+    }
+
+    private enum ReconciliationMutation
+    {
+        Retry,
+        Cancel,
+        Abandon,
+    }
+
+    private void AcknowledgeUnknownPublicationRefresh()
+    {
+        if (_definition is null)
+        {
+            return;
+        }
+
+        Operations.AcknowledgeUnknownPublicationRefreshReview(
+            _definition.RouteKey,
+            RunId);
+        _lastPublicationRefresh = null;
+        _publicationRefreshException = null;
+    }
+
+    private static string RunUrl(
+        TicketWorkflowDefinition workflow,
+        string runId) =>
+        $"/operations/{Uri.EscapeDataString(workflow.RouteKey)}/{Uri.EscapeDataString(runId)}";
+
+    private bool IsCurrent(int generation) =>
+        !_disposed && generation == _generation;
+
+    private async Task StopPollingAsync()
+    {
+        CancellationTokenSource? routeLifetime =
+            _routeLifetime;
+        RunPollingSession? polling = _polling;
+        _routeLifetime = null;
+        _polling = null;
+        _sessionStarted = false;
+
+        routeLifetime?.Cancel();
+        if (polling is not null)
+        {
+            await polling.DisposeAsync();
+        }
+        routeLifetime?.Dispose();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+        _disposed = true;
+        _generation++;
+        await StopPollingAsync();
+    }
+}

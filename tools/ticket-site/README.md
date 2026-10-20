@@ -1,487 +1,232 @@
 # ticket-site
 
-A small `dotnet`-run utility that turns a Jira-FHIR processor SQLite
-database (preparer or planner) into a self-contained static HTML
-sub-site for human review. A chooser landing page links to whichever
-sub-site(s) have been built into the same output root.
+`ticket-site` is the offline, network-independent command-line adapter over
+`FhirAugury.Publishing.Tickets`. It renders a static review site from one
+supplied, verified Preparer or Planner snapshot pair. It never opens a live
+processor database, downloads a snapshot, starts a publication refresh,
+contacts the Preparer, Planner, Orchestrator, or Jira, or owns processor
+completion state.
 
-- `--preparer-db <path>` → emits the **Tickets for Discussion**
-  (discussion) sub-site under `<out>/discussion/`, with the
-  preparer-side SPA (list, per-ticket, crosscut, topic views).
-- `--planner-db <path>` → emits the **Tickets for Applying**
-  (applying) sub-site under `<out>/applying/`, with the
-  planner-side SPA (list, per-ticket, topics with `SpannedRepos`).
-- After either run, `<out>/index.html` is regenerated as a static
-  chooser landing page. Sub-sites that haven't been built into this
-  `<out>` show greyed cards.
+## Usage
 
-Exactly one of `--preparer-db` / `--planner-db` is required;
-supplying both (or neither) fails with exit code 2. Both pages load
-the SQLite database into [sql.js](https://sql.js.org/) in the browser
-and require no network at runtime. Each per-ticket **detail view** has a
-top-right **📋 Copy for AI** button that copies a clean Markdown
-serialization of that ticket to the clipboard for pasting into an LLM
-(works offline from `file://`).
+Choose exactly one processor snapshot and provide its descriptor:
 
-## What this is
-
-A zero-server review surface for an entire preparer or planner run.
-One `<out>/index.html` chooser, one `<out>/<sub-site>/index.html` per
-sub-site, one `<out>/<sub-site>/assets/` folder of vendored
-JS/CSS/wasm per sub-site, no network at runtime. Opens straight from
-`file://` in Chromium-family browsers. A reviewer (or workgroup
-co-chair) can zip the output folder and hand it around without any
-infrastructure on the receiving side.
-
-### Hydration
-
-Both processor services (`FhirAugury.Processor.Jira.Fhir.Preparer`
-and `FhirAugury.Processor.Jira.Fhir.Planner`) own the hydration
-surface for their respective DBs. The inlined DB always carries the
-processor-side `*_hydration` and `*_jira_xref` tables alongside the
-agent-authored `prepared_tickets*` / `planned_tickets*` tables.
-
-Hydration is populated per-ticket as each ticket is processed, plus
-a full sweep at service startup and on demand via
-`POST /api/v1/admin/hydration/backfill` against either service.
-**`ticket-site` is a pure consumer of an already-hydrated DB** —
-when building the discussion sub-site, if `prepared_ticket_hydration`
-is missing or empty the tool fails fast with an actionable error
-pointing operators at the preparer service. The applying sub-site
-runs through `PlannerDbTrimmer` which self-migrates legacy planner
-DBs through `PlannerDatabase.EnsureSchema`, so missing planner-side
-hydration tables are created (empty) rather than blocking the emit;
-the SPA renders `(unknown)` placeholders where hydration columns
-would be.
-
-### Related-artifact / related-page surface (discussion sub-site only)
-
-To support the discussion SPA's "By artifact" and "By page" crosscut
-columns the emitted preparer DB carries two normalized child tables:
-
-| Table | Columns | Source |
-|-------|---------|--------|
-| `prepared_ticket_artifacts` | `TicketKey TEXT, Value TEXT, PRIMARY KEY (TicketKey, Value)` | `jira_issues.RelatedArtifacts` + `jira_baldef.RelatedArtifacts` |
-| `prepared_ticket_pages` | `TicketKey TEXT, Value TEXT, PRIMARY KEY (TicketKey, Value)` | `jira_baldef.RelatedPages` |
-
-Values are comma-split, trimmed, and case-insensitively de-duplicated
-per ticket with first-seen casing preserved (matching the
-`index-planned` skill's "Related artifact normalization" rule). The
-tables are always created in the inlined DB; rows are only populated
-when `--jira-source-db <path>` is provided (the upstream HTTP DTO does
-not currently carry these fields). Without `--jira-source-db` the
-tables are present but empty and the SPA auto-hides the corresponding
-columns. The applying sub-site does not consume these tables.
-
-### Authored request / resolution HTML (both sub-sites)
-
-Both ticket views render the authored Jira **request** and
-**resolution** prose. The HTML for these lives only in the Jira source
-DB (`jira_issues.Description` / `jira_issues.ResolutionDescription`), so
-the emitter inlines a small per-ticket child table:
-
-| Table | Columns | Source |
-|-------|---------|--------|
-| `prepared_ticket_jira_content` (discussion) | `TicketKey TEXT PRIMARY KEY, DescriptionHtml TEXT, ResolutionDescriptionHtml TEXT` | `jira_issues.Description` / `jira_issues.ResolutionDescription` |
-| `planned_ticket_jira_content` (applying) | `TicketKey TEXT PRIMARY KEY, DescriptionHtml TEXT, ResolutionDescriptionHtml TEXT` | `jira_issues.Description` / `jira_issues.ResolutionDescription` |
-
-The table is always created in the inlined DB; rows are only populated
-when `--jira-source-db <path>` is supplied, and only for tickets where
-at least one of the two HTML values is present (the table stays sparse).
-This means the **applying** sub-site now also runs an emit-time
-jira-source backfill (previously only the discussion side did). On the
-planner path this backfill owns the final `VACUUM`/checkpoint, so the
-new table and rows are written into the inlined DB with no leftover
-`-wal`/`-shm` sidecars.
-
-Rendering is graceful:
-
-- Authored HTML is sanitized via `DOMPurify` before display (the single
-  XSS sanitization layer; if DOMPurify is unavailable the content
-  degrades to escaped text).
-- When no HTML is present, the SPA falls back to the already-inlined
-  plain-text variants (`*Plain` columns on the hydration tables),
-  rendered as an escaped `<pre>` (never through the sanitizer).
-- Each section is hidden only when both the HTML and plain variants are
-  empty, so a reviewer without `--jira-source-db` still sees useful
-  content.
-
-
-### Prerequisite: hydrated DB
-
-`ticket-site` no longer hydrates anything itself. Each processor
-service owns the full hydration surface for its own DB:
-
-- **Discussion sub-site (`--preparer-db`)**: the preparer service
-  (`FhirAugury.Processor.Jira.Fhir.Preparer`) must have hydrated the
-  DB. Per-ticket hydration runs as each ticket is prepared; a full
-  sweep runs at service startup and on demand via
-  `POST /api/v1/admin/hydration/backfill`.
-- **Applying sub-site (`--planner-db`)**: the planner service
-  (`FhirAugury.Processor.Jira.Fhir.Planner`) hydrates the same way
-  (planner has the same admin endpoint and the same startup-sweep
-  behavior; per-ticket hydration runs after each `ticket-plan` agent
-  invocation).
-
-If a preparer DB has no `prepared_ticket_hydration` rows when
-`ticket-site` opens it, the tool exits non-zero with:
-
-```
-Database '<path>' is not hydrated. Run FhirAugury.Processor.Jira.Fhir.Preparer
-against it first (the service hydrates on startup, or POST
-/api/v1/admin/hydration/backfill on a running service).
+```powershell
+dotnet run --project tools\ticket-site -- `
+  --preparer-snapshot <snapshot.db> `
+  --snapshot-descriptor <snapshot.descriptor.json> `
+  --out cache\jira-ticket-site
 ```
 
-The applying sub-site does not fail fast on a missing
-`planned_ticket_hydration` table (it self-migrates the schema and
-emits a usable site with `(unknown)` placeholders where hydration
-columns would surface). Running the planner service's
-`POST /api/v1/admin/hydration/backfill` against the DB first is
-still strongly recommended for a useful reviewer experience.
-
-### Topic surface
-
-Both sub-sites carry their respective agent / orchestrator topic
-layers:
-
-- **Discussion sub-site**: `prepared_ticket_topics`,
-  `prepared_ticket_topic_groups`, `prepared_ticket_topic_members`
-  (no spanned-repo concept). Topics are written by the preparer-side
-  `orchestrate-topic-groupings` skill.
-- **Applying sub-site**: `planned_ticket_topics`,
-  `planned_ticket_topic_groups`, `planned_ticket_topic_members`,
-  and a new first-class `planned_ticket_topic_repos` table that
-  captures each topic's coordinated `SpannedRepos` set (e.g.
-  `HL7/fhir` + `HL7/fhir-extensions` + `HL7/UTG` for a
-  cross-spec change). The planner topic populator
-  (`orchestrate-planner-topic-groupings`) is follow-on work; until
-  it lands, the applying sub-site greys out `Show Topic List →`
-  with a tooltip and the `#/topics` route renders an empty-state
-  message rather than a list.
-
-When at least one topic row survives the trim, the landing page
-renders a `Show Topic List →` affordance next to `Show Ticket List →`.
-The topic list views are sortable on the natural columns; both link
-into a per-topic detail (`#/topic/<id>`). The applying topic detail
-adds a `Spanned repos` section above the member-ticket list.
-
-When the inlined DB has zero topic rows (older preparer DBs, or a
-trim that removed every topic's members), the affordance renders
-as a greyed-out span with a `title="No topics in this run."`
-tooltip rather than a live link. The orphan removal that keeps
-this honest runs inside the same trim transaction, so a filtered
-run never ships topics whose only members were trimmed away.
-
-Per-ticket detail pages render one `Member of topic: <ShortDescription>`
-line per topic membership (sorted by short description). Tickets
-that aren't in any topic show no such line.
-
-## What this is not
-
-Not a server, not a daemon, not a long-running process. Not a
-search index — just substring filtering on Key / Title /
-RequestSummary. Not incremental — every run overwrites `<out>/`.
-Not a planner or ballot-notes site (each of those would be a
-sibling tool under `tools/`).
-
-## Quick start
-
-```bash
-dotnet run --project tools/ticket-site -- \
-  --preparer-db ./cache/jira-preparer.db \
-  --out ./cache/jira-ticket-site \
-  --spec 'FHIR Core (FHIR)' \
-  --title "Discussion — May 2026"
+```powershell
+dotnet run --project tools\ticket-site -- `
+  --planner-snapshot <snapshot.db> `
+  --snapshot-descriptor <snapshot.descriptor.json> `
+  --out cache\jira-ticket-site
 ```
 
-Or, for the planner-side applying sub-site:
+Options:
 
-```bash
-dotnet run --project tools/ticket-site -- \
-  --planner-db ./cache/jira-planner.db \
-  --out ./cache/jira-ticket-site \
-  --title "Applying — May 2026"
+| Option | Description |
+|-|-|
+| `--preparer-snapshot <path>` | Preparer review snapshot for the discussion site. |
+| `--planner-snapshot <path>` | Planner review snapshot for the applying site. |
+| `--snapshot-descriptor <path>` | Trusted descriptor paired with the selected snapshot. |
+| `--out <dir>` | Root output directory. Defaults to `cache\jira-ticket-site`. |
+| `--title <text>` | Base site title. When omitted, Preparer uses `Tickets for Discussion` and Planner uses the existing `Ticket Site`. |
+| `--spec <value>` | Filter by specification using snapshot-resident data. |
+| `--project <value>` | Filter by project using snapshot-resident data. |
+| `--wg <value>` | Filter by workgroup using the snapshot workgroup catalog. |
+| `--force` | Permit replacement of an owned compatible output. Not a fallback for an enrichment refusal or permission to replace the retained original site. |
+
+Exactly one snapshot option is required. The descriptor filename, checksum,
+processor kind, service/workflow binding, schema, counts, provenance, and
+monotonic sequence are validated before publication.
+
+Preparer snapshot schema and Discussion renderer schema are independent
+contracts. The current safe public processor output is **Preparer snapshot
+schema v3**. The adapter validates that immutable input, then creates a
+publication-owned **Discussion renderer schema v3** browser database. A
+renderer version never changes the supplied snapshot in place.
+
+The Discussion display title appends the maximum exported **self-ticket Jira
+`UpdatedAt`**, for example `Tickets for Discussion - Sept 15, 2026`.
+This is `prepared_jira_hydration.UpdatedAt` where `TicketKey = JiraKey`,
+selected by generation filters and normalized to UTC. The suffix requires a
+nonempty export with complete valid dates. It uses fixed English labels
+`Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sept, Oct, Nov, Dec`, an unpadded day,
+and no `Built`. Related-ticket dates, upstream-refresh watermarks, authoring
+completion, snapshot creation, and publication time cannot supply the date.
+Malformed non-null timestamps abort validation rather than disappearing into
+missing coverage. Every retained ticket in schema v2/v3 must still resolve
+to exactly one accepted authoring coordinate; zero or multiple matches remain
+structural errors.
+
+Legacy Preparer schema-v1 and schema-v2 snapshots remain readable
+compatibility inputs, but every generated publication reports degraded
+readiness and exposes no trusted people from them. Complete self-ticket dates
+can qualify the suffix independently of degraded readiness/provenance,
+including on legacy input. Empty, missing, or partial date coverage leaves
+the title unsuffixed; a partial maximum remains a corpus fact, not a title
+date. The legacy pair is never upgraded or edited. An explicit `--title`
+remains the stable base; the date suffix and then any generation-filter
+suffix are added only to the display title. Browser filters do not change
+that frozen title. Applying remains unchanged: Planner snapshots stay on
+schema v1, receive no Discussion date/coverage contract, and retain
+`Ticket Site` as the omitted-title CLI default.
+
+When the two paths name files in a durable pair directory, the adapter verifies
+the directory's `verified-pair.json`. For legacy loose-file input, it captures
+an immutable private copy and constructs a temporary service-bound pair before
+calling the publisher. Loose files are compatibility input, not durable
+publisher state. A ready pair contains exactly:
+
+- the descriptor named by `descriptorFileName`;
+- the SQLite database named by `databaseFileName`; and
+- `verified-pair.json`, written last and binding the service, run, snapshot,
+  format version, filenames, size, and descriptor/database SHA-256 digests.
+
+The shared publisher re-verifies that pair, validates the canonical public
+snapshot schema, renders from an immutable private copy, and publishes through
+the staged directory publisher. A failed or older build cannot replace a valid
+newer site. The Dev UI invokes this same publisher in-process; it does not
+spawn `ticket-site`.
+
+Discussion publication accepts immutable Preparer snapshot schemas v1, v2,
+and v3 and projects each into a newly created **renderer schema v3** SQLite
+database. Its `ReadinessJson` and the manifest's structured
+`discussionReadiness` carry the same `isReady`, `evidence`, optional source
+revision and people-policy coordinates, and machine-readable reasons. Legacy
+input includes
+`legacy-snapshot-schema` and `missing-people-policy-proof`; missing ordinary
+provenance or an invalid refresh proof adds its corresponding reason. Reporter
+and Assignee are rendered with that unavailability reason when policy proof is
+missing. `No public display name available` describes a policy-qualified v3
+value with no publishable name; it does not establish that the role is absent
+or a ticket is unassigned. Policy proof and actual public-name coverage are independent.
+The browser never queries processor persistence tables.
+Applying continues to consume Planner snapshot schema v1 through its existing
+path.
+
+Renderer v3 also requires a matching `discussionCorpus` manifest summary and
+`site_metadata.CorpusSummaryJson`: `ticketCount`, `exportedProjectCount`,
+`validJiraUpdatedAtCount`, `maxJiraUpdatedAt`, `dateCoverage`
+(`empty`, `none`, `partial`, `complete`), and ticket counts
+`ticketsWithPublicReporter`, `ticketsWithPublicAssignee`, and
+`ticketsWithPublicRequester`. `linksByKind` entries contain `kind`,
+`totalRows`, `resolvedSafeLinks`, `unresolvedWithRetainedSafeLinks`, and
+`withoutUsableUrl`. Link coverage counts related rows, not tickets; a safe URL
+does not prove source backing. The summary is optional only for legacy
+manifests and Applying. Missing legacy coverage is unknown, not measured zero.
+Row-derived coverage and its title are validated independently of readiness.
+
+Discussion facets preserve overview/crosscut/list routes and accumulate
+without discarding other filters. Chip removal preserves the remaining
+selection and list search/sort/history; active/fixed dimensions are hidden,
+and Project is hidden for a single-project export, not merely a narrowed
+browser result. Guided proposal labels preserve authored bodies and
+copy-for-AI text. Safe HTTP(S) source links open externally, while in-corpus
+Jira hash navigation preserves filters.
+
+Related-item and summary-source links retain explicit lookup diagnostics.
+Previously source-backed safe context remains last-known after a failed
+lookup; an old zero-message thread URL remains unverified rather than
+resolved. Numeric Zulip references can carry indexed `/near/` links, and
+repository references retain their snapshot URLs. Optional-detail diagnostics
+are visible even on resolved links. The publisher never repairs or discovers
+references from a source. Repair of missing GitHub-item URLs or lookup failures
+is outside the enrichment operation; repository links are a separate kind.
+
+The output contains the selected sub-site, an embedded SQLite database, the
+exact manifest name `site-manifest.json`, ownership metadata, and a chooser
+page when either sub-site exists. For Discussion, manifest `title` remains the
+stable base used by workflow validation, while `displayTitle`,
+`jiraSourceLastSuccessfulRefreshAt`, `rendererSchemaVersion`,
+`discussionReadiness`, and `discussionCorpus` carry the presentation contract.
+`jiraSourceLastSuccessfulRefreshAt` remains upstream provenance, not the
+display-title date. `tableCounts` describes the embedded renderer database,
+not the canonical Preparer snapshot.
+The remaining fields record source snapshot identity and digest, included
+counts, filters, renderer assets version, build identity, and output path.
+`TicketSiteManifest.ComputeBuildIdentity()` is a public read-only recomputation
+used to validate committed artifacts, including Dev UI reconstruction; legacy
+manifests are not rewritten into renderer v3.
+
+The command-line default remains `cache\jira-ticket-site`. The Dev UI instead
+uses one output root per workflow/run:
+
+```text
+cache\devui-review-sites\prepare\{runId}\discussion\
+cache\devui-review-sites\plan\{runId}\applying\
 ```
 
+Those sites are served at
+`/review-sites/{prepare|plan}/{runId}/{discussion|applying}/` on the trusted
+local Dev UI origin. Their corresponding verified pairs stay under the private
+`cache\devui-authoring-snapshots\` root. A publication failure does not alter
+processor state or accepted receipts; retain the pair and rerun only
+publication.
 
-Building both into the same `--out` is the expected workflow — the
-chooser at `<out>/index.html` will then surface both cards as live.
+Publication enrichment happens before this adapter is invoked. Retain the
+original descriptor/database pair and complete site with their digests. The
+Dev UI's generation/regeneration action is independent of its refresh action,
+even when a site is proof-ready. Use the Dev UI, documented
+`prepared-ticket-authoring` / `refresh-publication` CLI action, or processor
+HTTP API to request a **new linked** Preparer `publication-refresh` run.
+Admission verifies that the original snapshot's protected content/receipts
+and grouping still exist unchanged, then freezes the entire current accepted
+corpus. Disjoint additional current output is disclosed in public run status
+`corpusComparison`, not inferred through a client database read.
 
-`--spec` matches the hydrated `Specification` value (Jira
-`customfield_11302`, e.g. `'FHIR Core (FHIR)'` or `fhir-extensions`);
-`--project` matches the Jira project key (e.g. `FHIR`). The two are
-distinct: a ticket in the `FHIR` Jira project may have any
-`Specification` value, including blank.
+The persisted `publication-enrichment` v1 recipe executes
+`publication-enrichment-v1` under the maintenance fence, enriches Jira and
+accepted Zulip references, and certifies retained grouping without authoring
+or grouping dispatch. Changed original content/grouping, accepted Jira
+revision, or source generation causes refusal, not deletion, re-authoring,
+regrouping, or forced original-site replacement. After successful completion,
+download that new run's verified pair and publish into a different output
+root. Run, snapshot, sequence, and site identity change; original artifacts
+remain untouched. Preparer-v3/public proof-v1 are unchanged contracts.
 
-Open `cache/jira-ticket-site/index.html` in a Chromium-family
-browser. You should see the chooser landing page with a
-**Tickets for Discussion** card and a **Tickets for Applying** card;
-cards whose sub-site hasn't been built into this `<out>` render
-greyed-out and are unclickable. Live cards link into the respective
-sub-site at `<out>/discussion/index.html` or
-`<out>/applying/index.html`.
+If source people need population, that is a separate authorized
+`POST /api/v1/jira/public-people/preview` followed by `/apply` through the
+gateway, with exact identity/revision evidence and full shared-impact
+acknowledgement. Cache-only is the default; legacy raw caches without source
+acquisition receipts are untrusted and upstream reads need explicit
+authenticated opt-in. Not every name can be recovered. See the
+[operator procedure](../../docs/user/generating-discussion-tickets.md#populate-source-people-only-after-an-explicit-preview)
+for bounds, failure codes, expiry, atomic apply, and lost-response handling.
+Typed indexed-only Zulip diagnostics use gateway
+`GET /api/v1/zulip/references/resolve?reference=...`; they do not establish
+recovery of every historical JSON failure or any particular live corpus.
 
-Each sub-site is its own self-contained SPA:
+Persisted null legacy maintenance metadata recovers the old Jira-only recipe;
+unknown non-null recipes are refused. Quiesce/reconcile new runs before a
+binary downgrade. Committed source/processor metadata persists after a code
+revert: do not reset it, lower generations, or replay accepted work.
+Operational live repair remains separately authorized.
 
-- **Discussion sub-site landing** shows `N prepared tickets in this
-  run.` plus `Show Ticket List →` (and `Show Topic List →` when the
-  run carries any topic rows), followed by a grid of crosscut summary
-  tables (workgroup, type, artifact, page, impact, specification).
-- **Applying sub-site landing** shows the planned-ticket count, a
-  `Show Ticket List →` shortcut, a tickets-by-repo summary, and a
-  topics-by-spanned-repo summary (when topics exist). Per-ticket
-  pages render one section per repo with that repo's changes,
-  impacts, change validations, testing considerations, and open
-  questions; per-topic pages render the spanned-repo list and the
-  member tickets (grouped or remaining).
+The adapter renders exactly the supplied pair and publishes files locally;
+it does not call sources or processors to validate, refresh, or supplement
+its contents. Legacy loose-file arguments remain a compatibility entry point
+only because the adapter first captures them into an immutable, service-bound
+verified pair. There is no in-place renderer migration.
 
-Both sub-sites honor the same chip composition (`wg:`, `spec:`,
-`project:` from the generation-time flags) and link to per-ticket
-pages from row clicks. **No cross-sub-site links** are emitted on
-per-ticket pages — that's an intentional `[decided]` hard boundary
-in the feature request.
+## Static hosting
 
-## Filter chips
+Upload the complete generated output directory, including every `assets`
+folder. Discussion's classic `state.js` is mandatory and loads before its
+presentation/application scripts; publish it with the matching database and
+all other assets. Generated HTML adds the renderer asset-version token to URLs
+so a CDN or browser cannot combine a newly generated embedded database with stale
+JavaScript or WebAssembly. The completed site is self-contained: its browser
+reads only the embedded renderer database and static assets and does not call
+Jira, the Orchestrator, the Preparer, or any other live service. It can be
+opened directly from disk or served from a static host. Discussion HTML embeds
+the trusted SQL.js WebAssembly bytes for direct `file://` initialization while
+also retaining the standalone WebAssembly asset for hosted compatibility.
 
-The landing page, the list view, and crosscut sub-views in each
-sub-site share a single filter banner. Each active filter is a chip
-with the shape `dim: value`:
-
-- **Generation chips** (`spec:`, `project:`, `wg:`) come from the
-  build-time flags and are baked into the trimmed DB. They render
-  without an `×` button — the underlying data is already trimmed so
-  the chip cannot be removed.
-- **In-page chips** (`wg:`, `artifact:`, `page:`, `spec:`, `impact:`,
-  `type:`) come from clicking a row in a filterable crosscut column
-  on the **discussion** sub-site. They render with an `×` button
-  that drops just that one chip and re-renders the view. `type:` is
-  in-page-only — there is no `--type` generation-time flag. The
-  applying sub-site does not currently surface in-page chips beyond
-  the build-time generation chips.
-
-## Ticket list views
-
-### Discussion sub-site (`<out>/discussion/`)
-
-The `#/list` view (and any crosscut redirect into it) renders a
-seven-column table: `Key`, `Title`, `Workgroup`, `Status`, `Type`,
-`Impact A`, `Impact B`. The per-ticket `Recommendation` prose and the
-`SavedAt` timestamp are intentionally not surfaced here — both remain
-visible on the per-ticket detail page.
-
-Each column header is clickable (or activatable with Enter/Space) to
-sort the post-filter row set by that column. The first click sorts
-ascending; clicking the active column again toggles to descending. The
-active column shows a `▲` / `▼` glyph and an `aria-sort` attribute.
-The `Key` column uses a numeric-aware compare so `FHIR-5079` sorts
-before `FHIR-50710`. Sort state is per-mount: leaving and re-entering
-the list view resets the default sort to `Key` ascending.
-
-Chips compose with logical AND, encoded in the URL hash as a
-`?dim=value&dim2=value` suffix
-(e.g., `#/list?wg=Patient%20Administration&artifact=Observation`).
-This encoding is internal to the SPA and not a stable external link
-contract.
-
-Filterable crosscut columns auto-hide on the landing grid when their
-own dimension is already pinned by a chip OR has only one distinct
-non-`(unknown)` value in the post-chip data set. The `(unknown)`
-pseudo-value on a crosscut row toggles a chip with literal value
-`(unknown)`, which matches no tickets and is mainly useful for
-confirming a column has been auto-hidden because all non-unknown
-values were already pinned.
-
-### Applying sub-site (`<out>/applying/`)
-
-The applying `#/list` view renders a six-column table: `Key`,
-`Title`, `Workgroup`, `Spec`, `Repos`, `Changes`. `Title` /
-`Workgroup` / `Spec` come from the self-Jira hydration row
-(`planned_jira_hydration` where `JiraKey = IssueKey`) and display
-`(unknown)` when the row is missing. `Repos` is the
-comma-separated `planned_ticket_repos.RepoKey` set per ticket;
-`Changes` is the `planned_ticket_repo_changes` count. Each `Key`
-links into the per-ticket detail (`#/ticket/<key>`), which groups
-content by repo (changes, impacts, validations, testing
-considerations, open questions).
-
-The `#/list` view is sortable (click any header; `Key` ascending by
-default) and filterable (a live text box matches `Key`, `Title`,
-`Workgroup`, `Spec`, and `Repos`, with a "N of M" count). The header is
-a title plus a `Chooser › Applying › …` breadcrumb that routes back to
-the chooser. The per-ticket detail leads with a **Ticket summary**
-expander (the `Key` links to Jira) followed by **Original request** /
-**Proposed / accepted resolution** sections (see [Authored request /
-resolution HTML](#authored-request--resolution-html-both-sub-sites)),
-then the resolution summary, feature proposal, design rationale, and the
-per-repo groups.
-
-## Flags
-
-| Flag | Default | Notes |
-|------|---------|-------|
-| `--preparer-db <path>` | `./cache/jira-preparer.db` (only applied if the flag is supplied) | Builds the **discussion** sub-site under `<out>/discussion/`. Must already be hydrated (the preparer service handles that — see [Prerequisite: hydrated DB](#prerequisite-hydrated-db)). Mutually exclusive with `--planner-db`. |
-| `--planner-db <path>` | `./cache/jira-planner.db` (only applied if the flag is supplied) | Builds the **applying** sub-site under `<out>/applying/`. Older planner DBs self-migrate during the trim step. Mutually exclusive with `--preparer-db`. |
-| `--out <path>` | `./cache/jira-ticket-site` | Output root. Contains the chooser `index.html` plus whichever sub-site folders have been built. Sub-site delete is per-folder, so building one sub-site never wipes the other. |
-| `--title <string>` | `"Ticket Site"` | Threads through to each sub-site's `<title>` and landing `<h1>` (HTML-encoded). When any filter is active, an automatic ` (filtered: …)` suffix is appended. |
-| `--spec <name>` | — | Filter to tickets whose hydrated `Specification` matches (case-insensitive). On the discussion side this matches `prepared_ticket_hydration.Specification`; on the applying side it matches the self-Jira `planned_jira_hydration.Specification`. |
-| `--project <key>` | — | Filter to tickets in the given Jira project key (case-insensitive). |
-| `--wg <name\|code>` | — | Filter to tickets in the given workgroup. Matches the workgroup `Name` recorded on the processor-side ticket first; on miss, resolves the input as a workgroup code or clean name via the Jira source service (HTTP `--jira-source`, then `--jira-source-db`). |
-| `--jira-source <url>` | `http://localhost:5160` | Base URL of the Jira source service for `--wg` code/clean-name resolution. |
-| `--jira-source-db <path>` | — | Jira source SQLite DB. Fallback for `--wg` resolution when the HTTP service is unreachable; the source for the discussion sub-site's "By artifact" and "By page" crosscut columns; and the source for the authored request/resolution HTML (`*_ticket_jira_content`) on **both** sub-sites. Without it the related-artifact/page tables and the jira-content table are present but empty (the SPA falls back to inlined plain text where available). |
-| `--force` | `false` | Overwrite a sub-site directory whose recorded filter set differs from the current run's (see "Output directory safety rail"). |
-| `--help` | — | Print usage and exit 0. |
-
-### Active filters
-
-```bash
-# Workgroup by code, falling back through the default Jira source service.
-dotnet run --project tools/ticket-site -- \
-  --preparer-db ./cache/jira-preparer.db \
-  --out ./cache/jira-ticket-site-fhir-i \
-  --wg fhir-i
-
-# Specification filter only.
-dotnet run --project tools/ticket-site -- \
-  --preparer-db ./cache/jira-preparer.db \
-  --out ./cache/jira-ticket-site-fhir-extensions \
-  --spec fhir-extensions
-
-# Spec filter against the planner DB.
-dotnet run --project tools/ticket-site -- \
-  --planner-db ./cache/jira-planner.db \
-  --out ./cache/jira-ticket-site-fhir-core \
-  --spec FHIR
-```
-
-When a filter flag is supplied the inlined DB is trimmed to just the
-surviving tickets and their related rows; the active filter set is
-also surfaced in the page `<title>` and as a non-removable
-generation chip in the banner on every view except the per-ticket
-detail page. If the filter set ANDs to zero rows the site is still
-emitted and the landing view shows `0 prepared tickets match this
-filter.` instead of the usual count line.
-
-## Output size
-
-Each sub-site's `index.html` carries its full processor DB
-(including hydration tables and inlined `DescriptionPlain` per
-ticket on the discussion side) as a single base64-inlined blob, so
-the file size is roughly
-
-```
-indexHtml ≈ dbSize × 4 / 3 + ~100 KB chrome
-```
-
-At today's volume (~3,900 prepared tickets) the hydrated preparer
-DB lands in the 70–90 MB range. The planner DB is typically smaller
-since it carries no ticket-level prose. Chromium and Firefox handle
-both file sizes fine; Safari may struggle (see
-[Browser compatibility](#browser-compatibility)). For distribution,
-zip the output folder. With one or more filter flags supplied, the
-inlined DB shrinks roughly in proportion to the surviving ticket
-count (both `PreparerDbTrimmer` and `PlannerDbTrimmer` trim the
-core ticket table and every per-ticket child table and run
-`VACUUM` before the bytes are inlined).
-
-The chooser at `<out>/index.html` is plain HTML (a couple KB) and
-carries no DB blob.
-
-## Browser compatibility
-
-Tested in Chromium-family browsers (Chrome, Edge, Brave) opened
-directly from `file://`. Safari may refuse to load WebAssembly from
-`file://`; if you hit that, serve the output directory and open
-`http://localhost:8000/` instead:
-
-```bash
-cd ./cache/jira-ticket-site
-python3 -m http.server
-```
-
-## Vendored assets
-
-Both sub-sites rely on a vendored copy of
-[sql.js](https://github.com/sql-js/sql.js) to load the embedded
-SQLite database in the browser. The bytes ship as embedded
-resources in the C# project under `web-assets/shared/` and are
-copied into **each sub-site's** `<out>/<sub-site>/assets/` folder
-on emit so each sub-site is fully self-contained.
-
-- Release: [`sql-js/sql.js` v1.10.3](https://github.com/sql-js/sql.js/releases/tag/v1.10.3)
-- Asset: `sqljs-wasm.zip` (contains `sql-wasm.js` + `sql-wasm.wasm`)
-- License: MIT
-- SHA-256:
-  - `sql-wasm.js`&nbsp;&nbsp; `558a72c3ab3415d0e6d243cfd23f9d61543600d59054b4b7b8da3cd65f6b9fd4`
-  - `sql-wasm.wasm` `d7e61b828523001f26ce0b3f88dabcf6c12e5e6edf80eb4f08b26ac7b946ff88`
-
-To refresh:
-
-1. Download `sqljs-wasm.zip` from the chosen `sql-js/sql.js` release.
-2. Extract `sql-wasm.js` and `sql-wasm.wasm` into
-   `tools/ticket-site/web-assets/shared/`.
-3. Update the SHA-256 values above (`shasum -a 256 sql-wasm.*`).
-4. Rebuild (`dotnet build tools/ticket-site/ticket-site.csproj`).
-
-No automated update path is planned.
-
-### Markdown rendering (applying sub-site)
-
-The applying (planned) sub-site renders long-form prose fields
-(Resolution summary, Feature proposal, Design rationale, and per-repo
-prose) as Markdown. Two more libraries ship the same way — embedded
-under `web-assets/shared/` and copied into **each sub-site's**
-`assets/` folder on emit:
-
-- [`marked`](https://github.com/markedjs/marked) **18.0.5** —
-  vendored as `marked.min.js` (the package's `lib/marked.umd.js`
-  UMD/global build; marked 18 ships no separate minified browser
-  build). Parses Markdown to HTML. License: MIT.
-  - SHA-256: `2dc4769dfde29f51c7aca1a539c6407c789c8ea644cf8b7d01ded28a9c1d800b`
-- [`DOMPurify`](https://github.com/cure53/DOMPurify) **3.4.8** —
-  vendored as `purify.min.js` (`dist/purify.min.js` UMD build).
-  Sanitizes the rendered HTML before it reaches `innerHTML`; it is
-  the single sanitization layer for untrusted ticket prose.
-  License: Apache-2.0 / MPL-2.0.
-  - SHA-256: `b656113abe5f9b5f2c30c8b10462b7b4e947e10a49f561058822bc48e9601b4a`
-
-Identifiers, keys, titles, file paths and code blocks stay HTML-escaped;
-only authored prose is routed through `marked` + `DOMPurify`. To refresh,
-re-download the pinned versions into `web-assets/shared/`, update the
-hashes above, and rebuild.
-
-## Known limitations
-
-- **No incremental mode for a single sub-site.** Every run rewrites
-  its `<out>/<sub-site>/` from scratch, subject to the safety rail
-  (see below). Building the *other* sub-site never touches the
-  already-emitted sub-site folder.
-- **Output directory safety rail.** Every emitted sub-site drops a
-  `.ticket-site.meta` JSON marker inside its sub-site folder. The
-  marker records the canonical filter set and a `kind` field
-  (`preparer` or `planner`) for defense-in-depth integrity checking.
-  A subsequent run against the same sub-site folder whose filter
-  set differs (e.g., re-running a `--project FHIR` build into a
-  folder that previously held a `--wg CDS` build) refuses with a
-  stderr diagnostic; pass `--force` to overwrite anyway. Pre-existing
-  sub-site directories with no marker (i.e., produced by an earlier
-  version of the tool) are overwritten without `--force`. The
-  chooser at `<out>/index.html` has no marker — it is a derived
-  artifact and is unconditionally regenerated every run.
-- **Substring filter only.** The discussion sub-site's list view
-  does a debounced 150 ms case-insensitive substring match against
-  `Key + Title + RequestSummary`. There is no full-text index, no
-  fuzzy match, no field-targeted search. The applying sub-site does
-  not currently surface in-page search.
-- **No cross-sub-site links.** Per-ticket pages do not link from one
-  sub-site to the other, even when the same ticket key is present in
-  both DBs. This is a `[decided]` hard boundary (reviewers open two
-  tabs).
-- **No diff between runs**, no two-DB comparison.
-- **No theming / dark-mode toggle** beyond honoring
-  `prefers-color-scheme`.
-- **Planner topic populator is follow-on work.** Until
-  `orchestrate-planner-topic-groupings` ships, the applying
-  sub-site greys out `Show Topic List →` (the schema + write
-  endpoint + reviewer UI are all in place; only the producer is
-  missing).
-
+For a deployment created before asset versioning was added, purge the CDN
+cache once after replacing the complete output. A stale discussion `app.js`
+does not inflate the current gzipped database and reports
+`Failed to load database: file is not a database`.

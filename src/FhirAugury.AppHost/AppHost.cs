@@ -1,3 +1,5 @@
+using FhirAugury.Common.Api;
+
 var builder = DistributedApplication.CreateBuilder(args);
 
 // ── Source services (pinned ports matching existing convention) ───
@@ -46,6 +48,16 @@ var fhir = builder.AddProject<Projects.FhirAugury_Source_Fhir>("source-fhir")
         e.IsProxied = false;
     });
 
+IReadOnlyDictionary<string, IResourceBuilder<ProjectResource>> sourceResources =
+    new Dictionary<string, IResourceBuilder<ProjectResource>>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Jira"] = jira,
+        ["Zulip"] = zulip,
+        ["Confluence"] = confluence,
+        ["GitHub"] = github,
+        ["Fhir"] = fhir,
+    };
+
 // ── Orchestrator ─────────────────────────────────────────────────
 var orchestrator = builder.AddProject<Projects.FhirAugury_Orchestrator>("orchestrator")
     .WithEndpoint("http", e =>
@@ -67,9 +79,12 @@ IResourceBuilder<ProjectResource> preparer = builder.AddProject<Projects.FhirAug
         e.TargetPort = 5171;
         e.IsProxied = false;
     })
-    .WaitFor(jira)
-    .WaitFor(orchestrator)
-    .WithExplicitStart();
+    .WaitFor(orchestrator);
+ApplyTicketWorkflowDependencies(
+    preparer,
+    TicketWorkflowDependencyCatalog.PreparerServiceName,
+    sourceResources);
+preparer.WithExplicitStart();
 
 IResourceBuilder<ProjectResource> planner = builder.AddProject<Projects.FhirAugury_Processor_Jira_Fhir_Planner>("processor-jira-fhir-planner")
     .WithEndpoint("http", e =>
@@ -78,20 +93,15 @@ IResourceBuilder<ProjectResource> planner = builder.AddProject<Projects.FhirAugu
         e.TargetPort = 5172;
         e.IsProxied = false;
     })
-    .WaitFor(jira)
-    .WaitFor(github)
-    .WaitFor(orchestrator)
-    .WithExplicitStart();
-// The planner service exposes the following parity HTTP surface
-// (mirroring the preparer service shape):
-//   GET  /api/v1/planned-tickets                 list (filters: repo, affectedFilePath, relatedJiraKey, limit, offset)
-//   GET  /api/v1/planned-tickets/{key}           per-ticket detail (repos, repo changes, impacts, validations, tests, open questions)
-//   GET  /api/v1/planned-tickets/{key}/related   per-ticket related items (repos)
-//   POST /api/v1/planned-tickets/query           combined-filter list body
-//   GET  /api/v1/planned-ticket-hydration/{workGroupClean}  per-workgroup hydrated-display projection (planned_jira_hydration self-rows)
-//   GET  /api/v1/planned-ticket-topics/{wg}/{spec}/{type}   topic grouping read
-//   PUT  /api/v1/planned-ticket-topics                       topic grouping write (consumed by a future orchestrator)
-//   POST /api/v1/admin/hydration/backfill                    on-demand full hydration sweep
+    .WaitFor(orchestrator);
+ApplyTicketWorkflowDependencies(
+    planner,
+    TicketWorkflowDependencyCatalog.PlannerServiceName,
+    sourceResources);
+planner.WithExplicitStart();
+// Planner authoring, grouping, and snapshot writes are processor-owned.
+// Outer clients use the Orchestrator/CLI run proxies; grouping maintenance
+// remains an explicit fenced processor operation.
 
 IResourceBuilder<ProjectResource> applier = builder.AddProject<Projects.FhirAugury_Processor_Jira_Fhir_Applier>("processor-jira-fhir-applier")
     .WithEndpoint("http", e =>
@@ -105,7 +115,42 @@ IResourceBuilder<ProjectResource> applier = builder.AddProject<Projects.FhirAugu
     .WaitFor(planner)
     .WithExplicitStart();
 
-// ── Ballot-notes processor (commit-triggered; GitHub source clone + Jira/orchestrator attribution) ──
+// ── Server services ─────────────────────────────────────────────
+IResourceBuilder<ProjectResource> serverTerminology = builder.AddProject<Projects.FhirAugury_Server_Terminology>("server-terminology")
+    .WithEndpoint("http", e =>
+    {
+        e.Port = 5300;
+        e.TargetPort = 5300;
+        e.IsProxied = false;
+    })
+    .WithExplicitStart();
+
+serverTerminology.WithCommand(
+    name: "terminology-refresh",
+    displayName: "Refresh THO index",
+    executeCommand: async context =>
+    {
+        using HttpClient http = new();
+        try
+        {
+            HttpResponseMessage response = await http.PostAsync(
+                "http://localhost:5300/api/v1/terminology/index/refresh",
+                content: null,
+                context.CancellationToken);
+            if (response.IsSuccessStatusCode)
+                return CommandResults.Success();
+
+            string body = await response.Content.ReadAsStringAsync(context.CancellationToken);
+            return CommandResults.Failure($"HTTP {(int)response.StatusCode}: {body}");
+        }
+        catch (HttpRequestException ex)
+        {
+            return CommandResults.Failure($"Cannot reach terminology server: {ex.Message}");
+        }
+    },
+    commandOptions: new CommandOptions { Description = "Queues a fresh THO NPM package download + re-index pass." });
+
+// ── Ballot-notes processor (immutable hydration executions + run-backed authoring) ──
 IResourceBuilder<ProjectResource> ballotNotes = builder.AddProject<Projects.FhirAugury_Processor_GitHub_Fhir_BallotNotes>("processor-github-fhir-ballotnotes")
     .WithEndpoint("http", e =>
     {
@@ -119,6 +164,16 @@ IResourceBuilder<ProjectResource> ballotNotes = builder.AddProject<Projects.Fhir
     .WithExplicitStart();
 
 // ── Dev UI ───────────────────────────────────────────────────────
+string repositoryRoot = Path.GetFullPath(
+    Path.Combine(builder.AppHostDirectory, "..", ".."));
+string devUiCacheRoot = Path.Combine(repositoryRoot, "cache");
+string devUiSnapshotRoot = Path.Combine(
+    devUiCacheRoot,
+    "devui-authoring-snapshots");
+string devUiReviewSitesRoot = Path.Combine(
+    devUiCacheRoot,
+    "devui-review-sites");
+
 builder.AddProject<Projects.FhirAugury_DevUi>("devui")
     .WithEndpoint("http", e =>
     {
@@ -126,6 +181,19 @@ builder.AddProject<Projects.FhirAugury_DevUi>("devui")
         e.TargetPort = 5210;
         e.IsProxied = false;
     })
+    .WithReference(orchestrator)
+    .WithEnvironment(
+        "FHIR_AUGURY_DEVUI_DevUi__OrchestratorAddress",
+        orchestrator.GetEndpoint("http"))
+    .WithEnvironment(
+        "FHIR_AUGURY_DEVUI_DevUi__CacheRoot",
+        devUiCacheRoot)
+    .WithEnvironment(
+        "FHIR_AUGURY_DEVUI_DevUi__SnapshotCacheRoot",
+        devUiSnapshotRoot)
+    .WithEnvironment(
+        "FHIR_AUGURY_DEVUI_DevUi__ReviewSitesRoot",
+        devUiReviewSitesRoot)
     .WaitFor(orchestrator)
     .WithExplicitStart();
 
@@ -188,3 +256,15 @@ foreach ((string? type, string displayName, string description) in indexCommands
 }
 
 builder.Build().Run();
+
+static void ApplyTicketWorkflowDependencies(
+    IResourceBuilder<ProjectResource> processor,
+    string processingServiceName,
+    IReadOnlyDictionary<string, IResourceBuilder<ProjectResource>> sourceResources)
+{
+    foreach (string requiredService in
+        TicketWorkflowDependencyCatalog.GetRequiredServices(processingServiceName))
+    {
+        processor.WaitFor(sourceResources[requiredService]);
+    }
+}

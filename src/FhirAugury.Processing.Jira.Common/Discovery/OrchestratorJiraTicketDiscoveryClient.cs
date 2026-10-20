@@ -11,6 +11,7 @@ public sealed class OrchestratorJiraTicketDiscoveryClient(
     : JiraTicketDiscoveryClientBase(httpClient, optionsAccessor, requestFactory)
 {
     protected override string LocalProcessingTicketsPath => "api/v1/jira/local-processing/tickets";
+    protected override string LocalProcessingSelectionTicketsPath => "api/v1/jira/local-processing/selection-tickets";
     protected override string ItemPathPrefix => "api/v1/jira/items";
     protected override string SetProcessedPath => "api/v1/jira/local-processing/set-processed";
 }

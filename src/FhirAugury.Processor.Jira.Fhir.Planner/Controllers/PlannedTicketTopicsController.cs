@@ -1,4 +1,7 @@
 using FhirAugury.Common.WorkGroups;
+using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Planner.Api;
 using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database;
@@ -15,8 +18,19 @@ namespace FhirAugury.Processor.Jira.Fhir.Planner.Controllers;
 [ApiController]
 [Route("api/v1/planned-ticket-topics")]
 [Produces("application/json")]
-public sealed class PlannedTicketTopicsController(PlannerDatabase database) : ControllerBase
+public sealed class PlannedTicketTopicsController : ControllerBase
 {
+    private readonly PlannerDatabase _database;
+    private readonly AuthoringRunStore _authoringStore;
+
+    public PlannedTicketTopicsController(
+        PlannerDatabase database,
+        AuthoringRunStore? authoringStore = null)
+    {
+        _database = database;
+        _authoringStore = authoringStore ?? new AuthoringRunStore(database);
+    }
+
     [HttpGet("{workGroupClean}/{specification}/{type}")]
     [ProducesResponseType(typeof(PlannedTicketTopicGroupingResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -29,7 +43,7 @@ public sealed class PlannedTicketTopicsController(PlannerDatabase database) : Co
             canonical = workGroupClean;
         }
 
-        PlannedTicketTopicsForCategory? result = await database.GetWorkGroupTopicsAsync(canonical, specification, type, ct);
+        PlannedTicketTopicsForCategory? result = await _database.GetWorkGroupTopicsAsync(canonical, specification, type, ct);
         return result is null ? NotFound() : Ok(PlannedTicketDtoMapper.ToDto(result));
     }
 
@@ -40,13 +54,67 @@ public sealed class PlannedTicketTopicsController(PlannerDatabase database) : Co
     {
         try
         {
+            if (request.Authoring is null)
+            {
+                return Conflict(new { error = "authoring-stage-required" });
+            }
+            IActionResult? modeFailure = await GetWriteModeFailureAsync(ct);
+            if (modeFailure is not null)
+            {
+                return modeFailure;
+            }
+
             PlannedTicketTopicGroupingPayload payload = request.ToPayload();
-            await database.SaveTopicGroupingAsync(payload, ct);
-            return NoContent();
+            await _database.SaveTopicGroupingForRunAsync(
+                payload,
+                request.Authoring.RunId,
+                request.Authoring.StageId,
+                request.Authoring.StageLeaseId,
+                request.Authoring.InputFingerprint,
+                ct);
+            AuthoringRunStageReceipt receipt =
+                await _database.GetGroupingReceiptAsync(
+                    request.Authoring.RunId,
+                    request.Authoring.StageId,
+                    PlannerDatabase.GetPartitionKey(
+                        payload.WorkGroupClean,
+                        payload.Specification,
+                        payload.Type),
+                    request.Authoring.InputFingerprint,
+                    ct)
+                ?? throw new InvalidOperationException(
+                    "Grouping persistence completed without a durable partition receipt.");
+            return Ok(receipt);
         }
-        catch (ArgumentException ex)
+        catch (Exception ex) when (ex is ArgumentException or AuthoringConflictException)
         {
             return BadRequest(new { error = ex.Message });
         }
     }
+
+    private async Task<IActionResult?> GetWriteModeFailureAsync(
+        CancellationToken ct)
+    {
+        string mode = (await _authoringStore.GetProcessorModeAsync(
+            "jira-fhir",
+            ct)).Mode;
+        if (string.Equals(
+            mode,
+            AuthoringStatusValues.ProcessorModes.CuttingOver,
+            StringComparison.Ordinal))
+        {
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new { error = "cutover-in-progress" });
+        }
+        if (string.Equals(
+                mode,
+                AuthoringStatusValues.ProcessorModes.Legacy,
+                StringComparison.Ordinal))
+        {
+            return Conflict(new { error = "authoring-not-activated" });
+        }
+        return null;
+    }
+
 }

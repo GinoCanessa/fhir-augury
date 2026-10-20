@@ -2,7 +2,9 @@ using System.Globalization;
 using FhirAugury.Source.Jira.Api;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
+using FhirAugury.Source.Jira.Database.Records;
 using FhirAugury.Source.Jira.Indexing;
+using FhirAugury.Source.Jira.Ingestion;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
@@ -36,28 +38,22 @@ public class LocalProcessingController(
         JiraLocalProcessingQueryBuilder.TableMapping? mapping = JiraLocalProcessingQueryBuilder.TryGetMapping(type);
         if (mapping is null) return BadRequest(new { error = $"Unknown type '{type}'. Expected one of: fhir, pss, baldef, ballot." });
 
-        JiraServiceOptions options = optionsAccessor.Value;
-        using SqliteConnection connection = db.OpenConnection();
+        return Ok(ReadPage(
+            request,
+            JiraLocalProcessingQueryBuilder.BuildList(request, mapping),
+            JiraLocalProcessingQueryBuilder.BuildCount(request, mapping)));
+    }
 
-        (string listSql, List<SqliteParameter> listParams) =
-            JiraLocalProcessingQueryBuilder.BuildList(request, mapping);
+    [HttpPost("selection-tickets")]
+    public IActionResult GetSelectionTickets([FromBody] JiraLocalProcessingSelectionRequest request, [FromQuery] string? type = null)
+    {
+        JiraLocalProcessingQueryBuilder.TableMapping? mapping = JiraLocalProcessingQueryBuilder.TryGetMapping(type);
+        if (mapping is null) return BadRequest(new { error = $"Unknown type '{type}'. Expected one of: fhir, pss, baldef, ballot." });
 
-        int limit = (request.Limit is null || request.Limit.Value <= 0)
-            ? JiraLocalProcessingQueryBuilder.DefaultLimit
-            : request.Limit.Value;
-        int offset = (request.Offset is null || request.Offset.Value < 0)
-            ? 0
-            : request.Offset.Value;
-
-        List<JiraIssueSummaryEntry> results = ReadSummaries(connection, listSql, listParams, options);
-
-        (string countSql, List<SqliteParameter> countParams) =
-            JiraLocalProcessingQueryBuilder.BuildCount(request, mapping);
-        using SqliteCommand countCmd = new SqliteCommand(countSql, connection);
-        foreach (SqliteParameter p in countParams) countCmd.Parameters.Add(p);
-        int total = Convert.ToInt32(countCmd.ExecuteScalar());
-
-        return Ok(new JiraLocalProcessingListResponse(results, limit, offset, total));
+        return Ok(ReadPage(
+            request,
+            JiraLocalProcessingQueryBuilder.BuildSelectionList(request, mapping),
+            JiraLocalProcessingQueryBuilder.BuildSelectionCount(request, mapping)));
     }
 
     [HttpPost("random-ticket")]
@@ -90,53 +86,80 @@ public class LocalProcessingController(
         if (mapping is null) return BadRequest(new { error = $"Unknown type '{type}'. Expected one of: fhir, pss, baldef, ballot." });
 
         using SqliteConnection connection = db.OpenConnection();
+        using SqliteCommand transaction = connection.CreateCommand();
+        transaction.CommandText = "BEGIN IMMEDIATE;";
+        transaction.ExecuteNonQuery();
 
-        DateTimeOffset? existing;
-        bool found = false;
-        using (SqliteCommand selectCmd = connection.CreateCommand())
+        JiraLocalProcessingSetResponse response;
+        try
         {
-            selectCmd.CommandText = $"SELECT ProcessedLocallyAt FROM {mapping.TableName} WHERE Key = @k";
-            selectCmd.Parameters.Add(new SqliteParameter("@k", request.Key));
-            using SqliteDataReader reader = selectCmd.ExecuteReader();
-            existing = null;
-            if (reader.Read())
+            DateTimeOffset? existing;
+            bool found = false;
+            using (SqliteCommand selectCmd = connection.CreateCommand())
             {
-                found = true;
-                object rawValue = reader.GetValue(0);
-                if (rawValue is string s &&
-                    DateTimeOffset.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset parsed))
+                selectCmd.CommandText = $"SELECT ProcessedLocallyAt FROM {mapping.TableName} WHERE Key = @k";
+                selectCmd.Parameters.Add(new SqliteParameter("@k", request.Key));
+                using SqliteDataReader reader = selectCmd.ExecuteReader();
+                existing = null;
+                if (reader.Read())
                 {
-                    existing = parsed;
+                    found = true;
+                    object rawValue = reader.GetValue(0);
+                    if (rawValue is string s &&
+                        DateTimeOffset.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset parsed))
+                    {
+                        existing = parsed;
+                    }
                 }
             }
+
+            if (!found)
+            {
+                transaction.CommandText = "ROLLBACK;";
+                transaction.ExecuteNonQuery();
+                return NotFound();
+            }
+
+            bool previousValue = ProcessedLocallyMapper.FromStorageValue(existing);
+            object storageValue = ProcessedLocallyMapper.ToStorageValue(request.ProcessedLocally);
+
+            using (SqliteCommand updateCmd = connection.CreateCommand())
+            {
+                updateCmd.CommandText = $"UPDATE {mapping.TableName} SET ProcessedLocallyAt = @v WHERE Key = @k";
+                updateCmd.Parameters.Add(new SqliteParameter("@v", storageValue));
+                updateCmd.Parameters.Add(new SqliteParameter("@k", request.Key));
+                if (updateCmd.ExecuteNonQuery() != 1)
+                {
+                    throw new InvalidOperationException($"Issue {request.Key} disappeared during the processed-state update.");
+                }
+            }
+
+            bool newValue = request.ProcessedLocally == true;
+            response = new JiraLocalProcessingSetResponse(
+                request.Key,
+                previousValue,
+                newValue);
+            AdvanceContentRevision(connection);
+            transaction.CommandText = "COMMIT;";
+            transaction.ExecuteNonQuery();
         }
-
-        if (!found) return NotFound();
-
-        bool previousValue = ProcessedLocallyMapper.FromStorageValue(existing);
-        object storageValue = ProcessedLocallyMapper.ToStorageValue(request.ProcessedLocally);
-
-        using (SqliteCommand updateCmd = connection.CreateCommand())
+        catch
         {
-            updateCmd.CommandText = $"UPDATE {mapping.TableName} SET ProcessedLocallyAt = @v WHERE Key = @k";
-            updateCmd.Parameters.Add(new SqliteParameter("@v", storageValue));
-            updateCmd.Parameters.Add(new SqliteParameter("@k", request.Key));
-            updateCmd.ExecuteNonQuery();
+            transaction.CommandText = "ROLLBACK;";
+            transaction.ExecuteNonQuery();
+            throw;
         }
 
-        bool newValue = request.ProcessedLocally == true;
-        return Ok(new JiraLocalProcessingSetResponse(request.Key, previousValue, newValue));
+        return Ok(response);
     }
 
     [HttpPost("clear-all-processed")]
     public IActionResult ClearAllProcessed([FromQuery] string? type = null)
     {
-        using SqliteConnection connection = db.OpenConnection();
-
-        IEnumerable<JiraLocalProcessingQueryBuilder.TableMapping> targets;
+        IReadOnlyList<JiraLocalProcessingQueryBuilder.TableMapping> targets;
         if (string.IsNullOrWhiteSpace(type))
         {
-            targets = JiraLocalProcessingQueryBuilder.AllMappings;
+            targets = JiraLocalProcessingQueryBuilder.AllMappings.ToArray();
         }
         else
         {
@@ -145,14 +168,75 @@ public class LocalProcessingController(
             targets = [mapping];
         }
 
-        int rowsAffected = 0;
-        foreach (JiraLocalProcessingQueryBuilder.TableMapping t in targets)
+        using SqliteConnection connection = db.OpenConnection();
+        using SqliteCommand transaction = connection.CreateCommand();
+        transaction.CommandText = "BEGIN IMMEDIATE;";
+        transaction.ExecuteNonQuery();
+
+        int rowsAffected;
+        try
         {
-            using SqliteCommand cmd = connection.CreateCommand();
-            cmd.CommandText = $"UPDATE {t.TableName} SET ProcessedLocallyAt = NULL WHERE ProcessedLocallyAt IS NOT NULL";
-            rowsAffected += cmd.ExecuteNonQuery();
+            rowsAffected = 0;
+            foreach (JiraLocalProcessingQueryBuilder.TableMapping t in targets)
+            {
+                using SqliteCommand cmd = connection.CreateCommand();
+                cmd.CommandText = $"UPDATE {t.TableName} SET ProcessedLocallyAt = NULL WHERE ProcessedLocallyAt IS NOT NULL";
+                rowsAffected += cmd.ExecuteNonQuery();
+            }
+
+            if (rowsAffected > 0)
+            {
+                AdvanceContentRevision(connection);
+            }
+            transaction.CommandText = "COMMIT;";
+            transaction.ExecuteNonQuery();
         }
+        catch
+        {
+            transaction.CommandText = "ROLLBACK;";
+            transaction.ExecuteNonQuery();
+            throw;
+        }
+
         return Ok(new JiraLocalProcessingClearResponse(rowsAffected));
+    }
+
+    private JiraLocalProcessingListResponse ReadPage(
+        JiraLocalProcessingListRequest request,
+        (string Sql, List<SqliteParameter> Parameters) listQuery,
+        (string Sql, List<SqliteParameter> Parameters) countQuery)
+    {
+        JiraServiceOptions options = optionsAccessor.Value;
+        using SqliteConnection connection = db.OpenConnection();
+        using SqliteCommand transaction = connection.CreateCommand();
+        transaction.CommandText = "BEGIN DEFERRED;";
+        transaction.ExecuteNonQuery();
+
+        int limit = (request.Limit is null || request.Limit.Value <= 0)
+            ? JiraLocalProcessingQueryBuilder.DefaultLimit
+            : request.Limit.Value;
+        int offset = (request.Offset is null || request.Offset.Value < 0)
+            ? 0
+            : request.Offset.Value;
+
+        List<JiraIssueSummaryEntry> results = ReadSummaries(connection, listQuery.Sql, listQuery.Parameters, options);
+
+        using SqliteCommand countCmd = new SqliteCommand(countQuery.Sql, connection);
+        foreach (SqliteParameter p in countQuery.Parameters) countCmd.Parameters.Add(p);
+        int total = Convert.ToInt32(countCmd.ExecuteScalar());
+
+        SourceReadProvenance provenance = JiraSyncStateHelper.CaptureProvenance(
+            connection,
+            results.Select(result => result.ProjectKey));
+
+        JiraLocalProcessingListResponse response =
+            new JiraLocalProcessingListResponse(results, limit, offset, total)
+            {
+                Provenance = provenance,
+            };
+        transaction.CommandText = "COMMIT;";
+        transaction.ExecuteNonQuery();
+        return response;
     }
 
     private static List<JiraIssueSummaryEntry> ReadSummaries(
@@ -192,5 +276,22 @@ public class LocalProcessingController(
         }
 
         return results;
+    }
+
+    private static void AdvanceContentRevision(SqliteConnection connection)
+    {
+        using SqliteCommand update = connection.CreateCommand();
+        update.CommandText = """
+            UPDATE jira_source_state
+            SET ContentRevision = ContentRevision + 1,
+                UpdatedAt = @updatedAt
+            WHERE Id = @id
+            """;
+        update.Parameters.AddWithValue("@updatedAt", DateTimeOffset.UtcNow);
+        update.Parameters.AddWithValue("@id", JiraSourceStateRecord.SingletonId);
+        if (update.ExecuteNonQuery() != 1)
+        {
+            throw new InvalidOperationException("The Jira source state row is missing.");
+        }
     }
 }

@@ -1,306 +1,1612 @@
 # Processors runbook
 
-Operator-facing guide for **kicking off a processing run** on each of the four
-FHIR Augury processors. Every processor section leads with the **raw HTTP
-trigger** (curl-able), then covers prerequisites, how to monitor a run, where the
-output lands, and finally the `orchestrate-*` agent skill that wraps it for bulk
-runs.
+Operator reference for the Preparer, Planner, Applier, and BallotNotes
+processors. Preparer, Planner, and BallotNotes use durable run-backed
+authoring. Their databases are private service state; clients control runs
+through HTTP or the typed CLI and publish review sites only from verified
+snapshot pairs.
 
-> Audience: a developer/operator running the stack locally (via the Aspire
-> AppHost or standalone) who has a processor up and listening but needs to know
-> the trigger. For config reference see [configuration.md](../configuration.md);
-> for the project layout see [project-structure.md](project-structure.md); for
-> the overall design see [architecture.md](architecture.md).
+## Topology
 
-## Overview
+| Processor | Port | Upstreams | Result |
+|-----------|------|-----------|--------|
+| Preparer | 5171 | Jira source, Orchestrator | Prepared discussion tickets |
+| Planner | 5172 | Jira source, GitHub source, Orchestrator | Structured implementation plans |
+| Applier | 5173 | Planner compatibility projection | Local repository commits, push on demand |
+| BallotNotes | 5174 | GitHub source/clone, Jira source, Orchestrator | Hydrated and authored ballot notes |
 
-A **source service** (`source-jira`, `source-zulip`, `source-confluence`,
-`source-github`, `source-fhir`) ingests and serves upstream data. A
-**processor** consumes that data and produces derived artifacts (prepared
-tickets, implementation plans, applied commits, ballot notes). There are four:
+All four resources use `WithExplicitStart()` under Aspire. Start the required
+sources and Orchestrator first, then start the processor.
 
-| Processor | Project | Port | Role |
-|-----------|---------|------|------|
-| Preparer | `FhirAugury.Processor.Jira.Fhir.Preparer` | 5171 | Queues triaged Jira tickets, runs `ticket-prep`, persists prepared output |
-| Planner | `FhirAugury.Processor.Jira.Fhir.Planner` | 5172 | Queues resolved change-required tickets, runs `ticket-plan`, persists plans |
-| Applier | `FhirAugury.Processor.Jira.Fhir.Applier` | 5173 | Auto-discovers completed plans, applies each in a git worktree, push on demand |
-| BallotNotes | `FhirAugury.Processor.GitHub.Fhir.BallotNotes` | 5174 | Hydrates ballot-note evidence for a repo + since-commit window |
+## Operations workspace and Aspire boundary
 
-The Jira processors form a chain — **Preparer → Planner → Applier** — while
-**BallotNotes** is standalone (GitHub-source driven). There are two ways to drive
-any of them:
+The Dev UI root (`http://localhost:5210`) is a task-oriented workspace for the
+Preparer and Planner only:
 
-1. **Raw HTTP trigger** (this page leads with these) — the primitive an operator
-   or an automation hits directly.
-2. **`orchestrate-*` agent skills** — higher-level bulk wrappers
-   (`orchestrate-prep`, `orchestrate-plan`, `orchestrate-notes`). There is **no**
-   `orchestrate-applier` skill.
+| Workflow | UI routes | Required observations | Review site |
+|-|-|-|-|
+| Prepare | `/operations/prepare/new`, `/operations/prepare/{runId}` | Orchestrator, Preparer, Jira | `/review-sites/prepare/{runId}/discussion/` |
+| Plan | `/operations/plan/new`, `/operations/plan/{runId}` | Orchestrator, Planner, Jira, GitHub | `/review-sites/plan/{runId}/applying/` |
 
-All four processors are registered in the AppHost with `WithExplicitStart()`, so
-an operator must **start the resource first** — click "Start" on the resource in
-the Aspire dashboard, or run the project standalone (`dotnet run`) — before any
-trigger below will reach a listening service.
+It does not control BallotNotes or the Applier, mutate repositories, push
+commits, create pull requests, or perform other GitHub writes. It also does not
+start/stop Aspire resources or embed logs and traces. Resolve resource
+lifecycle in the Aspire dashboard and use the UI's readiness recheck only to
+request a fresh Orchestrator health sweep. A service that has not been
+successfully observed is reported as **not observed**, not assumed stopped.
 
-### Lifecycle vs. trigger
+The CLI and `orchestrate-prep` / `orchestrate-plan` skills remain supported
+headless equivalents. Both UI and headless paths are clients of
+processor-owned state; neither is a scheduler, worker callback, or completion
+authority.
 
-The three Jira processors share a uniform processing lifecycle and queue model:
+## Run-backed authoring contract
 
-- `StartProcessingOnStartup` defaults to **`true`**, so a *started* processor
-  begins processing on boot.
-- `POST /processing/start` and `POST /processing/stop` toggle processing at
-  runtime.
-- A background sync worker feeds the local queue automatically on the
-  `SyncSchedule` cadence; the single-ticket HTTP enqueue endpoint is an **ad-hoc**
-  path, not the bulk mechanism.
+### One-way activation
 
-BallotNotes does **not** use this lifecycle model — it is purely on-demand: each
-`POST .../hydrate` validates and runs one commit-window hydration.
+Preparer, Planner, and BallotNotes ship with
+`ActivateRunBackedAuthoring:true`. On the first startup against a legacy
+database the service:
 
-Every lifecycle route below is mapped at both the bare path and an `/api/v1`
-prefix (e.g. `/processing/start` **and** `/api/v1/processing/start`).
+1. Acquires exclusive startup ownership.
+2. Closes authoring and maintenance admission.
+3. Creates and verifies the configured pre-cutover SQLite backup.
+4. Classifies existing domain rows without real receipts as
+   `legacy-unverified`.
+5. Allocates the next authoring epoch and creates a fenced initial
+   revalidation run.
 
----
+The active epoch cannot transition back to legacy after accepting a receipt.
+Ordinary runs, grouping maintenance, and the first canonical snapshot remain
+blocked until initial revalidation succeeds. If source revisions change, the
+processor replaces the revalidation run while retaining unchanged accepted
+provenance in the logical revalidation corpus.
+
+### Source-ticket schema compatibility
+
+Planner and Preparer share the `JiraProcessingSourceTicketStore` bootstrap for
+`jira_processing_source_tickets`. Compatibility is schema-only and deliberately
+bounded, not universal support for historical database schemas. For an existing
+supported table, only these missing columns are added, before generated
+table/index creation:
+
+| Column | Permitted addition |
+|-|-|
+| `Specification` | `TEXT NOT NULL DEFAULT ''` |
+| `SourceProjectLastSuccessfulRefreshAt` | `TEXT NULL` |
+| `SourceContentRevision` | `INTEGER NULL` |
+| `CompletionId` | `TEXT NULL` |
+
+Historical rows receive SQL `NULL` for a newly added `CompletionId`, including
+already-complete tickets. No completion GUID or authoring receipt is
+fabricated. The bootstrap preserves existing completion IDs and all other
+pre-existing values, including identities, content, processing states,
+timestamps, errors, source revisions/provenance, and relationships.
+
+Admission requires the current read/insert schema contract:
+
+- `RowId` must be an automatically generated SQLite **rowid alias** because
+  current inserts omit it. Integer affinity alone is insufficient:
+  `INT PRIMARY KEY`, `WITHOUT ROWID`, and the non-alias
+  `INTEGER PRIMARY KEY DESC` form are refused.
+- `Id` must be non-null with non-partial, single-column uniqueness that
+  guarantees uniqueness under the column's actual equality semantics for
+  unqualified `WHERE Id = @Id` lookups. An `Id COLLATE NOCASE` column with only
+  a unique BINARY index does not meet that contract.
+- All non-additive current fields must already exist, including `ErrorMessage`,
+  `AgentExitCode`, and `ErrorOccurredAt`. Existing columns, including any
+  already-present additions above, must have compatible text/integer affinities
+  and nullability for current reads and inserts. Additional columns/indexes are
+  admitted only when they preserve that contract; they are not repaired or
+  removed. A view or another object occupying the table name is not a fresh
+  database.
+
+Business-key uniqueness is exactly
+`(Key COLLATE NOCASE, SourceTicketShape COLLATE NOCASE)` across **all shapes**,
+not just FHIR. For retained rows identified by
+`LOWER(TRIM(SourceTicketShape)) = 'fhir'`, the stored shape must be exactly
+`fhir` and the key must equal SQLite `UPPER(Key)` byte for byte. Even a lone,
+collision-free noncanonical FHIR row refuses startup. Table and retained-identity
+checks run before source-ticket DDL. Unsupported contracts, conflicting
+identities, and noncanonical retained FHIR identities are diagnosed and refused,
+not reconciled. Startup does not select a winning duplicate, delete tickets,
+reset processing, or rewrite identities.
+No identity-reconciliation utility is supplied; this refusal can cost
+availability and must not be bypassed with automatic cleanup.
+
+The managed `idx_jira_processing_source_tickets_key_shape` index must be unique,
+non-partial, and contain exactly the ordinary column terms `Key` then
+`SourceTicketShape`, both with NOCASE collation. A correct definition, including
+descending terms, is preserved, as are compatible unrelated indexes/objects.
+An absent managed index is created. The **only** replacement allowed is the
+recognized old unique, non-partial, ascending two-column BINARY/BINARY
+definition in that same order. Other definitions or ownership/name conflicts
+are refused, never dropped merely because the name looks managed. The
+completion index must cover the actual `CompletionId` column, not a constant
+expression; an incompatible obstruction is refused rather than silently
+declared repaired.
+
+The shared schema operation reserves the writer with `BEGIN IMMEDIATE`
+**before** metadata inspection and retained-row scans, then commits its schema
+changes together or rolls them back on failure. Scans, repeated construction,
+and any old-index replacement add real writer contention even when little or
+no DDL is needed; there is no benchmarked latency or zero-cost promise. This is
+**source-table-local atomicity**, not an all-owner startup transaction. WAL
+setup, other owner migrations, maintenance recovery, and authoring cutover are
+outside it. A later startup refusal can leave an earlier successful schema
+upgrade committed.
+
+#### New keys and source revisions
+
+Only newly inserted FHIR keys are converted to uppercase with SQLite-equivalent
+ASCII semantics. This does not trim keys, introduce Unicode/culture-dependent
+folding, or change non-FHIR keys. An upsert of an existing row retains its
+`RowId`, `Id`, `Key`, and `SourceTicketShape`; existing frozen receipts are not
+rewritten. The returned record carries the key actually stored, and new
+authoring coordinates must use that record rather than the incoming DTO.
+Ordinary completion, error, and reset behavior is unchanged.
+
+With `LastUpdated`, source revisions remain timestamp-based. Without it,
+`JiraSourceRevision` hashes the fields including the **persisted key**.
+`OrchestratorHydrationFetcher.FetchPublicationMetadataAsync` instead computes
+the observed revision using the external response's raw `item.Id`. A
+mixed-case upstream ID can therefore produce a different no-timestamp hash
+even when the other fields match. Publication verification must retain the
+strict `SourceRevisionMismatch` refusal, without a new publication receipt or
+partial metadata apply. Canonical source IDs with matching fields and valid
+provenance remain the successful path. Do not change the general hasher, accept
+case-different field hashes as equivalent, or rewrite historical receipts or
+provenance to hide the conflict. This accepted limitation is especially
+relevant to Preparer publication verification; it is not an observed cause of
+the Planner missing-`CompletionId` startup failure.
+
+#### Safe retained Planner startup
+
+The following gates are ordered prerequisites, not authorization for ad-hoc
+database access. Obtain retained-state evidence through the owning
+processor/operator's authorized preservation procedure. Development fixtures
+and probes must never open user-owned retained storage, and another service
+must not inspect the database directly. Synthetic test success proves code
+behavior, not safe deployment or preservation of the actual retained state.
+
+1. **Identify the launch and candidate outputs.** Follow the existing Aspire
+   guidance and discover the current AppHost, explicit-start Planner resource,
+   available resource command, endpoints, state, and logs. Do not reuse an old
+   resource suffix or guess command arguments. Establish the effective working
+   directory, `Processing:DatabasePath`, pre-cutover backup and snapshot paths,
+   and relevant local/environment overrides. Verify the actual launch command
+   and the candidate binaries selected by an existing `--no-build` launch;
+   passing tests in another output tree does not update those outputs. If a
+   sanctioned scoped build is needed, use the documented `AGENTS.md` build
+   form for the inspected Planner project only after **all transitive
+   outputs** are known to be free. If launch outputs cannot be updated safely,
+   stop and report the environmental blocker. Do not copy DLLs over held
+   outputs, invent output-redirection switches, or stop unrelated services.
+2. **Establish a recoverable retention baseline.** Have an authorized,
+   consistent, owner-controlled safety copy separate from the configured
+   pre-cutover backup. Inventory the complete retained database schema,
+   identities, typed values, and relationships, plus byte/hash or manifest
+   inventories for backups, snapshots, descriptors, and other immutable
+   artifacts. Counts alone are insufficient. Working database bytes naturally
+   change with DDL/WAL setup; preserve and compare values/relationships rather
+   than requiring its old file hash to remain equal. Never overwrite, consume,
+   replace, reset, or stage retained storage or the existing pre-cutover file.
+   Never naively copy a live SQLite file without accounting for open owners
+   and WAL/journal state. Use the explicit owner-controlled `retained-state
+   capture` operation below, with the owner's attested paths/settings and a
+   pinned isolated candidate. A failed/incomplete capture stops this gate;
+   it is not permission to checkpoint or repair an original.
+3. **Rehearse on an isolated retained copy.** Through that authorized
+   procedure, exercise owner initialization and the actual recovery/cutover
+   branch with the same candidate and effective configuration branch. Use no
+   service host, hosted workers, network calls, or access to original paths.
+   Compare all retained values/relationships and immutable artifacts. Separate
+   expected additive schema defaults from the cutover's permitted metadata
+   transitions; the shared transaction does not make the whole rehearsal
+   atomic. Synthetic fixtures, including populated fixtures, do not substitute
+   for this retained-copy evidence.
+4. **Establish ownership and cutover eligibility.** No competing owner may
+   hold the Planner database. Preserve the existing mode-specific guards:
+   - In `legacy`, activation creates/verifies a candidate backup. An existing
+     configured backup must pass integrity and operational-legacy metadata
+     checks and match that candidate's SHA256. Additive initialization can
+     make a prior backup differ, but existence or file size alone does not
+     establish a mismatch.
+   - In `cutting-over`, the verified backup must still exist and pass the
+     integrity and operational-legacy metadata checks: legacy mode, epoch zero,
+     no required revalidation, and no revalidation run.
+   - In `run-backed`, the existing early return does not reallocate the
+     epoch/run or require the old backup to match the current working database.
+
+   Keep epoch, receipt, and initial-revalidation safeguards intact. Missing
+   source rows required for plan revalidation or another domain invariant are
+   real blockers. A verified backup refusal is not permission to delete or
+   rename the backup, select a fresh backup path, disable activation, or change
+   the epoch.
+5. **Establish automatic-work safety.** Confirm effective startup behavior and
+   retained queues, mutation fences, and leases before starting. Checked-in
+   Planner settings enable `StartProcessingOnStartup`,
+   `ReconcileSnapshotsOnStartup`, and hydration `BackfillOnStartup`. Startup
+   can therefore do real work after initialization. Pausing processing alone
+   is insufficient: reconciliation and finalization of a fenced run can still
+   proceed. No configuration/mode override, forced work, receipt synthesis, or
+   bypass of initial revalidation is authorized by this checklist. If the
+   required startup branch conflicts with preservation, stop rather than
+   starting the service as a probe.
+6. **Only after gates 1–5 pass, start Planner alone** through the discovered
+   existing Aspire resource command. Do not create another AppHost, restart
+   dependencies, install a workload, or launch hosted workers manually.
+   Verify the actual candidate survives the full startup sequence: exclusive
+   ownership, owner schema initialization, interrupted-maintenance recovery,
+   and the applicable cutover/mode branch, then remains available. Inspect new
+   console/structured logs and real existing owner/Orchestrator read APIs for
+   inventoried plans, summaries/proposals, hydration, groupings, runs/receipts,
+   and snapshots. Compare the retained inventory and immutable backup/snapshot
+   hashes. `Running`, a health response, or absence of the `CompletionId` error
+   alone is not sufficient. Leave other resources undisturbed.
+
+At any missing or failed gate, record the precise blocker and evidence; do not
+make a speculative live start or claim that the incident is repaired. A
+legitimately closed gate making retained content unavailable must be reported,
+not hidden by a replacement empty database. No ad-hoc live SQL/schema repair,
+forced enqueue, rehydrate, regroup, revalidate, receipt synthesis, or artifact
+regeneration is a preservation check. Documentation and green schema tests
+alone cannot establish successful retained-runtime startup.
+
+#### Owner-controlled retained-state capture
+
+The Planner now supplies the pre-initialization preservation operation.
+`retained-state capture` is dispatched before `WebApplication.CreateBuilder`,
+configuration loading/watchers, DI, telemetry or hosted-service construction.
+It constructs only the existing **read-only Planner ownership instance** and
+offline evidence machinery. It never invokes that instance's `OpenConnection`,
+`Initialize`, recovery, cutover, scheduler, hydration, snapshot reconciliation
+or network clients. Malformed command arguments terminate too; they cannot
+fall through to normal service startup.
+
+This is an operation **by the owning Planner**, not permission for another
+service, aggregate CLI, development fixture or SQL console to inspect its
+storage. Actual retained capture requires a separate owner confirmation of
+every effective setting. No retained capture or live activation is claimed
+by implementing or testing the command. The ordered startup gates above are
+adoption criteria for a later separately authorized live operation, not
+automatic actions after capture. The separate `rehearse` verb below consumes
+only verified capture input and independent mutable copies. It does not
+authorize live startup or resolve a guard refusal.
+
+**A — Pin the candidate and keep outputs isolated.** The stage owner freezes
+the committed candidate and tree, verifies the complete candidate path scope
+and unchanged completed repair/owner/coordinator dependencies, and builds the
+Planner in a fresh detached checkout using the scoped `AGENTS.md` build form.
+The only normal-entrypoint delta is early nullable exit-code dispatch. A
+timestamp-derived assembly version is expected; capture records the actual
+executed assembly, `.deps.json`, `.runtimeconfig.json`, application/native
+dependencies and selected .NET/ASP.NET runtime hashes. Do not rebuild between
+capture and any later consumer. Owner-supplied commit/tree labels are recorded
+as provenance, **not independently observed Git or Aspire configuration**.
+
+Allocate a new short local evidence root (`$caseRoot`, at most 60 UTF-16 code
+units), with an existing parent for the new `$bundle` (normally
+`Join-Path $caseRoot 'capture'`). Neither bundle nor future `rehearsal-1`
+layout may overlap originals. Set `$plannerDll` to that already-built
+candidate's DLL and `$dotnet` to the local `dotnet` executable. Development
+verification uses only the focused command in `AGENTS.md`, in its separate
+candidate checkout, not any retained path.
+
+**B — Use a clean process, not inherited application hooks.** This driver is
+for the later owner-authorized operation. It neither builds nor starts a
+service. The command creates its bundle-local temp directory before SQLite:
+
+```powershell
+function Invoke-PlannerRetainedState {
+    param(
+        [Parameter(Mandatory)] [string] $TemporaryRoot,
+        [Parameter(Mandatory)] [string[]] $ToolArguments,
+        [int[]] $AllowedExitCodes = @(0)
+    )
+    $start = [System.Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $dotnet
+    $start.WorkingDirectory = $caseRoot
+    $start.UseShellExecute = $false
+    $start.ArgumentList.Add($plannerDll)
+    foreach ($argument in $ToolArguments) { $start.ArgumentList.Add($argument) }
+    $start.Environment.Clear()
+    foreach ($name in @('SystemRoot', 'WINDIR')) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if (-not [string]::IsNullOrWhiteSpace($value)) { $start.Environment[$name] = $value }
+    }
+    $start.Environment['TEMP'] = $TemporaryRoot
+    $start.Environment['TMP'] = $TemporaryRoot
+    $start.Environment['DOTNET_CLI_TELEMETRY_OPTOUT'] = '1'
+    $start.Environment['DOTNET_NOLOGO'] = '1'
+    $start.Environment['DOTNET_EnableDiagnostics'] = '0'
+    $process = [System.Diagnostics.Process]::Start($start)
+    if ($null -eq $process) { throw 'Owner command did not start.' }
+    try {
+        $process.WaitForExit()
+        $code = $process.ExitCode
+    }
+    finally {
+        $process.Dispose()
+    }
+    if ($code -notin $AllowedExitCodes) {
+        throw "Owner command exited $code. Retain its report; do not retry, repair, or start a service."
+    }
+    return $code
+}
+```
+
+No OS sandbox is claimed. Isolation comes from the call graph, explicit
+settings, physical path checks, file-set exclusion, independent materialization
+and the negative child-process tests.
+
+**C — Attest settings and capture once.** Resolve relative settings against the
+actual Planner service working directory, not the shell or checkout. No report
+default, checked-in path or assumed Aspire environment is effective-setting
+authority. The three startup-work flags are evidence only and never acted on.
+
+```powershell
+$databasePath = Read-Host 'Confirmed existing DatabasePath, resolved against the Planner service working directory'
+$backupPath = Read-Host 'Confirmed effective absolute PreCutoverBackupPath (blank only if unset)'
+$snapshotPath = Read-Host 'Confirmed effective absolute SnapshotDirectory'
+$activate = Read-Host 'Effective ActivateRunBackedAuthoring (true or false)'
+$snapshotSchema = Read-Host 'Effective SnapshotSchemaVersion (positive integer)'
+$startProcessing = Read-Host 'Effective StartProcessingOnStartup (true or false)'
+$reconcile = Read-Host 'Effective ReconcileSnapshotsOnStartup (true or false)'
+$backfill = Read-Host 'Effective Hydration:BackfillOnStartup (true or false)'
+$captureArguments = @(
+    'retained-state', 'capture',
+    '--database', $databasePath,
+    '--pre-cutover-backup', $backupPath,
+    '--snapshots', $snapshotPath,
+    '--activate-run-backed', $activate,
+    '--snapshot-schema-version', $snapshotSchema,
+    '--start-processing-on-startup', $startProcessing,
+    '--reconcile-snapshots-on-startup', $reconcile,
+    '--hydration-backfill-on-startup', $backfill,
+    '--bundle', $bundle,
+    '--candidate-commit', $candidate,
+    '--candidate-tree', $candidateTree
+)
+while ($true) {
+    $extraRoot = Read-Host 'Additional confirmed Planner-owned retained root (blank when complete)'
+    if ([string]::IsNullOrWhiteSpace($extraRoot)) { break }
+    $captureArguments += @('--retained-root', $extraRoot)
+}
+$confirmation = Read-Host 'Type CAPTURE to attest these effective settings and authorize read-only owner capture'
+if ($confirmation -cne 'CAPTURE') { throw 'Owner capture is not authorized.' }
+$captureArguments += '--confirm-owner-settings'
+$captureExit = Invoke-PlannerRetainedState -TemporaryRoot (Join-Path $bundle 'normalization\temp') -ToolArguments $captureArguments
+$captureProof = Get-Content -LiteralPath (Join-Path $bundle 'capture.complete.json') -Raw | ConvertFrom-Json
+if ($captureProof.status -ne 'complete' -or
+    $captureProof.candidateCommit -ne $candidate -or
+    $captureProof.candidateTree -ne $candidateTree) {
+    throw 'Capture completion does not identify the committed candidate.'
+}
+```
+
+All booleans must be exactly `true`/`false`; schema version is a positive
+integer. The backup argument is required even when empty; empty is allowed
+only if effectively unset and activation is disabled. Additional retained
+roots are explicitly attested Planner-owned directories. No repository,
+home or drive-root sweep is performed.
+
+Before ownership, capture requires an existing regular database and parent,
+local absolute paths, no traversal/device/UNC/stream aliases, no reparse
+ancestors/members, supported Windows x64 fixed-volume identities and single
+file links. It checks the **expanded** raw, normalization, safety, inventory,
+future rehearsal, coordinator `.<32-hex>.tmp`, generated snapshot, diagnostic
+and SQLite sidecar paths against a conservative 240-UTF-16-unit budget.
+`path-budget-exceeded` refuses; nothing is truncated or renamed.
+
+The existing `<database>.owner.lock` protocol supplies owner exclusion.
+Presence of the file alone is not a competing owner. Pre-existing lock bytes
+are preserved; the manifest records prior existence versus normal lock
+creation. That coordination acquisition/release is the **sole original-side
+effect**. Every retained regular file is held with `FileShare.Read`, denying
+writers/deletion. Directory pins prevent ancestor replacement. Membership,
+physical identity, length and hashes are rechecked while those handles and
+ownership remain held; stopped-host status alone is not quiescence.
+
+`raw/` preserves the complete frozen family: DB, WAL, SHM, journals, backups,
+snapshots, descriptors, temps, unknown files and empty directories, mapped by
+root ID and original relative path. Backup/snapshot absence and every SQLite
+sidecar absence are explicit. Original bytes never enter SQLite.
+`normalization/` duplicates each admitted family, consumes committed WAL with
+ordinary non-pooled SQLite connections and regenerates **only disposable SHM**.
+It does not use `immutable=1` to hide WAL. Nonempty rollback/super-journals,
+orphan sidecars and unclassified SQLite families refuse **before any SQLite
+open**, retaining raw evidence; no live checkpoint or multi-database recovery
+is attempted.
+
+`BackupDatabase` operates only between disposable copies and distinct new
+`safety/` files. `safety/planner.db` is additional preservation, never a
+replacement/normalization of the configured pre-cutover file. Standalone
+safety/snapshot verification may use the existing read-only validator after
+sidecar and self-containment checks. Raw pre-cutover bytes stay exact for a
+later byte-sensitive cutover comparison.
+
+Inventories include every persistent schema object, table (unknown, internal,
+shadow and virtual), table/index metadata, declared foreign keys, complete
+typed rows and duplicate multiplicity. `.rows` files have `FAROWS1` format:
+little-endian column count and length-prefixed UTF-8 names, row markers, native
+SQLite storage-class tags, 64-bit byte lengths and exact integer/IEEE-real/
+UTF-8/blob bytes, followed by an end marker and row count. Rowid or actual
+WITHOUT ROWID primary-key order makes comparison deterministic. Virtual
+hidden command/rank columns are metadata rather than persistent values;
+generated columns are included. Native row spans are streamed in bounded
+chunks, not accumulated as a database-sized managed dump.
+
+Full integrity/foreign-key results and required graph, run/item, receipt,
+partition and snapshot relationships are checked. Nonempty foreign processor
+kinds refuse; absent legacy tables are recorded, not initialized. Persisted
+snapshot paths are map references, never paths to follow. Required files,
+checksums, epochs, provenance, counts and any descriptors must close over the
+captured map. Finalized absent temp files are distinguished from missing final
+artifacts. A verified published snapshot's intentionally projected history is
+not confused with the operational store's full run/attempt/stage membership.
+Unsupported readers or broken required relationships leave evidence incomplete.
+
+`manifest.json` records owner-attested settings separately from unobserved
+runtime configuration, original/raw/safety hashes and binary provenance.
+`capture.complete.json` has camel-case `formatVersion: 1`, `status: complete`,
+`candidateCommit`, `candidateTree`, `manifestSha256`, the directory membership,
+and file/inventory/binary hash catalogs. It is flushed to a create-new pending
+file and published by a non-overwriting rename only after preservation and
+inventory checks, then internally revalidated. Every consumer must rehash the catalog and
+candidate binaries and hold the verified input handles. The driver's small
+status check and a marker's mere existence are not substitutes.
+
+Exit codes are `0` verified/help, `2` arguments, `20` safety/eligibility refusal,
+and `1` unexpected error, mismatch or cancellation. An admitted failed capture
+keeps `capture.started.json`, `capture.incomplete.json` and any copied evidence,
+with **no completion marker**. A path-preflight refusal cannot create evidence
+in an untrusted/non-admitted destination. Never reuse a destination or delete
+failed evidence as a retry strategy. Detailed reports and typed inventories
+are sensitive local owner data: protect them, never stage or publish them.
+
+**D — Rehearse in a separate clean process.** Do not rebuild between capture
+and rehearsal. Set `$rehearsal = Join-Path $caseRoot 'rehearsal-1'`; this must
+be a new disjoint directory, not a reused experiment. No original paths,
+configuration, branch overrides or repair options are accepted:
+
+```powershell
+$rehearsalArguments = @(
+    'retained-state', 'rehearse',
+    '--bundle', $bundle,
+    '--output', $rehearsal,
+    '--candidate-commit', $candidate,
+    '--candidate-tree', $candidateTree
+)
+$rehearsalExit = Invoke-PlannerRetainedState -TemporaryRoot (Join-Path $rehearsal 'temp') -ToolArguments $rehearsalArguments -AllowedExitCodes @(0, 20)
+$result = Get-Content -LiteralPath (Join-Path $rehearsal 'rehearsal.result.json') -Raw | ConvertFrom-Json
+$namedGuards = @(
+    'schema-admission-refused', 'backup-hash-mismatch', 'backup-missing-or-invalid',
+    'missing-revalidation-source', 'unknown-processor-mode'
+)
+$passed = $rehearsalExit -eq 0 -and $result.status -eq 'passed' -and $result.startupOutcome -eq 'passed'
+$refused = $rehearsalExit -eq 20 -and $result.status -eq 'blocked' -and
+    $result.startupOutcome -eq 'guarded-refusal' -and $result.guardName -in $namedGuards
+if ($result.formatVersion -ne 1 -or $result.evidenceStatus -ne 'complete' -or
+    (-not $passed -and -not $refused) -or
+    $result.candidateCommit -ne $candidate -or
+    $result.candidateTree -ne $candidateTree -or
+    $result.captureManifestSha256 -ne $captureProof.manifestSha256) {
+    throw 'Incomplete or unclassified rehearsal evidence; stop without repair or activation.'
+}
+if ($passed) {
+    Write-Output "Offline evidence complete; rehearsal passed. Live activation unverified. Evidence: $caseRoot"
+}
+else {
+    Write-Output "Offline evidence complete; activation blocked by $($result.guardName). Evidence: $caseRoot"
+}
+```
+
+The command revalidates and holds the bundle's read handles through result
+publication and checks the complete executed binary/dependency/runtime catalog.
+Source labels alone are insufficient. Original absolute strings remain opaque:
+even existence, drive-type checks and enumeration are prohibited on them.
+The output-only path context reuses the physical identity, ancestor pins,
+expanded path budgets, disjointness and create-new guards without manufacturing
+capture settings or admitting original roots.
+
+`work/` recreates the captured root/relative layout in independently allocated
+files. The mutable database starts from **raw DB/WAL**, not `safety/planner.db`.
+Captured SHM stays only in the bundle; every working family regenerates its
+own SHM. Existing backup, snapshot, descriptor and other retained bytes are
+protected and compared; absent-backup simulation and new sidecars are cataloged
+separately. Nothing rewrites persisted snapshot paths to relocate them.
+
+One `PlannerDatabase` owner is retained from `AcquireStartupOwnership` through
+first-open validation, `Initialize`, `RecoverInterruptedMaintenanceLeasesAsync`
+and the captured activation/mode branch. First-open uses an ordinary
+non-immutable, non-pooled ReadOnly connection with `query_only=ON` and
+`trusted_schema=OFF`, not the owner's WAL-setting `OpenConnection`. It compares
+every typed row and schema/index definition with the capture inventory and
+requires unchanged DB/WAL bytes before closing that reader, not the owner.
+The SQLite backup destination's schema cookie is physical header metadata,
+recorded separately from logical equality. A discrepancy is incomplete
+`wal-materialization-divergence`, never a successful schema refusal.
+When an ordinary ReadOnly open finds a WAL-mode header but no captured WAL,
+SQLite can create a zero-length copy-local WAL along with SHM. The result
+records that new empty sidecar explicitly, not as regenerated captured WAL
+content. Existing DB/WAL bytes must still be identical; any new WAL frames,
+removed captured WAL or changed bytes fail the first-open check.
+
+Each reached boundary has a create-new, standalone committed-state checkpoint,
+complete streamed typed inventory, per-table expected/actual catalog and
+streamed cell-delta details. The classifier's schema catalog and row predicates
+are declarative; it does **not** obtain an expected result by initializing
+another database or excluding entire authoring tables:
+
+Typed comparisons stream arbitrarily large ordinary values in chunks.
+Classifier coordinates are bounded to 64 KiB per scalar; graph-hash text
+normalization is bounded to 16 Mi UTF-16 units per scalar and streamed across
+rows rather than collecting a whole graph. An unsupported policy scalar
+leaves evidence incomplete; it is not omitted or treated as equal.
+
+| Boundary | Copy-only permitted delta |
+|-|-|
+| Initialization | Exact existing additive columns/defaults, owner table/index/trigger definitions and the recognized source index replacement. Old source, graph, receipt, epoch and identity values remain equal. |
+| Purpose backfills | Ordered existing predicates only: authoring → grouping-maintenance for database-only, nonempty all-complete maintenance membership; then remaining authoring → initial-revalidation for mode/lineage-linked runs. All other run fields remain equal. |
+| Recovery | Only `jira-fhir` fences matched by the owner's old-maintenance-generation predicate. Its actual process generation is observed read-only; no generation is invented or written. Authoring, revalidation and current-generation fences remain. |
+| Missing mode | Precisely legacy/epoch zero/no required revalidation/no run, with its actual timestamp. This can commit before refusal. |
+| Activation | Exact coordinator/participant classification and legacy coordinate recapture, epoch +1, and exact initial-revalidation membership/revisions with fresh simulation IDs. Current receipt-backed state and all old graph/source/receipt values are preserved. No accepted receipt is created. |
+| Refusal | Earlier committed initialization/recovery and any legitimate missing-mode/cutting-over commit remain visible. Participant rollback is not reported as all-startup rollback. |
+| Already run-backed / disabled | The recorded branch, with no fresh epoch/run/receipt allocation and no invented requirement to match an historic backup against the current database. |
+
+Pure existing plan, hydration and grouping read APIs are followed by another
+inventory equality check. No provenance-writing partition getter, snapshot
+generation, scheduling, source fetch, receipt submission, host or worker runs.
+After a passing first sequence, ownership closes and the **same mutable copy**
+is reopened for the second sequence, with independent checkpoints and no
+repeated allocation. There is no second pass after refusal.
+
+`rehearsal.result.json` separates `evidenceStatus` from `startupOutcome`.
+Only the exact combinations checked by the driver complete offline evidence.
+A named guard requires its actual throwing owner method and independently
+checked pre-stage/failure facts, not a matching message substring. Source
+admission proof uses only the unchanged transaction-free admission readers on
+the frozen pre-stage snapshot; it never reruns initialization. A backup hash
+mismatch additionally records the unchanged backup hash/size/mode and a
+**separately regenerated** `BackupDatabase` candidate from the frozen failure
+checkpoint. This diagnostic is not the coordinator's discarded temporary
+file. Activation is not invoked again, and the configured backup is not
+substituted, omitted, normalized or repaired. Diagnostic failure leaves
+evidence incomplete.
+
+Cancellation, path/materialization/ownership failure, an unknown exception,
+an unexplained delta or failed evidence verification are incomplete and
+nonzero; mere exit 20 from a preflight failure is never completion. Preserve
+every failed output. A classified refusal completes evidence collection only
+and remains an activation blocker requiring a separate owner-authorized plan.
+
+No actual effective-settings attestation, retained capture or retained
+rehearsal is claimed by these synthetic tooling tests. Live deployment,
+automatic-work eligibility, serving state and retained incident recovery
+remain unverified. The procedure deliberately ends without Aspire startup,
+original-state mutation or evidence cleanup.
+
+#### Rollback of the schema compatibility change
+
+Normal rollback is a reviewed revert of the code commits only, not a data
+rollback. Leave the additive schema, including nullable `CompletionId` and
+its index, retained data, backups, and snapshots intact. Do not drop the
+additions, reconstruct historical completion IDs, remove/replace the
+pre-cutover backup, or restore an older database over newer results/receipts.
+
+Reverting the shared-store code reinstates the old lossy startup cleanup.
+Consequently, **do not launch an old/reverted binary on retained storage**
+merely because the code revert succeeded. Stop at the owner-controlled safety
+gate and preserve the database, artifacts, and evidence. Any later restore or
+identity reconciliation needs a separate owner-approved procedure accounting
+for newer receipts, epochs, and retained work; this change supplies no
+destructive rollback or reconciliation procedure.
+
+### Runs, items, and receipts
+
+A run freezes its item membership and expected source/evidence revisions.
+Typical run states are `queued`, `running`, `finalizing`, `completed`,
+`completed-database-only`, `error`, `superseded`, and `abandoned`.
+
+Run status also carries additive lineage fields. `purpose` is one of
+`authoring`, `initial-revalidation`, `grouping-maintenance`,
+`publication-refresh`, or `publication-reconciliation`;
+`canonical-epoch-recovery` is the dedicated snapshot-producing bypass
+for an unresolved canonical epoch. `sourceRunId` is
+populated when a maintenance run is linked to an earlier run. Each publication
+maintenance operation therefore has its own `runId`, distinct purpose, and the
+selected snapshot-producing run in `sourceRunId`.
+
+New publication-enrichment runs also expose optional `corpusComparison` in
+public run status: `sourceSnapshotId`, `sourceExportedTicketCount`,
+`currentAcceptedTicketCount`, and `additionalTicketCount`. It is the durable
+admission comparison, not a client-side live database query. Legacy runs may
+omit it; omission is not a measured zero.
+
+The processor appends `state` to each operator run:
+
+| Run status | `state.isTerminal` | `state.isRecoverable` | Polling |
+|-|-|-|-|
+| `queued`, `running`, `finalizing` | `false` | `false` | Continue |
+| `error` | `false` | `true` | Continue; automatic recovery remains authoritative |
+| `completed`, `completed-database-only`, `superseded`, `abandoned` | `true` | `false` | Stop |
+
+`abandoned` is a non-success reconciliation outcome reachable only from
+`finalizing` or recoverable `error`; it has no retry or finalization path and
+does not consume active-run capacity. There is no generic terminal `failed`
+run state. `state.nextAutomaticRecoveryAt`
+is populated for a valid run-level automatic recovery time when known.
+
+`AuthoringRunScheduler<TItem>` is the sole run-backed lifecycle loop. It
+reconciles durable errors and source revisions, acquires the mutation fence for
+the oldest eligible queued run, dispatches work while processing is running,
+invokes processor-specific finalization, and activates the next queued run only
+after successful completion releases the prior fence. Pausing processing stops
+new activation and dispatch, but it does not strand reconciliation or
+finalization for the already fenced run.
+
+Jira processors receive one optional
+`IAuthoringSnapshotWorkflowGuard`. Ordinary processors register the allow-all
+implementation; the Preparer registers its database as the enforcing
+implementation. The generic scheduler knows only this shared interface, not
+Preparer tables or contracts. Before acquiring a fence it asks the guard about
+the queued run's durable `DatabaseOnly`, purpose, processor, and run
+coordinates. A forbidden prequeued snapshot run is marked terminal
+`superseded` before any fence is acquired, allowing later database-only work
+to proceed.
+
+Each item receives an operation ID plus a secret token. The token is supplied
+only to the processor-launched worker through environment variables. Result
+submission validates the operation, token, run/item coordinates, authoring
+epoch, content hash, and observed source revision in the same transaction that
+persists the domain result and immutable receipt.
+
+`AuthoringMaxAttempts` is a total ceiling on unpersisted authoring attempts,
+including the first claim and an abandoned pre-receipt claim.
+`AuthoringRetryDelay` is the minimum interval from the failed attempt's durable
+`CompletedAt` before the scheduler retries it automatically. An explicit
+item-level `retry` may bypass that wait, but it cannot increase the attempt
+budget. Reaching the limit atomically closes the last attempt and marks the item
+`superseded`.
+
+Only an unpersisted retry gets a new operation ID and token. Once a receipt is
+accepted, a later error returns to persisted post-processing after the delay
+without dispatching the author again; receipt-backed items cannot be
+operator-superseded.
+
+Status keeps `failedItems` as the aggregate of current retryable errors and
+terminal non-authored outcomes. `retryableErrorItems` reports the former and
+`supersededItems` reports the latter. An error item also reports
+`attemptsRemaining` and `nextAutomaticRetryAt` when applicable.
+
+### Discovery, actions, and conflicts
+
+Preparer and Planner expose operator history directly at
+`GET /api/v1/processing/authoring/runs?limit=N` and through the Orchestrator at
+`GET /api/v1/processing-services/{Preparer|Planner}/authoring/runs?limit=N`.
+The default is 20 and the accepted range is 1 through 100. The store first
+selects at most `limit + 1` candidate run IDs, then aggregates items only for
+that bounded set. Non-terminal `queued`, `running`, `finalizing`, and `error`
+runs sort before terminal runs; each group is newest first.
+
+Ordinary Jira authoring runs with a durable normalized start request are
+listed, as are purpose-marked maintenance runs. In particular, a
+`publication-refresh` remains visible whether it has legacy null request
+metadata or the new versioned maintenance recipe in `RequestJson`, allowing
+clients to reconcile an ambiguous POST by `purpose` and `sourceRunId`.
+Purpose-marked `publication-reconciliation` and `grouping-maintenance` runs
+are visible too.
+Initial revalidation and legacy unmarked authoring rows remain available by
+exact ID but are intentionally absent. The response contains `runs` and
+`truncated`; use exact detail as the escape hatch for a known older run.
+
+Detail appends these item fields while preserving legacy `error`:
+
+- `currentError` only for a current error;
+- `supersessionReason` only for a superseded item;
+- `allowedActions.canRetryNow` only for an error in the currently fenced run
+  with either an accepted receipt to resume or remaining authoring attempts;
+- `allowedActions.canSupersede` only for an error in the currently fenced run
+  without an accepted receipt, and never for a
+  `publication-reconciliation` item.
+
+Automatic retry remains the default. UI or headless automation must use these
+capabilities to decide what to present, but the mutation endpoint is the final
+authority: retry and supersede recheck status, fence, receipt, and attempt
+budget in an immediate transaction and can return `409` after a status read.
+Supersession always requires a non-empty operator reason. The server rejects
+every reconciliation-item supersede with
+`reconciliation-cancel-required`, including an unaccepted error; only the
+dedicated pre-promotion run cancellation may terminate that work.
+
+Create/retry/supersede conflict JSON uses `AuthoringConflictResponse`. It keeps
+the existing `error` and optional `detail`, adds `conflictingRunIds`, and also
+sets the legacy-compatible `runId` when one related run is known. Capacity,
+revision-collision, and initial-revalidation conflicts therefore give clients
+authoritative navigation coordinates without prose parsing.
+The canonical restriction is always HTTP `409` with exact
+`canonical-unpublished-restriction`; its coordinates identify the abandoned
+reconciliation and any linked recovery run. Proactive guard and SQLite
+sentinel failures use the same envelope.
+
+Jira discovery also freezes source provenance independently of the per-ticket
+revision used for stale-work detection. Every paged read must report a stable,
+unchanged Jira content revision; the client restarts the whole pagination
+sequence up to three times on a mutation or mismatch, then suppresses
+provenance if it still cannot prove one generation. Each cached candidate
+stores only its own project's successful-refresh watermark and the common
+content revision, overwriting old values with null when a later read cannot
+prove them.
+
+Run creation writes one `authoring_run_input_provenance` row for source `jira`
+inside the same transaction as the run and items. Its
+`LatestSuccessfulRefreshAt` is the maximum candidate watermark only when every
+selected ticket has one. Its `ContentRevision` is retained only when all
+selected tickets share the same stable revision. `CapturedAt` records run
+creation and is not source freshness. Exact replay keeps the already-frozen
+row; new and replacement runs derive a new row. Migrated legacy Jira runs are
+seeded with null coordinates rather than current source state.
+
+### Finalization and snapshots
+
+For Preparer and Planner, post-persistence item processing completes hydration
+before the item becomes `complete`. Fenced run finalization then refreshes the
+workgroup catalog, performs grouping for every affected partition, and creates
+the snapshot. Grouping callbacks carry a run ID, stage ID, stage lease, and
+input fingerprint. BallotNotes finalization verifies current evidence/prose
+provenance. A processor-wide mutation fence excludes other authoring and
+maintenance writers through snapshot completion.
+
+Normal runs produce:
+
+- an immutable SQLite snapshot,
+- a trusted descriptor containing processor/run/epoch identity, monotonic
+  sequence, schema version, file name, size, SHA-256, item/receipt counts, and
+  table counts,
+- a `completed` run state only after the descriptor and bytes are ready.
+
+`databaseOnly:true` is the sole explicit snapshot/site opt-out and completes as
+`completed-database-only`.
+
+The public snapshot schema is processor-specific. Preparer now writes
+discussion snapshot **v3**. Its immutable v2 base extends v1 with
+contributing-run input provenance, parent Jira hydration provenance, Assignee
+fields, and normalized in-person requester rows; v3 adds nullable public
+display-name policy markers to parent hydration, related/self Jira hydration,
+and requester rows. Its sanitizer keeps provenance for every run contributing
+a retained receipt-backed ticket and retains people only with the exact
+current policy marker and a context-free-safe value. The ticket publisher
+accepts exact Preparer v1, v2, and v3 catalogs, but always treats v1/v2 people
+as unavailable. Planner continues to write applying snapshot **v1**, and the
+Tickets for Applying publication path accepts only that v1 contract.
+
+Discussion publication does not expose either processor schema directly to the
+browser. It validates the verified Preparer pair and projects a fresh
+**Discussion renderer schema v3** database containing only presentation
+metadata, readiness and corpus coverage, the facet catalog, tickets, people
+availability, normalized facets, summary sources, related context, and
+topic/group membership. Preparer snapshot schema v3 and Discussion renderer
+schema v3 are separate versioned contracts; neither version implies the other. Applying
+continues through its existing Planner-v1 path. Both generated sites are
+static artifacts with no live source, Orchestrator, or processor dependency.
+
+Every new Discussion manifest carries `discussionReadiness`. Its `evidence`
+is `ordinary-snapshot` or `publication-refresh`, and its reason codes can
+include `legacy-snapshot-schema`, `missing-ordinary-provenance`,
+`invalid-refresh-proof`, and `missing-people-policy-proof`. Preparer v1 and v2
+pairs remain readable but always produce degraded readiness and never expose
+trusted people; they are not rewritten. Only v3 can carry the current
+public-display-name policy proof. A missing legacy proof displays its explicit
+unavailability reason. `No public display name available` for a current-policy
+value means no publishable name was supplied, not that the person/role is
+absent or the ticket is unassigned.
+
+For a v2 or v3 discussion corpus, every retained ticket must first resolve to
+exactly one accepted authoring coordinate. Zero or multiple matches are
+invalid snapshot structure and abort publication. The title date is a separate
+exported-corpus fact: the maximum self-ticket
+`prepared_jira_hydration.UpdatedAt` (`TicketKey = JiraKey`) after generation
+filters, normalized to UTC. A nonempty export with complete valid dates uses
+`Tickets for Discussion - Sept 15, 2026`, with fixed
+`Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sept, Oct, Nov, Dec` labels and an
+unpadded day, never `Built`. Missing/partial dates omit the suffix;
+malformed non-null values fail validation. Related-ticket dates, provenance
+watermarks, authoring/snapshot clocks, and publication time are never
+fallbacks. Complete dates can qualify even on degraded or legacy input.
+`JiraSourceLastSuccessfulRefreshAt` remains independent upstream provenance.
+
+Renderer-v3 manifests require `discussionCorpus`, matching the browser's
+`site_metadata.CorpusSummaryJson`. It records `ticketCount`,
+`exportedProjectCount`, `validJiraUpdatedAtCount`, `maxJiraUpdatedAt`,
+`dateCoverage` (`empty`, `none`, `partial`, `complete`), and ticket counts with
+public Reporter, Assignee, and requester names. A partial maximum remains a
+reported fact without a title suffix. Each `linksByKind` entry records
+`kind`, `totalRows`, `resolvedSafeLinks`, `unresolvedWithRetainedSafeLinks`,
+and `withoutUsableUrl`. A safe retained URL does not itself prove source
+backing. Legacy manifests can omit this summary and have unknown coverage;
+Applying does not acquire this Discussion-only contract.
+
+Generation filters fix the exported corpus and display-title suffix;
+interactive filters do not alter the frozen title. Discussion's classic
+`state.js` is a mandatory versioned asset, not an optional module. Facets
+preserve overview/crosscut/list routes, accumulate without clearing other
+chips, and preserve search/sort/history. Active/fixed dimensions and a
+single-project export's Project dimension are hidden. Guided proposal labels
+leave authored bodies unchanged. Safe external links and filter-preserving
+in-corpus Jira links share explicit failure/last-known diagnostics across
+related-item and summary-source surfaces.
+
+Item-level supersession does not supersede the run. When every item is either
+`complete` or `superseded`, normal fenced finalization still runs—even if every
+item is superseded. A final run status of `completed` or
+`completed-database-only` is lifecycle success; any included `superseded`
+items make it an explicit partial-authoring result. Snapshot and site
+publication may continue from accepted results, but every superseded item and
+reason must remain visible.
+
+`FhirAugury.Processing.Client` downloads the descriptor and streamed bytes into
+a sibling staging directory, validates service/workflow/run/snapshot binding,
+safe filenames, size, and SHA-256, then writes `verified-pair.json` last. The
+ready manifest records `serviceName`, `runId`, `snapshotId`,
+`formatVersion`, `descriptorFileName`, `databaseFileName`, `sizeBytes`,
+`descriptorSha256`, and `databaseSha256`. Promotion/recovery is locked and
+directory-scoped, so a partial download is never a ready pair. Preparer and
+Planner require this explicit service binding because both descriptors use
+processor kind `jira-fhir`.
+
+`FhirAugury.Publishing.Tickets` accepts only a durable verified pair and checks
+the public snapshot schema before rendering. The Dev UI invokes it in-process;
+`ticket-site` is a thin CLI adapter over the same publisher. Each sub-site
+writes the exact filename `site-manifest.json`. Discussion manifests retain a
+stable base `title` and add display title, optional Jira refresh, renderer
+schema, readiness, and corpus coverage. Dev UI reconstruction validates the
+committed manifest/presentation and recomputes
+`TicketSiteManifest.ComputeBuildIdentity()`;
+it does not rewrite legacy artifacts into the new contract. Neither publisher
+accepts a live processor database or performs an in-place renderer migration.
+
+### Failure boundaries
+
+- **Before receipt acceptance:** the scheduler automatically retries after the
+  configured minimum delay while attempts remain. An operator may request an
+  immediate retry without expanding the total limit, or explicitly supersede a
+  known non-actionable current error with a non-empty reason.
+- **After receipt acceptance:** hydration, grouping, or snapshot failure does
+  not invalidate the receipt. Post-persistence work resumes from durable state
+  without re-authoring or supersession.
+- **Snapshot download failure:** retry the download; do not re-author.
+- **Site publication failure:** preserve the verified pair and rerun only the
+  site tool. Processor state is unchanged.
+- **Source revision change:** stale work is superseded or the initial
+  revalidation run is atomically replaced. The gate is not cleared by stale
+  work.
+- **Ambiguous outer mutation:** start, immediate retry, supersede, publication
+  refresh, reconciliation start/retry/cancel, and reconciliation abandonment are
+  single-attempt. If transport is lost after the server may have received the
+  request, report **outcome unknown**, never replay, and reconcile only through
+  list/detail/status reads. Repeating the mutation requires explicit operator
+  review first.
+
+### Changed-ticket Discussion publication reconciliation
+
+`publication-reconciliation` is the processor-owned replacement strategy when
+one or more accepted Jira revisions differ from a completed Discussion
+publication. It is deliberately separate from `publication-refresh`:
+metadata-only refresh certifies that accepted revisions and grouping are
+unchanged and refuses drift; reconciliation freezes the drift, authors the
+complete changed set, recomputes its grouping consequences, and creates a new
+immutable publication. Neither strategy mutates the selected source snapshot
+or an existing site.
+
+#### Admission and frozen recipe
+
+The operator supplies a completed, snapshot-producing Preparer
+`sourceRunId`. The planner uses
+`PreparedTicketPublicationBaselineReader` to verify the ready immutable pair
+and uses the protection reader to require the baseline's accepted authored
+output, receipt coordinates, and grouping to remain a valid subset of current
+canonical state. It then fetches **every accepted baseline ticket** through
+the typed Orchestrator Jira boundary. Discovery completes the whole pass:
+newer revisions become decisions rather than a first-mismatch exception, and
+source failures are accumulated. Every successful observation must have
+stable source provenance and the same Jira content generation.
+
+The resulting reconciliation contract-v3 comparison records baseline
+snapshot identity and digest, stable Jira generation, corpus fingerprint, and
+for every ticket: baseline/current source revision, `carry-forward` or
+`re-author`, baseline receipt/run-item/contributing-run coordinates, authored
+graph fingerprint, baseline grouping fingerprint, and the selected `ItemKind`
+and `ExpectedSourceRevision`. A carried decision freezes those two values
+from the accepted baseline item. A re-authored decision freezes them from the
+reconciliation item that will accept the replacement receipt. While holding
+an immediate Preparer transaction and the mutation fence, admission
+revalidates the baseline and repeats the complete Jira observation. Any
+generation/revision race aborts with `unstable-jira-generation`. Only then
+are the comparison,
+`purpose:"publication-reconciliation"` run, mixed carried/pending item set,
+reconciliation fence, and source lineage committed together.
+
+Carry-forward items remain complete and retain their accepted receipt
+coordinates. A changed item is accepted only for its frozen current revision
+and operation token. Receipt acceptance, complete payload/hydration staging,
+and the item transition share the caller-owned SQLite transaction. The result
+does not write canonical authored or hydration tables. A later Jira change is
+reported as `revision-invalidation` and blocks finalization.
+
+Local Preparer Jira-store lag is not authoritative drift: generic stale-item
+reconciliation leaves every publication-reconciliation item untouched, so an
+ordinary pre-receipt source mismatch remains an eligible retry while the
+processor cache catches up. Full-corpus Orchestrator observation is the
+authoritative invalidation guard. Before promotion, every `re-author` decision
+must have a generic item in exact `complete` state plus matching staged graph,
+hydration, receipt, run-item, operation, source-revision, and fingerprint
+coordinates. Generic `superseded` never satisfies reconciliation readiness.
+
+#### Overlay and grouping closure
+
+`PreparedTicketCorpusView` resolves each carry-forward ticket from the exact
+frozen canonical receipt and each changed ticket from one complete staged
+graph/hydration/receipt tuple. Missing, duplicated, or fingerprint-divergent
+children make the overlay invalid; reads never silently combine old and new
+children. Every resolved ticket is projected to the shared
+`PreparedTicketPublicationCorpusItem(TicketKey, ReceiptId, RunItemId,
+ContributingRunId, ItemKind, ExpectedSourceRevision)` coordinate. The
+Preparer and publisher both use
+`PreparedTicketPublicationContract.ComputeCorpusFingerprint`; no
+reconciliation-specific text hash or authored-content field substitutes for
+that canonical membership coordinate.
+
+The grouping delta compares every changed ticket's old baseline membership
+with its staged self-Jira partition. Its impact closure includes both sides of
+a partition move and every shared topic/group/container whose identity, text,
+membership, or order can change. Each impacted partition is staged as a
+complete replacement, including an empty replacement when the overlay leaves
+no grouped container there. Unchanged ticket authored content is fixed input
+to the replacement; the workflow does not re-author unchanged tickets or
+regroup unrelated partitions.
+
+Production finalization persists one
+`publication-reconciliation-grouping` authoring stage per exact impacted
+partition. Every stage uses the candidate
+`OverlayCorpusFingerprint` as its input fingerprint and carries the revised
+keys plus the complete overlay membership. The configured `topic-groupings`
+worker receives those run/stage/lease coordinates through its reconciliation
+adapter. Its clustering-signals and hydration reads use the run-scoped
+`/{workGroupClean}/{specification}/{type}` routes, which resolve only
+`PreparedTicketCorpusView`; the worker must not fall back to the live
+workgroup-only projections.
+
+An exact reconciliation-context grouping `PUT` writes
+`prepared_ticket_publication_staged_grouping` and a matching durable stage
+receipt. It never calls the ordinary canonical grouping writer. Ordinary
+grouping-maintenance stages retain their existing read/write contract and
+continue to replace canonical grouping under the mutation fence. A
+zero-member impacted partition is completed directly as `topics: []`, without
+requiring a worker process. If a worker exits without the exact staged
+receipt, the stage fails and a later finalization attempt resumes that
+pending/error stage rather than re-running completed partitions.
+
+Before candidate materialization, the Preparer freezes and rechecks three
+independent unaffected components:
+
+- protected canonical authored rows for tickets outside the changed set;
+- exact accepted receipt/item/source-revision coordinates for those tickets;
+- topic/group/member rows and ordering outside the impacted partition set.
+
+The reconciliation run's own `authoring_runs` row is intentionally excluded
+from the authored-row component because its `running` → `finalizing` →
+`completed` lifecycle is workflow state, not unaffected authored output. No
+canonical ticket row is excluded by that rule, and receipt and grouping
+fingerprints remain separate and exact. Any other drift fails with
+`staging-mismatch` or `grouping-impact-mismatch`.
+
+Only after every durable grouping stage and matching receipt is complete does
+finalization check closure completeness and unaffected canonical rows. It
+then rechecks frozen Jira revisions and durably reserves snapshot coordinates
+in the `staged` journal. The reservation fixes the snapshot ID, processor/run,
+monotonic sequence, authoring epoch, schema, item/receipt counts, temporary
+and final paths, and creation time before any candidate digest exists. The
+Preparer builds the schema-v3 temporary snapshot from the
+carried-plus-staged overlay, sanitizes it, writes exactly one
+`authoring_snapshot_provenance` row with those reserved coordinates and actual
+public table counts, checkpoints SQLite, and validates integrity and counts.
+Only those final self-contained bytes are sized and SHA-256 hashed. The
+candidate descriptor contains both the reserved coordinates and that
+post-provenance digest. Its proof binds purpose
+`publication-reconciliation`, source run/snapshot, stable Jira generation,
+accepted/carried/re-authored counts, overlay corpus fingerprint,
+complete `GroupingFingerprint`, separate `GroupingImpactFingerprint`, and
+capture time. The complete fingerprint uses the shared canonical serializer
+over unaffected canonical partition fingerprints plus every complete staged
+replacement. A zero-member replacement removes that partition from the
+resulting grouping while remaining in the impact audit. Materialization reads
+the candidate's entire grouping back and requires the same fingerprint before
+trusting its evidence.
+
+The private comparison, reconciliation proof, and promoted public
+reconciliation descriptor use reconciliation contract version 3. Promotion
+writes the verified candidate's full `GroupingFingerprint` to
+`AuthoringSnapshotPublicationProof.GroupingFingerprint`. The impact digest
+binds closure/baseline/staging audit data only; it remains in the private
+reconciliation proof and typed status, never substitutes for the full grouping
+proof, and is not a readiness credential. The publisher independently
+recomputes the immutable snapshot's complete corpus and grouping and compares
+both with the descriptor.
+
+Version-1 and version-2 reconciliation evidence remains deserializable for
+status and audit only. It cannot dispatch grouping, materialize, recover,
+promote, or qualify as publication-ready. Missing legacy item coordinates or
+the new full-grouping field are never inferred, default-hashed, or copied
+from the impact digest. Current v3 evidence requires the full fingerprint even
+though the JSON/constructor field remains nullable for legacy diagnostics.
+Regenerate evidence through a supported run rather than relabeling stored
+versions. The canonical hash serialization
+`PreparedTicketPublicationContract.CurrentVersion` remains version 1;
+metadata refresh and dedicated canonical-epoch recovery also retain their
+independent v1 proof contracts.
+
+#### Database-first promotion journal
+
+Promotion is intentionally database-first and resumable. It does **not** claim
+physical atomicity between SQLite and the filesystem.
+
+1. In `staged`, the complete workspace, durable snapshot-coordinate
+   reservation, and post-provenance authenticated temporary candidate exist,
+   while canonical rows and the prior immutable publication are unchanged.
+2. One immediate transaction on one connection revalidates the run/fences and
+   staged/unaffected fingerprints and the exact candidate digest, size,
+   provenance, counts, descriptor, and reserved coordinates. It then
+   replaces each revised canonical graph and hydration batch, advances its
+   receipt-backed authoring state, replaces every impacted grouping partition,
+   creates the snapshot record from the reserved coordinates,
+   writes the durable promotion descriptor using the same reserved identity,
+   and moves both reconciliation and journal to
+   `snapshot-publish-pending`.
+3. After commit, recovery opens candidate/final databases read-only, moves an
+   exact candidate once to the immutable final path without overwrite, and
+   revalidates the journaled post-provenance digest and every reserved
+   coordinate. It advances the same snapshot record from creating/promoted to
+   ready, completes the same run, then atomically marks the
+   journal/reconciliation `ready`, removes staging, and releases the
+   reconciliation fence.
+
+The pending journal is the cross-resource handoff. While it exists, every
+competing Preparer mutation returns `recovery-in-progress`. Startup invokes
+recovery for every pending run; the status-specific retry endpoint invokes the
+same operation. Canonical replacement is never applied twice and an existing
+final file is never overwritten.
+
+Recovery handles each evidence combination explicitly:
+
+| Evidence at restart | Required action |
+|---------------------|-----------------|
+| State `staged`; graph/group staging missing or divergent | Refuse before canonical promotion with `staging-mismatch` or `grouping-impact-mismatch`; preserve prior publication. |
+| Pending; final absent; temporary candidate matches the post-provenance journal, candidate descriptor, and snapshot record | Validate read-only, move without overwrite, validate the same bytes at the final path, and continue. |
+| Pending; final absent; temporary missing, corrupt, wrong-sized, or checksum-divergent | Record `promotion-recovery-failure`, retain journal/workspace/fence, and stop. |
+| Pending; final present and matching the journaled digest and all coordinates | Reuse it and continue, regardless of whether the crash occurred immediately after the file move. |
+| Pending; final present but conflicting, corrupt, or accompanied by contradictory descriptor/record evidence | Record `promotion-recovery-failure`, do not overwrite it, and retain the fence. |
+| Pending snapshot record absent or inconsistent in identity, paths, sequence/epoch/schema, counts, digest, size, or creation time | Record `promotion-recovery-failure`; filesystem evidence alone is not adopted. |
+| Snapshot record creating | Validate final bytes and mark it promoted, then ready. |
+| Snapshot record promoted | Mark the same record ready after validation. |
+| Snapshot record already ready; run incomplete | Reuse its descriptor and complete the same run. |
+| Run complete; journal still pending | Mark reconciliation/journal ready, release the fence, and clean workspace. |
+| Staging missing after the database promotion commit | Do not reconstruct or replay the overlay; recover from the exact journal, descriptor, snapshot record, and authenticated file. |
+| Recovery is cancelled while pending | Record `promotion-recovery-failure` with the journal still pending and retain the fence. |
+| Recovery attempts compete | Serialize attempts per run; a filesystem-race winner is accepted only after exact final-byte validation, and later attempts return the same ready descriptor. |
+| Reconciliation `ready` | No canonical replay; the verified replacement is terminal success and cleanup is idempotent. |
+| Reconciliation `cancelled` | No recovery or canonical replay; the frozen comparison and cancellation audit are terminal while both fences and disposable workspace remain released. |
+
+Missing staging after the database promotion commit is not a reason to replay
+the overlay: pending recovery is driven by the journal, snapshot record, and
+verified file evidence. Conversely, no pending journal means recovery cannot
+infer that canonical promotion occurred merely from an unclaimed temporary
+file. Recovery never creates, replaces, or repairs
+`authoring_snapshot_provenance`, and it never adopts a checksum calculated
+from unjournaled bytes; every promoted checksum is the one frozen before
+canonical promotion.
+
+#### Audited pre-promotion cancellation
+
+The dedicated cancellation transition is valid only from `staged`, with a
+non-blank reason, before trusted candidate evidence, an
+`authoring_review_snapshots` row, or canonical replacement exists. One
+immediate transaction records `cancelled`, time, and reason; ends active
+attempts and incomplete stages; marks all generic run items superseded while
+retaining accepted receipts;
+removes graph/hydration/receipt, grouping, unaffected-fingerprint, and proof
+workspace; releases both the reconciliation and processor mutation fences;
+and finally projects `authoring_runs` to terminal `superseded`. It does not
+invoke generic item/run supersede APIs.
+
+The comparison, item decisions, accepted receipts, run history, and cancelled
+journal remain audit evidence. Repeating cancellation returns that original
+audit without rewriting it. Concurrent item retry, stage work, finalization,
+and cancellation serialize on SQLite: a cancellation winner makes later
+workspace writes/fence checks fail; a trusted-candidate or promotion winner
+makes cancellation fail with `cancellation-not-allowed`. Cancellation is not
+available from `snapshot-publish-pending`, `canonical-unpublished`, or
+`ready`.
+
+#### Audited unpublished canonical state
+
+An operator may abandon only `snapshot-publish-pending`, only with a non-blank
+reason, and only through the explicit endpoint. The transaction records
+`canonical-unpublished`, abandonment time/reason, terminal generic run status
+`abandoned` plus completion detail, and releases both fences and active
+capacity. It does not compensate canonical data, publish
+or delete the candidate, alter the prior verified pair, or count as successful
+publication.
+
+Snapshot production is determined only by durable intent:
+`authoring_runs.DatabaseOnly = 0`, regardless of ordinary, revalidation, or
+maintenance purpose. The Preparer rejects such work at admission, immediately
+before queued fence acquisition, before candidate creation, and immediately
+before finalization/promotion. Database triggers guard run insertion, fence
+insertion, snapshot creation/promotion, run finalization, and reconciliation
+promotion as last-ditch race protection. The only bypass is purpose
+`canonical-epoch-recovery`; ordinary `databaseOnly:true` authoring continues,
+including with configured active capacity one. The state remains visible
+permanently as audit history. Its restriction remains unresolved until a
+separate canonical-epoch recovery verifies a snapshot and appends a matching
+resolution; pending reconciliation retry and abandonment do not clear it.
+
+Stable lifecycle failures are `invalid-baseline`,
+`unstable-jira-generation`, `revision-invalidation`, `staging-mismatch`,
+`grouping-impact-mismatch`, `recovery-in-progress`,
+`promotion-recovery-failure`, `cancellation-not-allowed`, and
+`canonical-unpublished-restriction`. Status exposes counts, decisions,
+grouping impacts, invalidated keys, promotion/journal/fence state, recovery
+failure details, audit fields, and the nullable replacement proof so callers
+do not infer processor state from private tables.
+
+#### Dedicated canonical-epoch recovery
+
+`PreparedTicketCanonicalEpochRecoveryService` owns admission, status,
+startup recovery, and explicit retry. The workflow registry dispatches
+`canonical-epoch-recovery` directly to this service; it does not call
+ordinary authoring finalization, metadata enrichment, or grouping workers.
+The source must have generic status `abandoned`, reconciliation and journal
+state `canonical-unpublished`, a non-empty abandonment audit, the current
+run-backed authoring epoch, and no successful recovery resolution.
+
+One immediate SQLite transaction captures that source coordinate and the
+current accepted receipt-backed corpus, validates complete grouping, freezes
+canonical fingerprints and exact public canonical row values, and creates a
+new run, all-complete maintenance selection, recipe, journal, and processor
+mutation fence. Receipt IDs are carried from their original contributing
+runs; recovery creates no authored receipt or grouping stage. It includes
+valid database-only work accepted since abandonment rather than assuming
+the abandoned run still describes the entire current corpus.
+
+The recipe is append-only. A duplicate start returns the existing running,
+finalizing, or retryable error run. It never resets the recipe, creates a
+second run for the same abandonment, or changes the source's status,
+`canonical-unpublished`, time, or reason. A resolved source returns
+`canonical-epoch-already-recovered` and the successful recovery coordinate.
+
+Recovery uses these durable boundaries:
+
+1. **Materialization pending.** Revalidate the same abandonment/epoch,
+   all-complete selection, held fence, current receipt-backed corpus,
+   complete grouping, and exact canonical values. Reserve a new snapshot ID,
+   sequence, paths, counts, schema version, and creation time. Sanitize a
+   copy into schema v3, write exactly one matching provenance row,
+   checkpoint, integrity/count-check, and only then hash and size the bytes.
+   Recompute the candidate's complete corpus/grouping proof as well.
+2. **Snapshot publish pending.** Persist the exact candidate descriptor and
+   snapshot record together. Before that trust boundary a partial backup
+   can be rebuilt using the reservation. After it, candidate/final files are
+   read-only evidence: never replace provenance, adopt an unjournaled hash,
+   or overwrite a conflicting final file.
+3. **File published, unresolved.** Move the candidate without overwrite, or
+   authenticate an already-published matching final file. A crash here
+   leaves the run/journal pending and the restriction/fence intact.
+4. **Ready.** After exact final-file verification, keep the verified file
+   open read-only and use one shared connection/immediate SQLite transaction
+   to compare the abandoned epoch, frozen recipe/selection/current state,
+   candidate, and snapshot record; append the unique resolution; mark the
+   snapshot ready; mark the journal ready; complete the new run; and release
+   its fence. The resolution makes the matching restriction ineligible.
+   No file move occurs in this transaction.
+
+Startup scans unresolved dedicated journals before generic snapshot cleanup.
+If one still conflicts, generic cleanup is deferred so it cannot delete a
+trusted candidate or mark a recovery snapshot ready outside the resolution
+transaction. A dedicated retry resumes the same run and journal. Failure
+records typed detail and keeps the unresolved restriction, evidence, and
+fence in a retryable run; no automatic compensation or old-publication
+fallback is performed.
+
+The dedicated proof contract is version 1, independent of reconciliation
+contract v3. It records source abandonment, epoch, capture time, corpus,
+complete grouping, and recipe fingerprints. The generic descriptor proof
+has purpose `canonical-epoch-recovery`; its purpose-specific source time and
+revision represent abandonment time and authoring epoch, not newly fetched
+Jira freshness. Publisher readiness requires matching full corpus and
+grouping fingerprints recomputed from the immutable file and the distinct
+recovery/abandoned run pair. The previous verified publication stays intact.
+The API/CLI/Dev UI expose source and recovery links instead of rewriting the
+historical reconciliation into a successful run.
+
+### Metadata-only Discussion publication refresh
+
+A publication refresh enriches publication metadata without replaying authored
+work or recomputing grouping and refuses changed accepted Jira revisions. Its
+source coordinate must be a completed, non-database-only Preparer run with a
+ready snapshot. Retain that run's original descriptor/database pair and
+complete site, including their digests, as the immutable fallback.
+
+Admission makes two comparisons. First it verifies the source run's own
+immutable snapshot and requires its actual accepted content, receipt
+coordinates, grouping IDs, values, ordering, and membership to remain present
+unchanged. It then freezes the **entire current accepted receipt-backed
+corpus**, including historical protected provenance. Additional current
+tickets/disjoint grouping partitions are allowed only without altering
+original protected output, and are disclosed through public run status
+`corpusComparison`; the source run's item count alone is not the baseline's
+exported-corpus count.
+
+The new `purpose:"publication-refresh"` run, `sourceRunId`, completed
+receipt-backed maintenance items, mutation fence, and versioned recipe are
+created atomically. `authoring_runs.RequestJson` records recipe
+`publication-enrichment`, version `1`, with original/frozen protection
+coordinates before the scheduler is woken, including if no stage rows yet
+exist. New `StartAsync` calls always use this protected recipe; null is not a
+caller-selectable legacy mode. The start does not fetch publication metadata,
+create authoring attempts, or dispatch workers.
+
+Source people population remains a separate explicit prerequisite, not part
+of refresh or site generation. Use gateway
+`POST /api/v1/jira/public-people/preview` and `/apply` with trusted
+same-revision evidence and complete shared-impact acknowledgement. Cache-only
+is the default; legacy raw caches without source acquisition receipts are
+untrusted and upstream authentication use requires deliberate opt-in. A
+current policy marker does not guarantee any name is available. See the
+[source maintenance contract](data-sources.md#deliberate-public-people-previewapply)
+for bounds, atomicity, refusal, and lost-response handling.
+
+Fenced finalization performs these steps:
+
+1. Re-read the frozen current graph and require exact receipt, item,
+   expected-revision, protected-value, and grouping coordinates. Counts and
+   legacy content hashes alone are insufficient.
+2. In `publication-enrichment-v1`, use the real typed Orchestrator Jira item
+   API and `GET /api/v1/zulip/references/resolve?reference=...` for accepted
+   Zulip associations only. Every Jira response must be stable, match the
+   accepted revision, carry the current people policy, and share one Jira
+   content generation. The explicit self-ticket Jira update time is
+   publication metadata, not a replacement receipt revision.
+3. `ApplyPublicationEnrichmentAsync` rechecks the full stage lease, fence,
+   recipe, graph, and exact outcome coverage in one allowlisted transaction.
+   It updates parent/self publication metadata, requester rows, and accepted
+   Zulip hydration only; writes the new run's Jira provenance and durable
+   apply receipt; and verifies protection again. Authored analysis,
+   proposals, reference justifications, unrelated hydration, accepted
+   receipts, historical contributing-run provenance, and grouping are not
+   rewritten. Every accepted Zulip reference has an outcome: a failed lookup
+   can retain a safe, previously source-backed link/context as last-known,
+   but cannot certify it as resolved. A legacy zero-message URL remains
+   unverified. Optional timestamp diagnostics can accompany a resolved link.
+4. In `grouping-certification` stages, verify current grouping output against
+   retained source grouping receipts. Receipts with an existing output
+   fingerprint are reused directly; legacy receipts are bound to the current
+   output by a separate durable certification. Grouping is never dispatched or
+   recomputed.
+5. Recheck protection on the actual SQLite backup and emit a new Preparer
+   schema-v3 snapshot and descriptor. Public publication-proof contract v1
+   remains unchanged: `publicationProof` binds purpose, source run,
+   Jira freshness/content revision, people-policy version, corpus fingerprint,
+   grouping fingerprint, and capture time. The new snapshot has its own
+   `runId`, `snapshotId`, and monotonic sequence.
+
+Authored payloads, accepted receipts, historical input provenance, topic
+grouping, and source grouping receipts are not rewritten by this flow. After
+the refresh run reaches `completed`, download that run's verified pair and
+publish its Discussion site in a different run-scoped directory as a separate
+client-side operation. Keep the prior pair/site intact and usable. The Dev UI
+offers generation/regeneration independently from refresh even when readiness
+is verified; neither action silently invokes the other or backfills sources.
+
+Stage and snapshot recovery stay on the same refresh run. If the process stops
+after the metadata transaction but before stage completion, retry consumes the
+durable apply receipt and does not fetch or apply source metadata again. If
+snapshot promotion is interrupted, snapshot reconciliation resumes or reuses
+the same immutable proof and ready snapshot coordinate rather than creating a
+different repair generation. Other transient stage failures leave the run in
+recoverable `error` for scheduler-owned retry.
+
+Missing/replaced original output or changed grouping refuses admission.
+Execution-time protected-graph drift, a missing ticket, changed accepted Jira
+revision, or mixed Jira generation terminally supersedes/refuses the refresh,
+releases the fence, and prevents a usable new snapshot. A rejected metadata
+batch has no partial apply or apply receipt. A later protection failure after
+an already committed batch does not undo that commit. Retain the original
+publication and inspect the conflict; there is no deletion, reset,
+re-authoring, regrouping, or forced old-site replacement fallback.
+
+Recovery discriminates recipes only from persisted metadata. An explicitly
+persisted null legacy maintenance request resumes the old Jira-only
+`publication-metadata` recipe. A malformed or unknown non-null recipe is
+refused, never treated as legacy; an old stage receipt cannot satisfy
+`publication-enrichment-v1`. Receipt-first recovery of a committed new stage
+does not refetch Jira or Zulip. Before deploying an older binary, stop new
+enrichment admission and quiesce/reconcile new-recipe runs: database
+readability alone does not establish safe in-flight downgrade.
+
+Committed source people and processor publication metadata persist after a
+code revert. Do not reset them, restore broad SQL backups, lower source
+generations, or replay expensive authoring/grouping. A metadata correction
+requires a separately reviewed conditional operation by its owning service,
+while retaining all accepted output and prior artifacts. No Preparer public
+schema migration needs reversal.
+
+The refresh POST is another non-replayed outer mutation. On transport or
+response-body loss, Dev UI and CLI clients issue one bounded read-only run-list
+request and filter runs created since submission by
+`purpose:"publication-refresh"` and matching `sourceRunId`. Zero, one, or
+multiple candidates all require operator review; a truncated list is reported.
+The Dev UI retains an outcome-unknown review gate and disables another refresh
+until the operator acknowledges the candidates. The CLI returns
+`outcome:"outcome-unknown"`, `reconciliation`, `candidates`,
+`listTruncated`, `message`, and nullable `error`. Neither client repeats the
+POST.
+
+Processor completion and site-publication completion are separate axes.
+Accepted receipts and a terminal processor result remain valid when local site
+generation fails. The Dev UI retains the verified pair and retries only
+publication.
+
+Under Aspire, the UI stores pairs and sites in deterministic ignored roots:
+
+```text
+cache\devui-authoring-snapshots\{prepare|plan}\{runId}\
+cache\devui-review-sites\{prepare|plan}\{runId}\{discussion|applying}\
+```
+
+Only the review root is served, at `/review-sites`; snapshot pairs remain
+private. The same-origin site mapping is a trusted-local boundary. No automatic
+retention policy exists in the first release: stop the Dev UI before manually
+removing old workflow/run directories.
+
+### Recovery and Jira rediscovery
+
+After an upgraded processor starts, legacy `error` items with an open attempt
+are reconciled from their durable timestamps and messages. Due items below the
+limit return to automatic retry; a final unpersisted failure becomes an
+item-level `superseded` result. The run then follows normal finalization,
+releases its fence, and only afterward can the oldest queued run acquire it.
+
+Scheduled Preparer and Planner discovery does not immediately select an
+exhausted unchanged Jira source revision into a fresh batch. A genuinely newer
+revision is eligible normally. Deliberately retrying the unchanged revision
+requires an explicit new run, so scheduled discovery cannot invisibly reset
+the attempt budget.
 
 ## Preparer (`processor-jira-fhir-preparer`, :5171)
 
-**Purpose:** Queue triaged/submitted Jira FHIR tickets, run the `ticket-prep`
-agent, and persist structured prepared-ticket output for the `ticket-site`
-renderer.
+The Preparer selects configured Jira tickets and launches `ticket-prep`
+workers. Use the outer-control skill for the complete flow:
 
-**Prerequisites:** `source-jira` (:5160) and `orchestrator` (:5150) reachable
-(the AppHost `WaitFor`s both). The resource must be started.
-
-**Kick-off:**
-
-Because `StartProcessingOnStartup` defaults to `true` and a
-`JiraTicketSyncWorker` feeds the queue from the Jira source on the `SyncSchedule`
-cadence (`00:01:00` in the shipped `appsettings.json`), a started Preparer begins
-working automatically — no trigger call is required for the bulk path. To control
-processing explicitly:
-
-```bash
-# Begin (or resume) processing
-curl -X POST http://localhost:5171/processing/start
-
-# Pause processing (in-flight items drain)
-curl -X POST http://localhost:5171/processing/stop
+```text
+/orchestrate-prep
 ```
 
-To enqueue or reset a **single** ticket ad hoc (not the bulk path):
+For the guided equivalent, open `/operations/prepare/new`; active/recovering
+and recent runs are listed at `/`, with **Open by run ID** for exact lookup.
 
-```bash
-curl -X POST http://localhost:5171/processing/tickets/FHIR-12345
+Manual CLI control:
+
+```powershell
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"start","ticketKeys":[],"databaseOnly":false}'
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"status","runId":"<runId>"}'
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"retry","runId":"<runId>","itemId":"<itemId>"}'
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"supersede","runId":"<runId>","itemId":"<itemId>","reason":"<explicit reason>"}'
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"snapshot","runId":"<runId>","snapshotPath":"cache\\authoring-snapshots\\preparer\\<runId>\\"}'
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"reconcile-publication","sourceRunId":"<sourceRunId>"}'
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"reconciliation-status","runId":"<reconciliationRunId>"}'
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"retry-reconciliation","runId":"<reconciliationRunId>"}'
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"cancel-reconciliation","runId":"<reconciliationRunId>","reason":"<reviewed reason>"}'
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"abandon-reconciliation","runId":"<reconciliationRunId>","reason":"<reviewed reason>"}'
+fhir-augury-cli --json '{"command":"prepared-ticket-authoring","action":"refresh-publication","runId":"<sourceRunId>"}'
 ```
 
-For a **bulk** run driven by an agent, use the `orchestrate-prep` skill. Note:
-that skill draws tickets from the **Jira source** (via the `jira-local-processing`
-surface) and dispatches `ticket-prep` agents itself — it does **not** route
-through this processor's `/processing` queue.
+Use `reconcile-publication` when accepted Jira revisions changed; it selects
+the baseline with `sourceRunId`. Use `refresh-publication` only for
+metadata-only repair with unchanged revisions; it selects the completed
+source run in `runId`. Both return a different new run ID. Follow a
+reconciliation with `reconciliation-status`; use reason-bearing cancellation
+only while it remains staged, and retry/abandon only at the documented
+post-promotion boundary. Follow a refresh with ordinary `status`. After
+successful completion, use the
+new run ID for `snapshot` and site publication. Do not use either maintenance
+run as the source of another maintenance operation.
 
-**Monitor:**
+Publish a downloaded verified pair:
 
-```bash
-curl http://localhost:5171/status            # running/paused, SyncSchedule, StartProcessingOnStartup
-curl http://localhost:5171/processing/queue  # processed / remaining / in-flight / error counts
+```powershell
+dotnet run --project tools\ticket-site -- `
+  --preparer-snapshot "<snapshotPath>" `
+  --snapshot-descriptor "<descriptorPath>" `
+  --out "cache\jira-ticket-sites\<runId>"
 ```
 
-**Output:** `./data/processor.jira.fhir.preparer.db` → rendered by the
-`ticket-site` tool.
+Use the new refresh run's pair and output root, never `--force` against the
+original publication as a repair. The offline publisher neither reads sources
+nor starts/checks enrichment. Synthetic tests and browser walkthroughs are not
+authorization or proof of live-corpus repair; that remains a separate operator
+operation with preservation/revision evidence gates.
 
-**Config:** Detailed reference lives in the project's `appsettings.json` under
-the `Processing` section. Key defaults: DB path
-`./data/processor.jira.fhir.preparer.db`, `SyncSchedule` `00:01:00`,
-`MaxConcurrentProcessingThreads` `8`, `StartProcessingOnStartup` `true`.
+The current Preparer host **requires** snapshot schema v3; v1 and v2 are
+publisher/test compatibility inputs, not selectable producer modes. Before an
+authoring rollout or publication refresh, inspect the Preparer's ignored
+`appsettings.local.json` and process/Aspire environment for an old
+`Processing:SnapshotSchemaVersion` override, including
+`FHIR_AUGURY_PREPARER_Processing__SnapshotSchemaVersion`. Remove or correct
+the stale ignored/environment value so the effective value is `3`; do not add
+or commit a local override as part of the repair. Start the service and confirm
+its log reports `Effective Preparer snapshot schema version is 3`. Startup
+rejects any other effective value.
 
----
+The shared publisher remains able to publish older v1 and v2 pairs for
+compatible source and freshness data, but their readiness is degraded and
+people are unavailable. Only v3 carries the explicit policy proof required for
+public people. The omitted `ticket-site` title for this input is
+`Tickets for Discussion`.
+
+Grouping is part of finalization. To intentionally refresh all current
+grouping partitions later, use the processor-owned maintenance endpoint:
+
+```powershell
+curl -X POST http://localhost:5171/api/v1/prepared-ticket-groupings/maintenance `
+  -H "Content-Type: application/json" `
+  -d '{}'
+```
 
 ## Planner (`processor-jira-fhir-planner`, :5172)
 
-**Purpose:** Queue resolved change-required Jira FHIR tickets, run the
-`ticket-plan` agent, and persist structured implementation-plan output.
+The Planner selects configured Jira tickets and launches `ticket-plan`
+workers. It also maintains the existing completion ID/timestamp projection
+consumed by the Applier.
 
-**Prerequisites:** `source-jira` (:5160), `source-github` (:5190), and
-`orchestrator` (:5150) reachable. The resource must be started.
-
-**Kick-off:** Same lifecycle model as the Preparer — a started Planner processes
-automatically via its sync worker:
-
-```bash
-curl -X POST http://localhost:5172/processing/start
-curl -X POST http://localhost:5172/processing/stop
-
-# Ad-hoc single-ticket enqueue/reset:
-curl -X POST http://localhost:5172/processing/tickets/FHIR-12345
+```text
+/orchestrate-plan
 ```
 
-For a bulk agent-driven run, use the `orchestrate-plan` skill (same honesty note
-as the Preparer: it draws from the Jira source, not the processor's queue).
+For the guided equivalent, open `/operations/plan/new`; the workflow ends at
+the applying review site and does not expose Applier or GitHub-write controls.
 
-**Monitor:**
+Manual CLI control:
 
-```bash
-curl http://localhost:5172/status
-curl http://localhost:5172/processing/queue
+```powershell
+fhir-augury-cli --json '{"command":"planned-ticket-authoring","action":"start","ticketKeys":[],"databaseOnly":false}'
+fhir-augury-cli --json '{"command":"planned-ticket-authoring","action":"status","runId":"<runId>"}'
+fhir-augury-cli --json '{"command":"planned-ticket-authoring","action":"retry","runId":"<runId>","itemId":"<itemId>"}'
+fhir-augury-cli --json '{"command":"planned-ticket-authoring","action":"supersede","runId":"<runId>","itemId":"<itemId>","reason":"<explicit reason>"}'
+fhir-augury-cli --json '{"command":"planned-ticket-authoring","action":"snapshot","runId":"<runId>","snapshotPath":"cache\\authoring-snapshots\\planner\\<runId>\\"}'
 ```
 
-**Output:** `./data/processor.jira.fhir.planner.db` → rendered by the
-`ticket-site` tool; also the input the Applier auto-discovers.
+Publish:
 
-**Config:** `appsettings.json` `Processing` section. Key defaults: DB path
-`./data/processor.jira.fhir.planner.db`, `SyncSchedule` `00:01:00`,
-`MaxConcurrentProcessingThreads` `3`, `StartProcessingOnStartup` `true`.
+```powershell
+dotnet run --project tools\ticket-site -- `
+  --planner-snapshot "<snapshotPath>" `
+  --snapshot-descriptor "<descriptorPath>" `
+  --out cache\jira-ticket-site `
+  --force
+```
 
----
+Planner and Tickets for Applying intentionally remain on snapshot schema v1.
+The omitted `ticket-site` title for Planner input remains the existing
+`Ticket Site`; Discussion freshness qualification does not apply.
+
+Grouping maintenance:
+
+```powershell
+curl -X POST http://localhost:5172/api/v1/planned-ticket-topics/maintenance `
+  -H "Content-Type: application/json" `
+  -d '{}'
+```
 
 ## Applier (`processor-jira-fhir-applier`, :5173)
 
-**Purpose:** Consume completed plans from the Planner database and run an agent in
-a per-(ticket, repo) git worktree to actually apply each planned change, then
-locally commit the result. Successful commits are pushed to the upstream remote
-**on demand**.
+The Applier retains its existing queue contract. It auto-discovers completed
+Planner output, applies each plan in per-ticket repository worktrees, and
+commits successful changes locally.
 
-**Prerequisites:** `source-jira` (:5160), `orchestrator` (:5150), and the Planner
-(:5172) reachable; completed plans must exist in the Planner DB
-(`./data/processor.jira.fhir.planner.db`). The resource must be started.
-
-**Kick-off:** The Applier has **no per-ticket HTTP enqueue trigger**. Once
-started, it **auto-discovers** completed plans by polling the Planner DB via its
-`PlannerWorkQueue` on the `SyncSchedule` cadence and processes them itself:
-
-```bash
+```powershell
 curl -X POST http://localhost:5173/processing/start
 curl -X POST http://localhost:5173/processing/stop
-```
-
-The operator-facing HTTP action is the **push** API, which moves a ticket's
-successful local commits to the upstream remote:
-
-```bash
-curl -X POST http://localhost:5173/api/v1/applied-tickets/FHIR-12345/push
-```
-
-The push returns `200` with a per-repo result summary, `404` if the ticket has no
-applied record, or `409` if no repo has a successful local commit yet. There is
-**no** `orchestrate-applier` skill.
-
-**Monitor:**
-
-```bash
-curl http://localhost:5173/status
 curl http://localhost:5173/processing/queue
 ```
 
-**Output:** Per-(ticket, repo) commits in worktrees under
-`./data/applier-workspaces`; surviving build-output diffs under `./out/applier`;
-applied-ticket state in `./data/processor.jira.fhir.applier.db`. Pushes go to the
-configured upstream remote on demand.
+Push successful local commits for one ticket on demand:
 
-**Config:** `appsettings.json` `Processing` section. Key defaults: DB path
-`./data/processor.jira.fhir.applier.db`, `SyncSchedule` `00:05:00`,
-`MaxConcurrentProcessingThreads` `1`, `StartProcessingOnStartup` `true`;
-`Applier.WorkingDirectory` `./data/applier-workspaces`, `Applier.OutputDirectory`
-`./out/applier`, `Applier.PlannerDatabasePath`
-`./data/processor.jira.fhir.planner.db`.
+```powershell
+curl -X POST http://localhost:5173/api/v1/applied-tickets/FHIR-12345/push
+```
 
----
+There is no `orchestrate-applier` skill.
 
 ## BallotNotes (`processor-github-fhir-ballotnotes`, :5174)
 
-**Purpose:** Hydrate ballot-note evidence for a GitHub repo across a
-since-commit → HEAD window (commit-window walk, ticket attribution, source-file
-resolution, current-note capture) so the `notes-*` skills can author updated
-ballot notes.
+BallotNotes first creates an immutable hydration execution for one repository
+window, then creates a separate authoring run over all or a selected subset of
+that execution's completed units.
 
-**Prerequisites:** The GitHub source must have **cloned** the target repo —
-BallotNotes expects a clone at `<CloneRoot>/<owner>_<name>/clone` (default
-`CloneRoot` is `./cache/github/repos`). A missing clone or an unresolvable
-since-commit returns `503`. `source-jira` (:5160), `source-github` (:5190), and
-`orchestrator` (:5150) back attribution. The resource must be started.
+Recommended:
 
-**Kick-off:** Unlike the Jira processors, BallotNotes is purely on-demand. Trigger
-a hydration with the repo and the since-commit to walk from:
+```text
+/orchestrate-notes
+```
 
-```bash
-curl -X POST http://localhost:5174/api/v1/ballot-notes/hydrate \
-  -H "Content-Type: application/json" \
+Hydrate:
+
+```powershell
+curl -X POST http://localhost:5174/api/v1/ballot-notes/hydrate `
+  -H "Content-Type: application/json" `
   -d '{"repoOwner":"HL7","repoName":"fhir","sinceSha":"<sha>"}'
+curl "http://localhost:5174/api/v1/ballot-notes/hydrate/status?executionId=<executionId>"
 ```
 
-The body requires `repoOwner`, `repoName`, and `sinceSha`; `repoCategory` and
-`workGroupHint` are optional. The call validates the clone + since-commit
-synchronously (`503` if either is missing/unresolvable, `400` on a malformed
-body), then returns `202 Accepted` with a `runKey` and fires the walk
-fire-and-forget.
+Author and download:
 
-**Monitor:** Poll the dedicated status endpoint (BallotNotes does **not** expose
-`/status` or `/processing/queue`). The `runKey` contains `/`, so it is a query
-parameter — omit it to read the latest run:
-
-```bash
-# Latest run:
-curl "http://localhost:5174/api/v1/ballot-notes/hydrate/status"
-
-# A specific run:
-curl "http://localhost:5174/api/v1/ballot-notes/hydrate/status?runKey=<runKey>"
+```powershell
+fhir-augury-cli --json '{"command":"ballot-note-authoring","action":"start","hydrationExecutionId":"<executionId>","noteIds":[],"databaseOnly":false}'
+fhir-augury-cli --json '{"command":"ballot-note-authoring","action":"status","runId":"<runId>"}'
+fhir-augury-cli --json '{"command":"ballot-note-authoring","action":"retry","runId":"<runId>","itemId":"<itemId>"}'
+fhir-augury-cli --json '{"command":"ballot-note-authoring","action":"supersede","runId":"<runId>","itemId":"<itemId>","reason":"<explicit reason>"}'
+fhir-augury-cli --json '{"command":"ballot-note-authoring","action":"snapshot","runId":"<runId>","snapshotPath":"cache\\authoring-snapshots\\ballot-notes\\<runId>\\"}'
 ```
 
-The status response reports `status` (`running` / `completed` / `failed`),
-`unitsTotal`, `unitsHydrated`, `commitsInWindow`, `ticketsAttributed`,
-`startedAt`, `completedAt`, and `error`. The run is done when `status` is
-`completed` or `failed`.
+Publish:
 
-For a bulk run that hydrates and then authors notes across the whole window, use
-the `orchestrate-notes` skill, which hydrates via this same endpoint, polls the
-status endpoint until the run completes, and dispatches the `notes-artifact` /
-`notes-page` / `notes-datatype` authoring agents.
+```powershell
+dotnet run --project tools\notes-site -- report `
+  --snapshot-db "<snapshotPath>" `
+  --snapshot-descriptor "<descriptorPath>" `
+  --out cache\notes-site `
+  --force
+```
 
-**Output:** `./cache/ballot-notes.db` → rendered by the `notes-site` tool.
+The processor is the only authoring writer. Per-unit worker submissions require
+callback context; outer clients cannot use the retired bare prose write.
+Workgroup reallocation also submits one expected-revision batch through the
+processor mutation fence.
 
-**Config:** See the [BallotNotes Processor Service](../configuration.md#ballotnotes-processor-service)
-section of `configuration.md` for the full appsettings/env reference. Key
-defaults: DB path `./cache/ballot-notes.db`, `Hydration.CloneRoot`
-`./cache/github/repos`, `Hydration.MaxParallelism` `4`.
+## Worker callback environment
 
-**Hydration internals (performance):** The hydrator is tuned to minimize
-per-unit git-process and network churn while producing byte-for-byte identical
-ballot-note output:
+Processor-launched Jira and BallotNotes workers receive:
 
-- **Per-unit commit walk stays on `git log` (by design).** Each unit's window
-  commit list comes from a per-unit pathspec walk
-  (`git log <since>..HEAD --no-merges --name-status … -- <paths>`), **not** from
-  the `github_commit_files` index. Git applies *history simplification*
-  (TREESAME pruning) to a pathspec `git log`: it omits a non-merge commit that
-  genuinely changed a path when that change is also reachable via a simpler route
-  through the DAG. The raw commit-file index records every commit's changes with
-  no such simplification, so an index-driven walk would over-include pruned
-  commits, feed a different commit set into ticket attribution, and change the
-  emitted note. Because the pruning depends on the commit graph at query time, it
-  cannot be reconstructed from the index — so the walk deliberately remains a live
-  `git log`.
-- **Batched blob reads.** Every unit's candidate current-note intro at `HEAD`,
-  and both the since- and head-side of every changed StructureDefinition, are read
-  with a single `git cat-file --batch` pass each, replacing a `git show` spawn per
-  blob. A leading UTF-8 BOM is stripped from decoded blob text so the batched read
-  matches git's own `StreamReader` decoding byte-for-byte (git strips a detected
-  BOM preamble; a raw UTF-8 decode would not).
-- **In-run memoization.** The structural-diff pass parses each distinct
-  `(format, blob)` at most once per run. Attribution cross-references each distinct
-  commit SHA once, and fetches each distinct ticket's enrichment once, per run —
-  shared across the parallel unit fan-out via best-effort concurrent memos, so a
-  commit or ticket touched by many units still costs a single upstream call.
-- **Validation-only index infrastructure.** A `WindowIndexReader` and the
-  `github_commit_files.BlobSha` covering index (see
-  [database schema](database-schema.md#github_commit_files--files-changed-in-commits))
-  exist as a coverage oracle for the ingested window; they are **not** on the
-  output-critical hydration path and do not gate a run.
+- `FHIR_AUGURY_AUTHORING_WORKER=1`
+- `FHIR_AUGURY_AUTHORING_RUN_ID`
+- `FHIR_AUGURY_AUTHORING_ITEM_ID`
+- `FHIR_AUGURY_AUTHORING_CALLBACK_URL`
+- `FHIR_AUGURY_AUTHORING_OPERATION_ID`
+- `FHIR_AUGURY_AUTHORING_OPERATION_TOKEN`
+- `FHIR_AUGURY_AUTHORING_SOURCE_REVISION`
 
----
+BallotNotes also supplies note type and hydration execution variables.
+Grouping workers receive a separate `FHIR_AUGURY_GROUPING_*` run/stage/lease
+context. These values are processor-generated capabilities; do not put them in
+configuration files or outer-control commands.
 
-## Output destinations at a glance
+## Output destinations
 
-| Processor | Output store | Downstream renderer / next stage |
-|-----------|--------------|----------------------------------|
-| Preparer | `./data/processor.jira.fhir.preparer.db` | `ticket-site` tool |
-| Planner | `./data/processor.jira.fhir.planner.db` | `ticket-site` tool; input for the Applier |
-| Applier | per-ticket worktree commits + `./out/applier` + `./data/processor.jira.fhir.applier.db` | on-demand push to upstream remote |
-| BallotNotes | `./cache/ballot-notes.db` | `notes-site` tool |
+| Processor | Durable service state | Review publication |
+|-----------|-----------------------|--------------------|
+| Preparer | `data\processor.jira.fhir.preparer.db` | Verified pair -> shared publisher -> discussion site |
+| Planner | `data\processor.jira.fhir.planner.db` | Verified pair -> shared publisher -> applying site |
+| Applier | worktrees, local commits, `data\processor.jira.fhir.applier.db` | On-demand upstream push |
+| BallotNotes | `cache\ballot-notes.db` | Verified snapshot -> `notes-site` |
+
+The database paths above are operator backup/configuration locations, not
+client integration surfaces. The Orchestrator proxies run control over HTTP;
+the Dev UI and CLI are outer clients, and static sites consume only verified
+pairs. The Dev UI's run-scoped local destinations are documented above;
+headless callers retain their explicit CLI/tool output paths.
+
+Markdown remains supported as authored content inside structured database
+fields and explicit site copy/export features. It is not a processor input,
+completion ledger, database import format, or fallback when snapshot
+publication fails.

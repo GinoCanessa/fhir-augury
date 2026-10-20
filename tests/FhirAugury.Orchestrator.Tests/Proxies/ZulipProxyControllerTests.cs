@@ -58,6 +58,34 @@ public class ZulipProxyControllerTests
     }
 
     [Fact]
+    public async Task ContentRefersTo_PreservesSourceSpecificQuery()
+    {
+        ZulipProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c, queryString: "?value=FHIR-1&sourceType=jira&limit=10");
+
+        IActionResult result = await c.ContentRefersTo("FHIR-1", "jira", 10, null, default);
+        await ProxyTestSupport.ExecuteAsync(c, result);
+
+        Assert.Equal("/api/v1/content/refers-to", h.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal("?value=FHIR-1&sourceType=jira&limit=10", h.Requests[0].RequestUri!.Query);
+    }
+
+    [Fact]
+    public async Task ContentRelatedByKeyword_PreservesCatchAllId()
+    {
+        ZulipProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c);
+
+        IActionResult result = await c.ContentRelatedByKeyword(
+            "zulip", "1234/topic name", null, null, null, default);
+        await ProxyTestSupport.ExecuteAsync(c, result);
+
+        Assert.Equal(
+            "/api/v1/content/related-by-keyword/zulip/1234/topic%20name",
+            h.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
     public async Task UpdateStream_PutForwardsBody()
     {
         ZulipProxyController c = NewController(out ProxyTestSupport.CapturingHandler h,
@@ -141,5 +169,90 @@ public class ZulipProxyControllerTests
 
         Assert.Equal("/api/v1/threads", h.Requests[0].RequestUri!.AbsolutePath);
         Assert.Equal("?streamName=fhir%2Finfrastructure-wg&topic=Message%20forbids", h.Requests[0].RequestUri!.Query);
+    }
+
+    [Theory]
+    [InlineData("321987")]
+    [InlineData("000321987")]
+    [InlineData("fhir/infrastructure-wg:entry/request: réponse 100% & 漢字")]
+    [InlineData("fhir:core:literal %2F / 🩺")]
+    [InlineData("implementers: topic with surrounding spaces ")]
+    public async Task ResolveReference_ForwardsEncodedReferenceVerbatim(string reference)
+    {
+        ZulipProxyController controller = NewController(out ProxyTestSupport.CapturingHandler handler);
+        string query = $"?reference={Uri.EscapeDataString(reference)}";
+        ProxyTestSupport.SetRequest(controller, queryString: query);
+
+        IActionResult result = await controller.ResolveReference(reference, default);
+        (int status, _, _, _) = await ProxyTestSupport.ExecuteAsync(controller, result);
+
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Get, request.Method);
+        Assert.Equal("/api/v1/references/resolve", request.RequestUri!.AbsolutePath);
+        Assert.Equal(query, request.RequestUri.Query);
+        Assert.Equal(200, status);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest)]
+    [InlineData(HttpStatusCode.NotFound)]
+    [InlineData(HttpStatusCode.Conflict)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    public async Task ResolveReference_PreservesSourceFailureStatusAndBody(HttpStatusCode sourceStatus)
+    {
+        const string body = """{"reference":"321987","outcome":"source-unavailable","diagnostics":[]}""";
+        (SourceHttpClient client, ProxyTestSupport.CapturingHandler handler) =
+            ProxyTestSupport.CreateClient("zulip", body, sourceStatus, responseEtag: "\"reference-v1\"");
+        ZulipProxyController controller = new(client);
+        ProxyTestSupport.SetRequest(controller, queryString: "?reference=321987",
+            headers: new Dictionary<string, string> { ["If-None-Match"] = "\"prior\"" });
+
+        IActionResult result = await controller.ResolveReference("321987", default);
+        (int status, string actualBody, string? etag, string? contentType) =
+            await ProxyTestSupport.ExecuteAsync(controller, result);
+
+        Assert.Equal((int)sourceStatus, status);
+        Assert.Equal(body, actualBody);
+        Assert.Equal("\"reference-v1\"", etag);
+        Assert.StartsWith("application/json", contentType);
+        HttpRequestMessage request = Assert.Single(handler.Requests);
+        Assert.Equal("\"prior\"", Assert.Single(request.Headers.IfNoneMatch).Tag);
+    }
+
+    [Fact]
+    public async Task ResolveReference_DisabledSourceDoesNotForward()
+    {
+        ZulipProxyController controller = NewController(out ProxyTestSupport.CapturingHandler handler, enabled: false);
+        ProxyTestSupport.SetRequest(controller, queryString: "?reference=321987");
+
+        IActionResult result = await controller.ResolveReference("321987", default);
+
+        Assert.IsType<NotFoundObjectResult>(result);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Theory]
+    [InlineData("trigger", "/api/v1/ingest/trigger")]
+    [InlineData("rebuild-index", "/api/v1/rebuild-index")]
+    public async Task MissingIngestionRoutes_ForwardPost(string action, string expectedPath)
+    {
+        ZulipProxyController c = NewController(out ProxyTestSupport.CapturingHandler h);
+        ProxyTestSupport.SetRequest(c, method: "POST", queryString: "?type=full");
+
+        IActionResult result = action switch
+        {
+            "trigger" => await c.IngestTrigger("full", default),
+            "rebuild-index" => await c.RebuildIndex("full", default),
+            _ => throw new InvalidOperationException(),
+        };
+        await ProxyTestSupport.ExecuteAsync(c, result);
+
+        Assert.Equal(HttpMethod.Post, h.Requests[0].Method);
+        Assert.Equal(expectedPath, h.Requests[0].RequestUri!.AbsolutePath);
+        Assert.Equal("?type=full", h.Requests[0].RequestUri!.Query);
     }
 }

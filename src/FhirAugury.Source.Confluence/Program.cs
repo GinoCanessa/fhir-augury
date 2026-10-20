@@ -25,7 +25,13 @@ builder.Configuration
     .AddJsonFile("appsettings.local.json", optional: true, reloadOnChange: true)
     .AddEnvironmentVariables("FHIR_AUGURY_CONFLUENCE_");
 
-builder.Services.Configure<ConfluenceServiceOptions>(builder.Configuration.GetSection(ConfluenceServiceOptions.SectionName));
+builder.Services.AddOptions<ConfluenceServiceOptions>()
+    .Bind(builder.Configuration.GetSection(ConfluenceServiceOptions.SectionName))
+    .Validate(o => o.AttachmentMaxBytes >= 0,
+        "Confluence:AttachmentMaxBytes must be zero (unlimited) or a positive byte count.")
+    .Validate(o => o.SweepPageSize > 0,
+        "Confluence:SweepPageSize must be greater than zero.")
+    .ValidateOnStart();
 
 // ── Aspire service defaults (OpenTelemetry, health checks, resilience) ──
 builder.AddServiceDefaults();
@@ -71,16 +77,28 @@ builder.Services.AddSingleton<IResponseCache>(sp =>
 
 // HTTP client with auth
 builder.Services.AddTransient<ConfluenceAuthHandler>();
+builder.Services.AddTransient<ConfluenceRateLimiter>();
 builder.Services.AddHttpClient("confluence", client =>
 {
     client.Timeout = TimeSpan.FromMinutes(5);
     client.DefaultRequestHeaders.TryAddWithoutValidation("accept", "application/json");
-    client.DefaultRequestHeaders.TryAddWithoutValidation("user-agent", "FhirAugury/2.0");
+    // HL7's Confluence sits behind an AWS WAF that captcha-challenges any
+    // non-browser-shaped User-Agent with 405 Not Allowed. A bare "FhirAugury/2.0"
+    // token is rejected on every request; the Mozilla-prefixed comment form
+    // passes while still identifying this client honestly.
+    // See docs/technical/confluence-api-notes.md.
+    client.DefaultRequestHeaders.TryAddWithoutValidation(
+        "user-agent",
+        "Mozilla/5.0 (compatible; FhirAugury/2.0; +https://github.com/GinoCanessa/fhir-augury)");
 }).AddHttpMessageHandler<ConfluenceAuthHandler>()
+  .AddHttpMessageHandler<ConfluenceRateLimiter>()
   .AddStandardResilienceHandler();
 
 // Ingestion
+builder.Services.AddSingleton<ConfluenceSpaceDiscovery>();
+builder.Services.AddSingleton<ConfluenceSweep>();
 builder.Services.AddSingleton<ConfluenceSource>();
+builder.Services.AddSingleton<ConfluenceIngestionGate>();
 builder.Services.AddSingleton(sp =>
 {
     ConfluenceServiceOptions opts = sp.GetRequiredService<IOptions<ConfluenceServiceOptions>>().Value;

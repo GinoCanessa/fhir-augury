@@ -12,10 +12,30 @@ public sealed partial class JiraAgentCommandRenderer(IOptions<JiraProcessingOpti
     public JiraAgentCommand Render(JiraAgentCommandContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        string template = _options.AgentCliCommand;
-        if (!template.Contains("{ticketKey}", StringComparison.Ordinal))
+        context.Validate();
+        string templateName = context.IsAuthoringWorker
+            ? nameof(JiraProcessingOptions.AuthoringAgentCliCommand)
+            : nameof(JiraProcessingOptions.AgentCliCommand);
+        string template = context.IsAuthoringWorker
+            ? _options.AuthoringAgentCliCommand
+            : _options.AgentCliCommand;
+        if (!template.Contains(
+                "{ticketKey}",
+                StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidOperationException("AgentCliCommand must include the {ticketKey} token.");
+            throw new InvalidOperationException(
+                $"{templateName} must include the {{ticketKey}} token.");
+        }
+        if (context.IsAuthoringWorker &&
+            (template.Contains(
+                 "{dbPath}",
+                 StringComparison.OrdinalIgnoreCase) ||
+             template.Contains(
+                 "{operationToken}",
+                 StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidOperationException(
+                "AuthoringAgentCliCommand must use callback and token context from the worker environment.");
         }
 
         Dictionary<string, string> tokens = new(StringComparer.OrdinalIgnoreCase)
@@ -35,16 +55,23 @@ public sealed partial class JiraAgentCommandRenderer(IOptions<JiraProcessingOpti
             string name = match.Groups[1].Value;
             if (!tokens.TryGetValue(name, out string? value))
             {
-                throw new InvalidOperationException($"AgentCliCommand contains unresolved token '{{{name}}}'.");
+                throw new InvalidOperationException(
+                    $"{templateName} contains unresolved token '{{{name}}}'.");
             }
 
             return value;
         });
+        if (context.OperationToken is not null &&
+            rendered.Contains(context.OperationToken, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("AgentCliCommand must not place the authoring operation token on argv.");
+        }
 
         List<string> parts = SplitCommandLine(rendered);
         if (parts.Count == 0)
         {
-            throw new InvalidOperationException("AgentCliCommand rendered to an empty command.");
+            throw new InvalidOperationException(
+                $"{templateName} rendered to an empty command.");
         }
 
         return new JiraAgentCommand(parts[0], parts.Skip(1).ToArray());

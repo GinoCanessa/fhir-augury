@@ -40,7 +40,101 @@ public class JiraAgentCommandRendererTests
         Assert.Equal(["--message", "hello world", "FHIR-1"], command.Arguments);
     }
 
-    private static JiraAgentCommandRenderer Renderer(string command) => new(Options.Create(new JiraProcessingOptions { AgentCliCommand = command, JiraSourceAddress = "http://source" }));
+    [Fact]
+    public void Render_WorkerContextKeepsOperationTokenOffArgvAndToString()
+    {
+        JiraAgentCommandContext context = WorkerContext();
+
+        JiraAgentCommand command = Renderer(
+            "legacy {ticketKey} --db {dbPath}",
+            "authoring {ticketKey}").Render(context);
+
+        Assert.Equal("authoring", command.FileName);
+        Assert.DoesNotContain(context.OperationToken!, command.Arguments);
+        Assert.DoesNotContain(context.DatabasePath, command.Arguments);
+        Assert.DoesNotContain(context.OperationToken!, context.ToString(), StringComparison.Ordinal);
+        Assert.Contains("[REDACTED]", context.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_WorkerRejectsDatabaseTokenInAuthoringTemplate()
+    {
+        Assert.Throws<InvalidOperationException>(() => Renderer(
+            "legacy {ticketKey} --db {dbPath}",
+            "authoring {ticketKey} --db {DBPATH}").Render(WorkerContext()));
+    }
+
+    [Fact]
+    public void Render_RejectsPartialWorkerContext()
+    {
+        JiraAgentCommandContext context = Context() with
+        {
+            IsAuthoringWorker = true,
+            RunId = "run-1",
+        };
+
+        Assert.Throws<InvalidOperationException>(() => Renderer("agent {ticketKey}").Render(context));
+    }
+
+    [Fact]
+    public async Task CliRunner_RedactsOperationTokenFromCapturedOutput()
+    {
+        JiraAgentCommand command = OperatingSystem.IsWindows()
+            ? new JiraAgentCommand(
+                "powershell",
+                [
+                    "-NoProfile",
+                    "-Command",
+                    "[Console]::Out.Write($env:FHIR_AUGURY_AUTHORING_OPERATION_TOKEN); [Console]::Error.Write($env:FHIR_AUGURY_AUTHORING_OPERATION_TOKEN)",
+                ])
+            : new JiraAgentCommand(
+                "/bin/sh",
+                ["-c", "printf %s \"$FHIR_AUGURY_AUTHORING_OPERATION_TOKEN\"; printf %s \"$FHIR_AUGURY_AUTHORING_OPERATION_TOKEN\" >&2"]);
+        JiraAgentCommandContext context = WorkerContext();
+
+        JiraAgentResult result = await new JiraAgentCliRunner().RunAsync(
+            command,
+            context,
+            CancellationToken.None);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("[REDACTED]", result.StdoutTail);
+        Assert.Equal("[REDACTED]", result.StderrTail);
+    }
+
+    [Fact]
+    public async Task CliRunner_RemovesProcessingDatabaseFromWorkerEnvironment()
+    {
+        JiraAgentCommand command = OperatingSystem.IsWindows()
+            ? new JiraAgentCommand(
+                "powershell",
+                [
+                    "-NoProfile",
+                    "-Command",
+                    "if ($null -eq $env:FHIR_AUGURY_PROCESSING_DB) { [Console]::Out.Write('<absent>') } else { [Console]::Out.Write($env:FHIR_AUGURY_PROCESSING_DB) }",
+                ])
+            : new JiraAgentCommand(
+                "/bin/sh",
+                ["-c", "printf %s \"${FHIR_AUGURY_PROCESSING_DB-<absent>}\""]);
+
+        JiraAgentResult result = await new JiraAgentCliRunner().RunAsync(
+            command,
+            WorkerContext(),
+            CancellationToken.None);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("<absent>", result.StdoutTail);
+    }
+
+    private static JiraAgentCommandRenderer Renderer(
+        string command,
+        string? authoringCommand = null) =>
+        new(Options.Create(new JiraProcessingOptions
+        {
+            AgentCliCommand = command,
+            AuthoringAgentCliCommand = authoringCommand ?? command,
+            JiraSourceAddress = "http://source",
+        }));
 
     private static JiraAgentCommandContext Context(IReadOnlyDictionary<string, string>? extensionTokens = null) => new()
     {
@@ -49,5 +143,16 @@ public class JiraAgentCommandRendererTests
         DatabasePath = "db.sqlite",
         SourceTicketShape = "fhir",
         ExtensionTokens = extensionTokens ?? new Dictionary<string, string>(),
+    };
+
+    private static JiraAgentCommandContext WorkerContext() => Context() with
+    {
+        IsAuthoringWorker = true,
+        RunId = "run-1",
+        RunItemId = "item-1",
+        CallbackUrl = "http://localhost/callback",
+        OperationId = "operation-1",
+        OperationToken = "super-secret-token",
+        ExpectedSourceRevision = "revision-1",
     };
 }

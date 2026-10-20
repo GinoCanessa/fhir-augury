@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database.Records;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -24,6 +26,9 @@ public sealed class BallotNotesControllerTests : IDisposable
         _cloneRoot = Path.Combine(_tempDir, "repos");
 
         SetEnv("DatabasePath", Path.Combine(_tempDir, "notes.db"));
+        SetEnv(
+            "PreCutoverBackupPath",
+            Path.Combine(_tempDir, "notes.pre-cutover.db"));
         SetEnv("Hydration__CloneRoot", _cloneRoot);
         // Closed ports: attribution is best-effort and must fail fast (no upstream).
         // Use literal IPv4 127.0.0.1 to get an instant RST and avoid the dual-stack
@@ -39,7 +44,7 @@ public sealed class BallotNotesControllerTests : IDisposable
     public void Dispose()
     {
         _factory.Dispose();
-        foreach (string key in new[] { "DatabasePath", "Hydration__CloneRoot", "Hydration__OrchestratorAddress", "Hydration__JiraSourceAddress", "Hydration__AttributionConnectTimeout" })
+        foreach (string key in new[] { "DatabasePath", "PreCutoverBackupPath", "Hydration__CloneRoot", "Hydration__OrchestratorAddress", "Hydration__JiraSourceAddress", "Hydration__AttributionConnectTimeout" })
         {
             Environment.SetEnvironmentVariable(EnvPrefix + key, null);
         }
@@ -69,7 +74,7 @@ public sealed class BallotNotesControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task List_get_put_round_trip_marks_authored()
+    public async Task List_and_get_return_hydrated_note()
     {
         SeedNote("hl7-fhir-artifact-observation", "Observation");
         HttpClient client = _factory.CreateClient();
@@ -83,34 +88,25 @@ public sealed class BallotNotesControllerTests : IDisposable
         Assert.Equal("Observation", detail.RootElement.GetProperty("name").GetString());
         Assert.Equal("awaiting-note", detail.RootElement.GetProperty("status").GetString());
 
-        // Write prose back
-        HttpResponseMessage put = await client.PutAsJsonAsync(
-            "/api/v1/ballot-notes/hl7-fhir-artifact-observation/note",
-            new
-            {
-                needsNote = "yes",
-                proposedBallotNoteHtml = "<blockquote class=\"ballot-note\">drafted</blockquote>",
-                rollupSummaryMarkdown = "## Roll-up",
-                notesForReviewerMarkdown = "note",
-                sourceFilesNote = "",
-            });
-        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
-
-        // Re-read → authored
-        using JsonDocument after = await GetJson(client, "/api/v1/ballot-notes/hl7-fhir-artifact-observation");
-        Assert.Equal("authored", after.RootElement.GetProperty("status").GetString());
-        Assert.Equal("yes", after.RootElement.GetProperty("needsNote").GetString());
     }
 
     [Fact]
-    public async Task Put_unknown_slug_returns_404()
+    public async Task BarePutRouteIsUnavailable()
     {
+        SeedNote("hl7-fhir-artifact-observation", "Observation");
         HttpClient client = _factory.CreateClient();
-        HttpResponseMessage put = await client.PutAsJsonAsync(
-            "/api/v1/ballot-notes/never-hydrated/note",
-            new { needsNote = "no" });
 
-        Assert.Equal(HttpStatusCode.NotFound, put.StatusCode);
+        HttpResponseMessage put = await client.PutAsJsonAsync(
+            "/api/v1/ballot-notes/hl7-fhir-artifact-observation/note",
+            new { needsNote = "yes" });
+
+        Assert.Contains(
+            put.StatusCode,
+            new[]
+            {
+                HttpStatusCode.NotFound,
+                HttpStatusCode.MethodNotAllowed,
+            });
     }
 
     [Fact]
@@ -125,7 +121,9 @@ public sealed class BallotNotesControllerTests : IDisposable
 
         using JsonDocument acceptedBody = JsonDocument.Parse(await accepted.Content.ReadAsStringAsync());
         string runKey = acceptedBody.RootElement.GetProperty("runKey").GetString()!;
+        string executionId = acceptedBody.RootElement.GetProperty("executionId").GetString()!;
         Assert.False(string.IsNullOrEmpty(runKey));
+        Assert.False(string.IsNullOrEmpty(executionId));
 
         string status = await PollUntilTerminalAsync(client, runKey);
         Assert.Equal("completed", status);

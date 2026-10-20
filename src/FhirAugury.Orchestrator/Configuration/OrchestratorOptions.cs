@@ -49,6 +49,7 @@ public class ProcessingServiceConfig
     public string HttpAddress { get; set; } = "";
     public bool Enabled { get; set; } = true;
     public string? Description { get; set; }
+    public List<string> RequiredServices { get; set; } = [];
 }
 
 public class SearchOptions

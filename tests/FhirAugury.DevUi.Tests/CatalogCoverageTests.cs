@@ -29,6 +29,15 @@ public class CatalogCoverageTests
             (Func<IReadOnlyList<ApiEndpointDescriptor>>)OrchestratorCatalog.Build],
     ];
 
+    public static IEnumerable<object[]> SourceCases() =>
+    [
+        ["jira", (Func<IReadOnlyList<ApiEndpointDescriptor>>)JiraCatalog.Build],
+        ["zulip", (Func<IReadOnlyList<ApiEndpointDescriptor>>)ZulipCatalog.Build],
+        ["github", (Func<IReadOnlyList<ApiEndpointDescriptor>>)GitHubCatalog.Build],
+        ["confluence", (Func<IReadOnlyList<ApiEndpointDescriptor>>)ConfluenceCatalog.Build],
+        ["fhir", (Func<IReadOnlyList<ApiEndpointDescriptor>>)FhirCatalog.Build],
+    ];
+
     [Theory]
     [MemberData(nameof(Cases))]
     public void Catalog_covers_every_controller_route(
@@ -51,7 +60,33 @@ public class CatalogCoverageTests
             string.Join("\n  - ", missing));
     }
 
-    private static IEnumerable<(HttpMethod Method, string Route)> EnumerateControllerRoutes(Assembly assembly)
+    [Theory]
+    [MemberData(nameof(SourceCases))]
+    public void Gateway_source_catalog_has_one_descriptor_for_every_matrix_entry(
+        string sourceName,
+        Func<IReadOnlyList<ApiEndpointDescriptor>> buildSourceCatalog)
+    {
+        IReadOnlyList<ApiEndpointDescriptor> sourceCatalog = buildSourceCatalog();
+        IReadOnlyList<OrchestratorProxyRoute> matrix = OrchestratorProxyRouteMatrix.GetRoutes(sourceName);
+        IReadOnlyList<ApiEndpointDescriptor> gatewayCatalog = SourceApiCatalog.GetCatalog(sourceName);
+
+        Assert.Equal(sourceCatalog.Count, matrix.Count);
+        Assert.Equal(matrix.Count, gatewayCatalog.Count);
+
+        for (int i = 0; i < sourceCatalog.Count; i++)
+        {
+            OrchestratorProxyRoute route = matrix[i];
+            ApiEndpointDescriptor gateway = gatewayCatalog[i];
+
+            Assert.Equal(sourceName, route.SourceName, ignoreCase: true);
+            Assert.Equal(sourceCatalog[i].Id, route.SourceDescriptor.Id);
+            Assert.Equal(sourceCatalog[i].Method, route.SourceDescriptor.Method);
+            Assert.Equal(sourceCatalog[i].PathTemplate, route.SourceDescriptor.PathTemplate);
+            Assert.Equal(route.GatewayDescriptor, gateway);
+        }
+    }
+
+    internal static IEnumerable<(HttpMethod Method, string Route)> EnumerateControllerRoutes(Assembly assembly)
     {
         foreach (Type t in assembly.GetTypes())
         {

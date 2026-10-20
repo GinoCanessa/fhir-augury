@@ -52,12 +52,50 @@ public record JiraLocalProcessingListRequest : JiraLocalProcessingFilter
     public int? Offset { get; init; }
 }
 
+/// <summary>
+/// Native SQL-LIKE criteria over raw nullable Jira label text, distinct from
+/// the existing exact <see cref="JiraLocalProcessingFilter.Labels"/> filter.
+/// Blank entries are ignored; other values are preserved and wrapped in
+/// <c>%</c> for contains matching, retaining native wildcard and case behavior.
+/// </summary>
+public record JiraLabelTextFilter
+{
+    /// <summary>
+    /// When active, require non-null stored label text matching at least one inclusion.
+    /// Null, empty, or all-blank lists are inactive and add no restriction.
+    /// </summary>
+    public List<string>? Includes { get; init; }
+
+    /// <summary>
+    /// When active, allow null stored label text or non-null text matching no exclusion.
+    /// Null, empty, or all-blank lists are inactive and add no restriction.
+    /// </summary>
+    public List<string>? Excludes { get; init; }
+}
+
+/// <summary>
+/// Selection-tickets request: inherited exact filters and paging, plus
+/// optional raw label-text criteria and an issue-key restriction.
+/// </summary>
+public record JiraLocalProcessingSelectionRequest : JiraLocalProcessingListRequest
+{
+    /// <summary>Label-text criteria ANDed with the inherited filters, without redefining exact Labels.</summary>
+    public JiraLabelTextFilter? LabelText { get; init; }
+
+    /// <summary>Optional exact issue keys. Null or empty adds no restriction.</summary>
+    public List<string>? Keys { get; init; }
+}
+
 /// <summary>List-tickets response: paged results plus unpaged total.</summary>
 public record JiraLocalProcessingListResponse(
     IReadOnlyList<JiraIssueSummaryEntry> Results,
     int Limit,
     int Offset,
-    int Total);
+    int Total)
+{
+    /// <summary>The source database generation represented by this page.</summary>
+    public SourceReadProvenance? Provenance { get; init; }
+}
 
 /// <summary>Set-processed request for a single Jira issue key.</summary>
 public record JiraLocalProcessingSetRequest

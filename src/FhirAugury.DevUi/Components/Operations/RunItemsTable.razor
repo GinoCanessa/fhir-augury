@@ -1,0 +1,423 @@
+<section class="operation-panel run-items"
+         aria-labelledby="@HeadingId">
+    <div class="operation-panel__heading">
+        <div>
+            <p class="operation-panel__eyebrow">Per-ticket detail</p>
+            <h2 id="@HeadingId" class="h4 mb-0">
+                Run items
+                <span class="count-badge">@Items.Count</span>
+            </h2>
+        </div>
+        <span class="text-body-secondary small">
+            Actions are advertised by the processor
+        </span>
+    </div>
+
+    @if (Items.Count == 0)
+    {
+        <p class="empty-state mb-0">
+            This run has no ticket items.
+        </p>
+    }
+    else
+    {
+        <div class="table-responsive operations-items-table">
+            <table class="table align-middle mb-0">
+                <caption class="visually-hidden">
+                    Ticket status, receipts, retries, errors, and
+                    server-advertised actions
+                </caption>
+                <thead>
+                    <tr>
+                        <th scope="col">Ticket</th>
+                        <th scope="col">Status</th>
+                        <th scope="col">Receipt</th>
+                        <th scope="col">Attempts</th>
+                        <th scope="col">Recovery and error</th>
+                        <th scope="col">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (AuthoringRunItemStatus item in Items)
+                    {
+                        <tr @key="item.ItemId">
+                            <th scope="row">
+                                <a href="@ItemViewerUrl.For("jira", item.BusinessKey)">
+                                    @item.BusinessKey
+                                </a>
+                                <span class="d-block text-body-secondary small">
+                                    @item.ItemKind
+                                </span>
+                            </th>
+                            <td>
+                                <StatusIndicator Status="@item.Status" />
+                                @if (!string.IsNullOrWhiteSpace(
+                                    item.SupersessionReason))
+                                {
+                                    <span class="item-detail">
+                                        Reason: @item.SupersessionReason
+                                    </span>
+                                }
+                            </td>
+                            <td>
+                                @if (!string.IsNullOrWhiteSpace(
+                                    item.AcceptedReceiptId))
+                                {
+                                    <code class="receipt-id">
+                                        @item.AcceptedReceiptId
+                                    </code>
+                                }
+                                else
+                                {
+                                    <span class="text-body-secondary">None</span>
+                                }
+                            </td>
+                            <td>
+                                <span>@item.AttemptCount used</span>
+                                <span class="item-detail">
+                                    @(item.AttemptsRemaining is int remaining
+                                        ? $"{remaining} remaining"
+                                        : "Remaining not applicable")
+                                </span>
+                            </td>
+                            <td>
+                                @RecoveryContent(item)
+                            </td>
+                            <td class="item-actions">
+                                @ActionContent(item)
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="operations-item-cards">
+            @foreach (AuthoringRunItemStatus item in Items)
+            {
+                <article @key="item.ItemId"
+                         class="run-item-card"
+                         aria-labelledby="@ItemHeadingId(item)">
+                    <header>
+                        <div>
+                            <h3 id="@ItemHeadingId(item)" class="h6 mb-1">
+                                <a href="@ItemViewerUrl.For("jira", item.BusinessKey)">
+                                    @item.BusinessKey
+                                </a>
+                            </h3>
+                            <span class="text-body-secondary small">
+                                @item.ItemKind
+                            </span>
+                        </div>
+                        <StatusIndicator Status="@item.Status" />
+                    </header>
+
+                    <dl>
+                        <div>
+                            <dt>Accepted receipt</dt>
+                            <dd>
+                                @if (!string.IsNullOrWhiteSpace(
+                                    item.AcceptedReceiptId))
+                                {
+                                    <code class="receipt-id">
+                                        @item.AcceptedReceiptId
+                                    </code>
+                                }
+                                else
+                                {
+                                    <span>None</span>
+                                }
+                            </dd>
+                        </div>
+                        <div>
+                            <dt>Attempts</dt>
+                            <dd>
+                                @item.AttemptCount used;
+                                @(item.AttemptsRemaining is int remaining
+                                    ? $"{remaining} remaining"
+                                    : "remaining not applicable")
+                            </dd>
+                        </div>
+                        @if (!string.IsNullOrWhiteSpace(
+                            item.SupersessionReason))
+                        {
+                            <div>
+                                <dt>Supersession reason</dt>
+                                <dd>@item.SupersessionReason</dd>
+                            </div>
+                        }
+                    </dl>
+
+                    <div class="run-item-card__recovery">
+                        @RecoveryContent(item)
+                    </div>
+                    <div class="item-actions">
+                        @ActionContent(item)
+                    </div>
+                </article>
+            }
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired]
+    public IReadOnlyList<AuthoringRunItemStatus> Items { get; set; } =
+        [];
+
+    [Parameter]
+    public string? BusyItemId { get; set; }
+
+    [Parameter]
+    public string? BusyAction { get; set; }
+
+    [Parameter]
+    public bool Disabled { get; set; }
+
+    [Parameter]
+    public EventCallback<string> OnRetry { get; set; }
+
+    [Parameter]
+    public EventCallback<(string ItemId, string Reason)> OnSupersede
+    {
+        get;
+        set;
+    }
+
+    private string HeadingId =>
+        $"run-items-{GetHashCode():x}";
+
+    private string ItemHeadingId(AuthoringRunItemStatus item) =>
+        $"run-item-{item.ItemId.GetHashCode(StringComparison.Ordinal):x}-{GetHashCode():x}";
+
+    private RenderFragment RecoveryContent(
+        AuthoringRunItemStatus item) => builder =>
+    {
+        string? currentError = CurrentError(item);
+        int sequence = 0;
+        if (!string.IsNullOrWhiteSpace(currentError))
+        {
+            builder.OpenElement(sequence++, "div");
+            builder.AddAttribute(
+                sequence++,
+                "class",
+                "item-error");
+            builder.OpenElement(sequence++, "i");
+            builder.AddAttribute(
+                sequence++,
+                "class",
+                "bi bi-exclamation-circle-fill");
+            builder.AddAttribute(
+                sequence++,
+                "aria-hidden",
+                "true");
+            builder.CloseElement();
+            builder.AddContent(
+                sequence++,
+                $" {currentError}");
+            builder.CloseElement();
+        }
+
+        if (item.NextAutomaticRetryAt is DateTimeOffset retryAt)
+        {
+            builder.OpenElement(sequence++, "div");
+            builder.AddAttribute(
+                sequence++,
+                "class",
+                "automatic-retry");
+            builder.OpenElement(sequence++, "strong");
+            builder.AddContent(
+                sequence++,
+                "Automatic retry recommended.");
+            builder.CloseElement();
+            builder.AddContent(sequence++, " Next attempt ");
+            builder.OpenElement(sequence++, "time");
+            builder.AddAttribute(
+                sequence++,
+                "datetime",
+                retryAt.ToString("O"));
+            builder.AddAttribute(
+                sequence++,
+                "title",
+                retryAt.LocalDateTime.ToString("F"));
+            builder.AddContent(
+                sequence++,
+                FormatRetryTime(retryAt));
+            builder.CloseElement();
+            builder.CloseElement();
+        }
+        else if (string.Equals(
+            item.Status,
+            "error",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            builder.OpenElement(sequence++, "span");
+            builder.AddAttribute(
+                sequence++,
+                "class",
+                "text-body-secondary small");
+            builder.AddContent(
+                sequence++,
+                item.AllowedActions?.CanRetryNow == true
+                    ? "Automatic retry remains recommended; no next retry time is advertised."
+                    : "No automatic or immediate retry is currently advertised.");
+            builder.CloseElement();
+        }
+        else if (string.IsNullOrWhiteSpace(currentError))
+        {
+            builder.OpenElement(sequence++, "span");
+            builder.AddAttribute(
+                sequence++,
+                "class",
+                "text-body-secondary");
+            builder.AddContent(sequence++, "—");
+            builder.CloseElement();
+        }
+    };
+
+    private RenderFragment ActionContent(
+        AuthoringRunItemStatus item) => builder =>
+    {
+        bool canRetry =
+            item.AllowedActions?.CanRetryNow == true;
+        bool canSupersede =
+            item.AllowedActions?.CanSupersede == true;
+        bool busy = Disabled || BusyItemId is not null;
+        int sequence = 0;
+
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(
+            sequence++,
+            "class",
+            "item-actions__buttons");
+
+        if (canRetry)
+        {
+            builder.OpenElement(sequence++, "button");
+            builder.AddAttribute(
+                sequence++,
+                "class",
+                "btn btn-sm btn-outline-primary");
+            builder.AddAttribute(sequence++, "type", "button");
+            builder.AddAttribute(
+                sequence++,
+                "disabled",
+                busy);
+            builder.AddAttribute(
+                sequence++,
+                "onclick",
+                EventCallback.Factory.Create(
+                    this,
+                    () => OnRetry.InvokeAsync(item.ItemId)));
+            if (IsBusy(item, "retry"))
+            {
+                builder.OpenElement(sequence++, "span");
+                builder.AddAttribute(
+                    sequence++,
+                    "class",
+                    "spinner-border spinner-border-sm");
+                builder.AddAttribute(
+                    sequence++,
+                    "aria-hidden",
+                    "true");
+                builder.CloseElement();
+                builder.AddContent(sequence++, " Retrying");
+            }
+            else
+            {
+                builder.OpenElement(sequence++, "i");
+                builder.AddAttribute(
+                    sequence++,
+                    "class",
+                    "bi bi-arrow-clockwise");
+                builder.AddAttribute(
+                    sequence++,
+                    "aria-hidden",
+                    "true");
+                builder.CloseElement();
+                builder.AddContent(sequence++, " Retry now");
+            }
+            builder.CloseElement();
+        }
+
+        if (canSupersede)
+        {
+            builder.OpenComponent<SupersedeConfirmation>(
+                sequence++);
+            builder.AddAttribute(
+                sequence++,
+                nameof(SupersedeConfirmation.BusinessKey),
+                item.BusinessKey);
+            builder.AddAttribute(
+                sequence++,
+                nameof(SupersedeConfirmation.Disabled),
+                busy);
+            builder.AddAttribute(
+                sequence++,
+                nameof(SupersedeConfirmation.OnConfirm),
+                EventCallback.Factory.Create<string>(
+                    this,
+                    reason => OnSupersede.InvokeAsync(
+                        (item.ItemId, reason))));
+            builder.CloseComponent();
+        }
+
+        if (!canRetry && !canSupersede)
+        {
+            builder.OpenElement(sequence++, "span");
+            builder.AddAttribute(
+                sequence++,
+                "class",
+                "text-body-secondary small");
+            builder.AddContent(
+                sequence++,
+                "No manual actions available.");
+            builder.CloseElement();
+        }
+
+        builder.CloseElement();
+    };
+
+    private bool IsBusy(
+        AuthoringRunItemStatus item,
+        string action) =>
+        string.Equals(
+            BusyItemId,
+            item.ItemId,
+            StringComparison.Ordinal) &&
+        string.Equals(
+            BusyAction,
+            action,
+            StringComparison.Ordinal);
+
+    private static string? CurrentError(
+        AuthoringRunItemStatus item) =>
+        !string.IsNullOrWhiteSpace(item.CurrentError)
+            ? item.CurrentError
+            : string.Equals(
+                item.Status,
+                "error",
+                StringComparison.OrdinalIgnoreCase)
+                ? item.Error
+                : null;
+
+    private static string FormatRetryTime(
+        DateTimeOffset retryAt)
+    {
+        TimeSpan remaining =
+            retryAt - DateTimeOffset.UtcNow;
+        if (remaining <= TimeSpan.Zero)
+        {
+            return "is due now";
+        }
+        if (remaining.TotalMinutes < 1)
+        {
+            return "is due in less than a minute";
+        }
+        if (remaining.TotalHours < 1)
+        {
+            return $"is due in {(int)Math.Ceiling(remaining.TotalMinutes)} minutes";
+        }
+        return $"is due at {retryAt.LocalDateTime:g}";
+    }
+}

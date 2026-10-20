@@ -1,6 +1,13 @@
 using System.Globalization;
+using System.Text;
+using FhirAugury.Common.Database;
 using FhirAugury.Common.WorkGroups;
+using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Common.Hosting;
+using FhirAugury.Processing.Contracts;
 using FhirAugury.Processing.Jira.Common.Database;
+using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database.Records;
@@ -12,9 +19,43 @@ namespace FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database;
 
 public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logger, bool readOnly = false)
     : FhirAugury.Processing.Common.Database.ProcessingDatabase(dbPath, logger, readOnly),
-      IHydrationTargetDatabase
+      IHydrationTargetDatabase,
+      IAuthoringCutoverParticipant
 {
+    private const string AuthoringProcessorKind = "jira-fhir";
+    public const string CurrentSnapshotReceiptBackedTicketsTable =
+        "current_planned_receipt_backed_tickets";
+    private static readonly string MaintenanceOwnerGeneration = Guid.NewGuid().ToString("N");
+    private FileStream? _startupOwnerLock;
+
     public string DatabasePath { get; } = dbPath;
+
+    public void AcquireStartupOwnership()
+    {
+        if (_startupOwnerLock is not null)
+        {
+            return;
+        }
+        string ownerPath = $"{Path.GetFullPath(DatabasePath)}.owner.lock";
+        Directory.CreateDirectory(
+            Path.GetDirectoryName(ownerPath)
+            ?? throw new InvalidOperationException(
+                $"Database path '{DatabasePath}' has no parent directory."));
+        try
+        {
+            _startupOwnerLock = new FileStream(
+                ownerPath,
+                FileMode.OpenOrCreate,
+                FileAccess.ReadWrite,
+                FileShare.None);
+        }
+        catch (IOException ex)
+        {
+            throw new InvalidOperationException(
+                $"Another Planner service generation owns database '{DatabasePath}'.",
+                ex);
+        }
+    }
 
     /// <summary>
     /// Idempotent. Creates every planner table via <c>CREATE TABLE IF NOT EXISTS</c>
@@ -26,11 +67,26 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
     public static void EnsureSchema(SqliteConnection connection)
     {
         ArgumentNullException.ThrowIfNull(connection);
-        FhirAugury.Processing.Jira.Common.Database.Records.JiraProcessingSourceTicketRecord.CreateTable(connection);
-        JiraProcessingSourceTicketStore.EnsureCompositeUniqueIndex(connection);
+        JiraProcessingSourceTicketStore.EnsureSchema(connection);
+        AuthoringRunStore.EnsureSchema(connection);
+
+        foreach (string column in new[]
+        {
+            "DescriptionHtml",
+            "ResolutionDescriptionHtml",
+            "Reporter",
+            "CreatedAt",
+            "RelatedArtifactsRaw",
+            "RelatedPagesRaw",
+        })
+        {
+            SqliteSchemaHelpers.AddColumnIfMissing(connection, "planned_ticket_hydration", column, "TEXT NULL");
+            SqliteSchemaHelpers.AddColumnIfMissing(connection, "planned_jira_hydration", column, "TEXT NULL");
+        }
 
         // Agent-authored rows
         PlannedTicketRecord.CreateTable(connection);
+        PlannedTicketJiraContentRecord.CreateTable(connection);
         PlannedTicketRepoRecord.CreateTable(connection);
         PlannedTicketRepoChangeRecord.CreateTable(connection);
         PlannedTicketRepoImpactRecord.CreateTable(connection);
@@ -54,6 +110,7 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
         PlannedTicketTopicGroupRecord.CreateTable(connection);
         PlannedTicketTopicMemberRecord.CreateTable(connection);
         PlannedTicketTopicRepoRecord.CreateTable(connection);
+        JiraReviewWorkGroupRecord.CreateTable(connection);
 
         // Follow-on composite-unique indexes (CsLightDbGen has no Unique
         // property on LdgSQLiteIndex; see memory: "CsLightDbGen [LdgSQLiteIndex]
@@ -93,6 +150,98 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
                 AppliedAt TEXT NOT NULL
             );
             """);
+        EnsureAuthoringStateTables(connection);
+        EnsureApplierProjectionTrigger(connection);
+    }
+
+    private static void EnsureAuthoringStateTables(SqliteConnection connection)
+    {
+        ExecuteRaw(connection, """
+            CREATE TABLE IF NOT EXISTS planned_ticket_authoring_state(
+                TicketKey TEXT PRIMARY KEY,
+                Classification TEXT NOT NULL,
+                GraphHash TEXT NOT NULL,
+                ReceiptContentHash TEXT NULL,
+                LegacyCompletionId TEXT NULL,
+                LegacyCompletedProcessingAt TEXT NULL,
+                RunId TEXT NULL,
+                RunItemId TEXT NULL,
+                OperationId TEXT NULL,
+                UpdatedAt TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_planned_ticket_authoring_state_classification
+            ON planned_ticket_authoring_state(Classification);
+
+            CREATE TABLE IF NOT EXISTS planned_ticket_partition_receipts(
+                RunId TEXT NOT NULL,
+                StageId TEXT NOT NULL,
+                PartitionKey TEXT NOT NULL,
+                InputFingerprint TEXT NOT NULL,
+                TopicRows INTEGER NOT NULL,
+                TopicGroupRows INTEGER NOT NULL,
+                MemberRows INTEGER NOT NULL,
+                PersistedAt TEXT NOT NULL,
+                PRIMARY KEY(RunId, PartitionKey)
+            );
+
+            CREATE TABLE IF NOT EXISTS planned_ticket_run_item_partitions(
+                RunItemId TEXT PRIMARY KEY,
+                TicketKey TEXT NOT NULL,
+                WorkGroupClean TEXT NULL,
+                WorkGroupDisplay TEXT NULL,
+                Specification TEXT NULL,
+                Type TEXT NULL,
+                CapturedAt TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS planned_ticket_applier_projection_pending(
+                OperationId TEXT PRIMARY KEY,
+                TicketKey TEXT NOT NULL,
+                PreserveLegacy INTEGER NOT NULL
+            );
+            """);
+        SqliteSchemaHelpers.AddColumnIfMissing(
+            connection,
+            "planned_ticket_authoring_state",
+            "ReceiptContentHash",
+            "TEXT NULL");
+    }
+
+    private static void EnsureApplierProjectionTrigger(SqliteConnection connection)
+    {
+        ExecuteRaw(connection, """
+            CREATE TRIGGER IF NOT EXISTS trg_planned_ticket_receipt_applier_projection
+            AFTER INSERT ON authoring_result_receipts
+            WHEN EXISTS(
+                SELECT 1 FROM planned_ticket_applier_projection_pending
+                WHERE OperationId = NEW.OperationId)
+            BEGIN
+                UPDATE jira_processing_source_tickets
+                SET ProcessingStatus = 'complete',
+                    ProcessingError = NULL,
+                    ErrorMessage = NULL,
+                    AgentExitCode = NULL,
+                    ErrorOccurredAt = NULL,
+                    CompletionId = CASE
+                        WHEN (SELECT PreserveLegacy FROM planned_ticket_applier_projection_pending
+                              WHERE OperationId = NEW.OperationId) = 1
+                        THEN CompletionId
+                        ELSE NEW.Id
+                    END,
+                    CompletedProcessingAt = CASE
+                        WHEN (SELECT PreserveLegacy FROM planned_ticket_applier_projection_pending
+                              WHERE OperationId = NEW.OperationId) = 1
+                        THEN CompletedProcessingAt
+                        ELSE NEW.PersistedAt
+                    END
+                WHERE Key = (
+                    SELECT TicketKey FROM planned_ticket_applier_projection_pending
+                    WHERE OperationId = NEW.OperationId);
+
+                DELETE FROM planned_ticket_applier_projection_pending
+                WHERE OperationId = NEW.OperationId;
+            END;
+            """);
     }
 
     protected override void InitializeSchema(SqliteConnection connection) => EnsureSchema(connection);
@@ -104,118 +253,26 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
     {
         ArgumentNullException.ThrowIfNull(payload);
         PlannedTicketPayloadValidator.ThrowIfInvalid(payload);
-
         await using SqliteConnection connection = OpenConnection();
-        await using SqliteCommand begin = connection.CreateCommand();
-        begin.CommandText = "BEGIN IMMEDIATE";
-        await begin.ExecuteNonQueryAsync(ct);
+        await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
         try
         {
-            await DeletePlanForTicketAsync(connection, payload.Key, ct);
-
+            await EnsureLegacyAuthoringModeAsync(connection, ct);
+            await EnsureGeneralMutationAllowedAsync(connection, ct);
             DateTimeOffset savedAt = payload.SavedAt ?? DateTimeOffset.UtcNow;
-            await ExecuteAsync(connection,
-                "INSERT INTO planned_tickets (Id, Key, Resolution, ResolutionSummary, FeatureProposal, DesignRationale, SavedAt) " +
-                "VALUES (@Id, @Key, @Resolution, @ResolutionSummary, @FeatureProposal, @DesignRationale, @SavedAt)",
-                ct,
-                ("@Id", Guid.NewGuid().ToString("N")),
-                ("@Key", payload.Key),
-                ("@Resolution", payload.Resolution),
-                ("@ResolutionSummary", payload.ResolutionSummary),
-                ("@FeatureProposal", payload.FeatureProposal),
-                ("@DesignRationale", payload.DesignRationale),
-                ("@SavedAt", Format(savedAt)));
-
-            foreach (PlannedTicketRepoPayload repo in payload.Repos)
-            {
-                await ExecuteAsync(connection,
-                    "INSERT INTO planned_ticket_repos (Id, IssueKey, RepoKey, RepoRevision, Justification) " +
-                    "VALUES (@Id, @IssueKey, @RepoKey, @RepoRevision, @Justification)",
-                    ct,
-                    ("@Id", Guid.NewGuid().ToString("N")),
-                    ("@IssueKey", payload.Key),
-                    ("@RepoKey", repo.RepoKey),
-                    ("@RepoRevision", (object?)repo.RepoRevision ?? DBNull.Value),
-                    ("@Justification", repo.Justification));
-            }
-
-            foreach (PlannedTicketRepoChangePayload c in payload.RepoChanges)
-            {
-                await ExecuteAsync(connection,
-                    "INSERT INTO planned_ticket_repo_changes (Id, IssueKey, TicketRepoId, RepoKey, ChangeSequence, FilePath, ChangeTitle, ChangeDescription, SourceLineStart, SourceLineEnd, ReplacementLines, Reason) " +
-                    "VALUES (@Id, @IssueKey, @TicketRepoId, @RepoKey, @ChangeSequence, @FilePath, @ChangeTitle, @ChangeDescription, @SourceLineStart, @SourceLineEnd, @ReplacementLines, @Reason)",
-                    ct,
-                    ("@Id", Guid.NewGuid().ToString("N")),
-                    ("@IssueKey", payload.Key),
-                    ("@TicketRepoId", c.TicketRepoId),
-                    ("@RepoKey", c.RepoKey),
-                    ("@ChangeSequence", c.ChangeSequence),
-                    ("@FilePath", c.FilePath),
-                    ("@ChangeTitle", c.ChangeTitle),
-                    ("@ChangeDescription", c.ChangeDescription),
-                    ("@SourceLineStart", (object?)c.SourceLineStart ?? DBNull.Value),
-                    ("@SourceLineEnd", (object?)c.SourceLineEnd ?? DBNull.Value),
-                    ("@ReplacementLines", ReplacementLineJson.Serialize(c.ReplacementLines)),
-                    ("@Reason", c.Reason));
-            }
-
-            foreach (PlannedTicketRepoImpactPayload i in payload.RepoImpacts)
-            {
-                await ExecuteAsync(connection,
-                    "INSERT INTO planned_ticket_repo_impacts (Id, IssueKey, TicketRepoId, RepoKey, TicketRepoChangeId, AffectedFilePath, HowAffected) " +
-                    "VALUES (@Id, @IssueKey, @TicketRepoId, @RepoKey, @TicketRepoChangeId, @AffectedFilePath, @HowAffected)",
-                    ct,
-                    ("@Id", Guid.NewGuid().ToString("N")),
-                    ("@IssueKey", payload.Key),
-                    ("@TicketRepoId", i.TicketRepoId),
-                    ("@RepoKey", i.RepoKey),
-                    ("@TicketRepoChangeId", (object?)i.TicketRepoChangeId ?? DBNull.Value),
-                    ("@AffectedFilePath", i.AffectedFilePath),
-                    ("@HowAffected", i.HowAffected));
-            }
-
-            foreach (PlannedTicketChangeValidationPayload v in payload.ChangeValidations)
-            {
-                await ExecuteAsync(connection,
-                    "INSERT INTO planned_ticket_change_validations (Id, IssueKey, TicketRepoId, RepoKey, ValidationSequence, Action) " +
-                    "VALUES (@Id, @IssueKey, @TicketRepoId, @RepoKey, @ValidationSequence, @Action)",
-                    ct,
-                    ("@Id", Guid.NewGuid().ToString("N")),
-                    ("@IssueKey", payload.Key),
-                    ("@TicketRepoId", v.TicketRepoId),
-                    ("@RepoKey", v.RepoKey),
-                    ("@ValidationSequence", v.ValidationSequence),
-                    ("@Action", v.Action));
-            }
-
-            foreach (PlannedTicketTestingConsiderationPayload t in payload.TestingConsiderations)
-            {
-                await ExecuteAsync(connection,
-                    "INSERT INTO planned_ticket_testing_considerations (Id, IssueKey, TicketRepoId, RepoKey, ConsiderationSequence, Consideration) " +
-                    "VALUES (@Id, @IssueKey, @TicketRepoId, @RepoKey, @ConsiderationSequence, @Consideration)",
-                    ct,
-                    ("@Id", Guid.NewGuid().ToString("N")),
-                    ("@IssueKey", payload.Key),
-                    ("@TicketRepoId", t.TicketRepoId),
-                    ("@RepoKey", t.RepoKey),
-                    ("@ConsiderationSequence", t.ConsiderationSequence),
-                    ("@Consideration", t.Consideration));
-            }
-
-            foreach (PlannedTicketOpenQuestionPayload q in payload.OpenQuestions)
-            {
-                await ExecuteAsync(connection,
-                    "INSERT INTO planned_ticket_open_questions (Id, IssueKey, TicketRepoId, RepoKey, QuestionSequence, Question) " +
-                    "VALUES (@Id, @IssueKey, @TicketRepoId, @RepoKey, @QuestionSequence, @Question)",
-                    ct,
-                    ("@Id", Guid.NewGuid().ToString("N")),
-                    ("@IssueKey", payload.Key),
-                    ("@TicketRepoId", q.TicketRepoId),
-                    ("@RepoKey", q.RepoKey),
-                    ("@QuestionSequence", q.QuestionSequence),
-                    ("@Question", q.Question));
-            }
-
+            await SavePlannedTicketCoreAsync(connection, payload, savedAt, ct);
+            string graphHash = await ComputePlannedGraphHashAsync(connection, payload.Key, ct);
+            await UpsertAuthoringStateAsync(
+                connection,
+                payload.Key,
+                "legacy-unverified",
+                graphHash,
+                receiptContentHash: null,
+                runId: null,
+                runItemId: null,
+                operationId: null,
+                savedAt,
+                ct);
             await ExecuteRawAsync(connection, "COMMIT", ct);
         }
         catch
@@ -223,6 +280,96 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
             await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
             throw;
         }
+    }
+
+    public async Task SavePlannedTicketForAuthoringAsync(
+        SqliteConnection connection,
+        PlannedTicketPayload payload,
+        string receiptContentHash,
+        string runId,
+        string runItemId,
+        string operationId,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        PlannedTicketPayloadValidator.ThrowIfInvalid(payload);
+        DateTimeOffset savedAt = payload.SavedAt ?? DateTimeOffset.UtcNow;
+        await CapturePreChangePartitionAsync(connection, payload.Key, runItemId, savedAt, ct);
+
+        string? priorClassification = null;
+        string? priorGraphHash = null;
+        await using (SqliteCommand prior = connection.CreateCommand())
+        {
+            prior.CommandText =
+                "SELECT Classification, GraphHash FROM planned_ticket_authoring_state WHERE TicketKey = @key";
+            prior.Parameters.AddWithValue("@key", payload.Key);
+            await using SqliteDataReader reader = await prior.ExecuteReaderAsync(ct);
+            if (await reader.ReadAsync(ct))
+            {
+                priorClassification = reader.GetString(0);
+                priorGraphHash = reader.GetString(1);
+            }
+        }
+
+        await SavePlannedTicketCoreAsync(connection, payload, savedAt, ct);
+        string graphHash = await ComputePlannedGraphHashAsync(connection, payload.Key, ct);
+        bool preserveLegacy =
+            priorClassification is not null &&
+            string.Equals(priorGraphHash, graphHash, StringComparison.Ordinal);
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO planned_ticket_applier_projection_pending(OperationId, TicketKey, PreserveLegacy)
+            VALUES(@operationId, @ticketKey, @preserveLegacy)
+            """,
+            ct,
+            ("@operationId", operationId),
+            ("@ticketKey", payload.Key),
+            ("@preserveLegacy", preserveLegacy ? 1 : 0));
+        await UpsertAuthoringStateAsync(
+            connection,
+            payload.Key,
+            "receipt-backed",
+            graphHash,
+            receiptContentHash,
+            runId,
+            runItemId,
+            operationId,
+            savedAt,
+            ct);
+    }
+
+    private static async Task SavePlannedTicketCoreAsync(
+        SqliteConnection connection,
+        PlannedTicketPayload payload,
+        DateTimeOffset savedAt,
+        CancellationToken ct)
+    {
+        await DeletePlanForTicketAsync(connection, payload.Key, ct);
+        await ExecuteAsync(connection,
+            "INSERT INTO planned_tickets (Id, Key, Resolution, ResolutionSummary, FeatureProposal, DesignRationale, SavedAt) " +
+            "VALUES (@Id, @Key, @Resolution, @ResolutionSummary, @FeatureProposal, @DesignRationale, @SavedAt)",
+            ct,
+            ("@Id", Guid.NewGuid().ToString("N")),
+            ("@Key", payload.Key),
+            ("@Resolution", payload.Resolution),
+            ("@ResolutionSummary", payload.ResolutionSummary),
+            ("@FeatureProposal", payload.FeatureProposal),
+            ("@DesignRationale", payload.DesignRationale),
+            ("@SavedAt", Format(savedAt)));
+
+        foreach (PlannedTicketRepoPayload repo in payload.Repos)
+            await ExecuteAsync(connection, "INSERT INTO planned_ticket_repos (Id, IssueKey, RepoKey, RepoRevision, Justification) VALUES (@Id, @IssueKey, @RepoKey, @RepoRevision, @Justification)", ct, ("@Id", Guid.NewGuid().ToString("N")), ("@IssueKey", payload.Key), ("@RepoKey", repo.RepoKey), ("@RepoRevision", (object?)repo.RepoRevision ?? DBNull.Value), ("@Justification", repo.Justification));
+        foreach (PlannedTicketRepoChangePayload row in payload.RepoChanges)
+            await ExecuteAsync(connection, "INSERT INTO planned_ticket_repo_changes (Id, IssueKey, TicketRepoId, RepoKey, ChangeSequence, FilePath, ChangeTitle, ChangeDescription, SourceLineStart, SourceLineEnd, ReplacementLines, Reason) VALUES (@Id, @IssueKey, @TicketRepoId, @RepoKey, @ChangeSequence, @FilePath, @ChangeTitle, @ChangeDescription, @SourceLineStart, @SourceLineEnd, @ReplacementLines, @Reason)", ct, ("@Id", Guid.NewGuid().ToString("N")), ("@IssueKey", payload.Key), ("@TicketRepoId", row.TicketRepoId), ("@RepoKey", row.RepoKey), ("@ChangeSequence", row.ChangeSequence), ("@FilePath", row.FilePath), ("@ChangeTitle", row.ChangeTitle), ("@ChangeDescription", row.ChangeDescription), ("@SourceLineStart", (object?)row.SourceLineStart ?? DBNull.Value), ("@SourceLineEnd", (object?)row.SourceLineEnd ?? DBNull.Value), ("@ReplacementLines", ReplacementLineJson.Serialize(row.ReplacementLines)), ("@Reason", row.Reason));
+        foreach (PlannedTicketRepoImpactPayload row in payload.RepoImpacts)
+            await ExecuteAsync(connection, "INSERT INTO planned_ticket_repo_impacts (Id, IssueKey, TicketRepoId, RepoKey, TicketRepoChangeId, AffectedFilePath, HowAffected) VALUES (@Id, @IssueKey, @TicketRepoId, @RepoKey, @TicketRepoChangeId, @AffectedFilePath, @HowAffected)", ct, ("@Id", Guid.NewGuid().ToString("N")), ("@IssueKey", payload.Key), ("@TicketRepoId", row.TicketRepoId), ("@RepoKey", row.RepoKey), ("@TicketRepoChangeId", (object?)row.TicketRepoChangeId ?? DBNull.Value), ("@AffectedFilePath", row.AffectedFilePath), ("@HowAffected", row.HowAffected));
+        foreach (PlannedTicketChangeValidationPayload row in payload.ChangeValidations)
+            await ExecuteAsync(connection, "INSERT INTO planned_ticket_change_validations (Id, IssueKey, TicketRepoId, RepoKey, ValidationSequence, Action) VALUES (@Id, @IssueKey, @TicketRepoId, @RepoKey, @ValidationSequence, @Action)", ct, ("@Id", Guid.NewGuid().ToString("N")), ("@IssueKey", payload.Key), ("@TicketRepoId", row.TicketRepoId), ("@RepoKey", row.RepoKey), ("@ValidationSequence", row.ValidationSequence), ("@Action", row.Action));
+        foreach (PlannedTicketTestingConsiderationPayload row in payload.TestingConsiderations)
+            await ExecuteAsync(connection, "INSERT INTO planned_ticket_testing_considerations (Id, IssueKey, TicketRepoId, RepoKey, ConsiderationSequence, Consideration) VALUES (@Id, @IssueKey, @TicketRepoId, @RepoKey, @ConsiderationSequence, @Consideration)", ct, ("@Id", Guid.NewGuid().ToString("N")), ("@IssueKey", payload.Key), ("@TicketRepoId", row.TicketRepoId), ("@RepoKey", row.RepoKey), ("@ConsiderationSequence", row.ConsiderationSequence), ("@Consideration", row.Consideration));
+        foreach (PlannedTicketOpenQuestionPayload row in payload.OpenQuestions)
+            await ExecuteAsync(connection, "INSERT INTO planned_ticket_open_questions (Id, IssueKey, TicketRepoId, RepoKey, QuestionSequence, Question) VALUES (@Id, @IssueKey, @TicketRepoId, @RepoKey, @QuestionSequence, @Question)", ct, ("@Id", Guid.NewGuid().ToString("N")), ("@IssueKey", payload.Key), ("@TicketRepoId", row.TicketRepoId), ("@RepoKey", row.RepoKey), ("@QuestionSequence", row.QuestionSequence), ("@Question", row.Question));
     }
 
     public async Task DeletePlanForTicketAsync(string issueKey, CancellationToken ct = default)
@@ -234,6 +381,11 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
     public static async Task DeletePlanForTicketAsync(SqliteConnection connection, string issueKey, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(issueKey);
+        await ExecuteAsync(
+            connection,
+            "DELETE FROM planned_ticket_topic_members WHERE TicketKey = @issueKey",
+            ct,
+            ("@issueKey", issueKey));
         foreach (string table in DeleteOrder)
         {
             await using SqliteCommand command = connection.CreateCommand();
@@ -253,6 +405,700 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
         command.Parameters.Add(new SqliteParameter("@issueKey", issueKey));
         object? value = await command.ExecuteScalarAsync(ct);
         return value is not null;
+    }
+
+    public async Task<int> ClassifyLegacyPlannedTicketsAsync(CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
+        try
+        {
+            int count = await ClassifyLegacyPlannedTicketsCoreAsync(
+                connection,
+                ct);
+            await ExecuteRawAsync(connection, "COMMIT", ct);
+            return count;
+        }
+        catch
+        {
+            await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
+            throw;
+        }
+    }
+
+    public async Task<AuthoringCutoverPreparation> PrepareCutoverAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        await ClassifyLegacyPlannedTicketsCoreAsync(connection, ct);
+        List<AuthoringRunItemDefinition> items = [];
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT p.Key, s.SourceTicketShape, s.LastUpdated, s.Title,
+                   s.Status, s.WorkGroup, s.Type, s.Specification
+            FROM planned_tickets p
+            INNER JOIN planned_ticket_authoring_state a
+                ON a.TicketKey = p.Key
+            LEFT JOIN jira_processing_source_tickets s
+                ON s.Key = p.Key COLLATE NOCASE
+               AND s.SourceTicketShape = 'fhir' COLLATE NOCASE
+            WHERE a.Classification = 'legacy-unverified'
+            ORDER BY p.Key
+            """;
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            if (reader.IsDBNull(1))
+            {
+                throw new InvalidOperationException(
+                    $"Planned ticket '{reader.GetString(0)}' has no current Jira source row for revalidation.");
+            }
+            string key = reader.GetString(0);
+            string revision = reader.IsDBNull(2)
+                ? AuthoringResultHasher.HashNormalizedUtf8(
+                    string.Join(
+                        "\n",
+                        key,
+                        reader.GetString(3),
+                        reader.GetString(4),
+                        reader.GetString(5),
+                        reader.GetString(6),
+                        reader.GetString(7)))
+                : ParseDate(reader.GetString(2)).ToString(
+                    "O",
+                    CultureInfo.InvariantCulture);
+            items.Add(new AuthoringRunItemDefinition(
+                key,
+                reader.GetString(1),
+                revision));
+        }
+        return new AuthoringCutoverPreparation(items);
+    }
+
+    private async Task<int> ClassifyLegacyPlannedTicketsCoreAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        List<string> keys = [];
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                SELECT p.Key
+                FROM planned_tickets p
+                ORDER BY p.Key
+                """;
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                keys.Add(reader.GetString(0));
+            }
+        }
+
+        int classified = 0;
+        foreach (string key in keys)
+        {
+            string graphHash = await ComputePlannedGraphHashAsync(
+                connection,
+                key,
+                ct);
+            if (await IsCurrentPlannedReceiptBackedAsync(
+                    connection,
+                    key,
+                    graphHash,
+                    ct))
+            {
+                continue;
+            }
+            await UpsertAuthoringStateAsync(
+                connection,
+                key,
+                "legacy-unverified",
+                graphHash,
+                receiptContentHash: null,
+                runId: null,
+                runItemId: null,
+                operationId: null,
+                DateTimeOffset.UtcNow,
+                ct);
+            classified++;
+        }
+        return classified;
+    }
+
+    private static async Task<bool> IsCurrentPlannedReceiptBackedAsync(
+        SqliteConnection connection,
+        string ticketKey,
+        string graphHash,
+        CancellationToken ct)
+        => await ReadCurrentPlannedReceiptCoordinatesAsync(
+            connection,
+            ticketKey,
+            graphHash,
+            ct) is not null;
+
+    public static async Task CreateCurrentSnapshotReceiptBackedTicketsAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        await ExecuteAsync(
+            connection,
+            $"""
+            DROP TABLE IF EXISTS temp.{CurrentSnapshotReceiptBackedTicketsTable};
+            CREATE TEMP TABLE {CurrentSnapshotReceiptBackedTicketsTable}(
+                TicketKey TEXT NOT NULL PRIMARY KEY COLLATE NOCASE,
+                ReceiptId TEXT NOT NULL,
+                RunItemId TEXT NOT NULL,
+                RunId TEXT NOT NULL
+            );
+            """,
+            ct);
+
+        List<string> keys = [];
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText = "SELECT Key FROM planned_tickets ORDER BY Key";
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                keys.Add(reader.GetString(0));
+            }
+        }
+
+        foreach (string key in keys)
+        {
+            string graphHash = await ComputePlannedGraphHashAsync(
+                connection,
+                key,
+                ct);
+            (string ReceiptId, string RunItemId, string RunId)? coordinates =
+                await ReadCurrentPlannedReceiptCoordinatesAsync(
+                    connection,
+                    key,
+                    graphHash,
+                    ct);
+            if (coordinates is null)
+            {
+                continue;
+            }
+            await ExecuteAsync(
+                connection,
+                $"""
+                INSERT INTO {CurrentSnapshotReceiptBackedTicketsTable}(
+                    TicketKey, ReceiptId, RunItemId, RunId)
+                VALUES(@ticketKey, @receiptId, @runItemId, @runId)
+                """,
+                ct,
+                ("@ticketKey", key),
+                ("@receiptId", coordinates.Value.ReceiptId),
+                ("@runItemId", coordinates.Value.RunItemId),
+                ("@runId", coordinates.Value.RunId));
+        }
+
+    }
+
+    private static async Task<(string ReceiptId, string RunItemId, string RunId)?>
+        ReadCurrentPlannedReceiptCoordinatesAsync(
+            SqliteConnection connection,
+            string ticketKey,
+            string graphHash,
+            CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT r.Id, i.Id, i.RunId
+            FROM planned_ticket_authoring_state s
+            INNER JOIN authoring_result_receipts r
+                ON r.OperationId = s.OperationId
+               AND r.RunId = s.RunId
+               AND r.RunItemId = s.RunItemId
+               AND r.BusinessKey = s.TicketKey COLLATE NOCASE
+               AND r.ContentHash = s.ReceiptContentHash
+               AND r.ObservedSourceRevision = r.ExpectedSourceRevision
+            INNER JOIN authoring_run_items i
+                ON i.Id = s.RunItemId
+               AND i.RunId = s.RunId
+               AND i.BusinessKey = s.TicketKey COLLATE NOCASE
+               AND i.ItemKind = 'fhir' COLLATE NOCASE
+               AND i.AcceptedReceiptId = r.Id
+               AND i.ExpectedSourceRevision = r.ExpectedSourceRevision
+               AND i.Status IN (@itemComplete, @itemSuperseded)
+            INNER JOIN authoring_runs run
+                ON run.Id = s.RunId
+               AND run.ProcessorKind = @processorKind
+               AND run.AuthoringEpoch = r.AuthoringEpoch
+            WHERE s.TicketKey = @ticketKey COLLATE NOCASE
+              AND s.Classification = 'receipt-backed'
+              AND s.GraphHash = @graphHash
+            """;
+        command.Parameters.AddWithValue("@itemComplete", AuthoringStatusValues.Items.Complete);
+        command.Parameters.AddWithValue(
+            "@itemSuperseded",
+            AuthoringStatusValues.Items.Superseded);
+        command.Parameters.AddWithValue("@processorKind", AuthoringProcessorKind);
+        command.Parameters.AddWithValue("@ticketKey", ticketKey);
+        command.Parameters.AddWithValue("@graphHash", graphHash);
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct)
+            ? (reader.GetString(0), reader.GetString(1), reader.GetString(2))
+            : null;
+    }
+
+    public async Task<int> CountLegacyUnverifiedAsync(CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT COUNT(*) FROM planned_ticket_authoring_state WHERE Classification = 'legacy-unverified'";
+        return Convert.ToInt32(await command.ExecuteScalarAsync(ct), CultureInfo.InvariantCulture);
+    }
+
+    public async Task<int> CountLegacyUnverifiedNotSupersededByRunAsync(
+        string runId,
+        CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            WITH RECURSIVE run_chain(Id) AS (
+                SELECT @runId
+                UNION ALL
+                SELECT lineage.PreviousRunId
+                FROM authoring_revalidation_lineage lineage
+                INNER JOIN run_chain chain ON lineage.RunId = chain.Id
+            )
+            SELECT COUNT(*)
+            FROM planned_ticket_authoring_state s
+            WHERE s.Classification = 'legacy-unverified'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM authoring_run_items i
+                  INNER JOIN run_chain chain ON chain.Id = i.RunId
+                  WHERE i.BusinessKey = s.TicketKey COLLATE NOCASE
+                    AND i.Status = @superseded
+                    AND i.AcceptedReceiptId IS NULL
+              )
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue(
+            "@superseded",
+            AuthoringStatusValues.Items.Superseded);
+        return Convert.ToInt32(
+            await command.ExecuteScalarAsync(ct),
+            CultureInfo.InvariantCulture);
+    }
+
+    public async Task RetireSupersededLegacyRowsAsync(
+        string runId,
+        AuthoringRunStageLease lease,
+        string inputFingerprint,
+        CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
+        try
+        {
+            await EnsureStageLeaseAsync(
+                connection,
+                runId,
+                lease.StageId,
+                lease.LeaseId,
+                inputFingerprint,
+                "revalidation-retirement",
+                "",
+                ct);
+            await ExecuteAsync(
+                connection,
+                """
+                WITH RECURSIVE run_chain(Id, Depth) AS (
+                    SELECT @runId, 0
+                    UNION ALL
+                    SELECT lineage.PreviousRunId, chain.Depth + 1
+                    FROM authoring_revalidation_lineage lineage
+                    INNER JOIN run_chain chain ON lineage.RunId = chain.Id
+                )
+                UPDATE planned_ticket_authoring_state
+                SET Classification = 'superseded',
+                    ReceiptContentHash = NULL,
+                    RunId = (
+                        SELECT i.RunId
+                        FROM authoring_run_items i
+                        INNER JOIN run_chain chain ON chain.Id = i.RunId
+                        WHERE i.BusinessKey =
+                              planned_ticket_authoring_state.TicketKey COLLATE NOCASE
+                          AND i.Status = @superseded
+                          AND i.AcceptedReceiptId IS NULL
+                        ORDER BY chain.Depth, i.RowId
+                        LIMIT 1
+                    ),
+                    RunItemId = (
+                        SELECT i.Id
+                        FROM authoring_run_items i
+                        INNER JOIN run_chain chain ON chain.Id = i.RunId
+                        WHERE i.BusinessKey =
+                              planned_ticket_authoring_state.TicketKey COLLATE NOCASE
+                          AND i.Status = @superseded
+                          AND i.AcceptedReceiptId IS NULL
+                        ORDER BY chain.Depth, i.RowId
+                        LIMIT 1
+                    ),
+                    OperationId = NULL,
+                    UpdatedAt = @updatedAt
+                WHERE Classification = 'legacy-unverified'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM authoring_run_items i
+                      INNER JOIN run_chain chain ON chain.Id = i.RunId
+                      WHERE i.BusinessKey =
+                            planned_ticket_authoring_state.TicketKey COLLATE NOCASE
+                        AND i.Status = @superseded
+                        AND i.AcceptedReceiptId IS NULL
+                  )
+                """,
+                ct,
+                ("@runId", runId),
+                ("@superseded", AuthoringStatusValues.Items.Superseded),
+                ("@updatedAt", Format(DateTimeOffset.UtcNow)));
+            await ExecuteRawAsync(connection, "COMMIT", ct);
+        }
+        catch
+        {
+            await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
+            throw;
+        }
+    }
+
+    public async Task<IReadOnlyList<AuthoringMaintenanceRunItem>>
+        GetGroupingMaintenanceItemsAsync(CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        return await GetGroupingMaintenanceItemsAsync(connection, ct);
+    }
+
+    public async Task<IReadOnlyList<AuthoringMaintenanceRunItem>>
+        GetGroupingMaintenanceItemsAsync(
+            SqliteConnection connection,
+            CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT s.TicketKey, i.ItemKind, r.ExpectedSourceRevision, r.Id
+            FROM planned_ticket_authoring_state s
+            INNER JOIN authoring_result_receipts r
+                ON r.OperationId = s.OperationId
+            INNER JOIN authoring_run_items i
+                ON i.Id = s.RunItemId
+               AND i.AcceptedReceiptId = r.Id
+            WHERE s.Classification = 'receipt-backed'
+            ORDER BY s.TicketKey
+            """;
+        List<AuthoringMaintenanceRunItem> items = [];
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            items.Add(new AuthoringMaintenanceRunItem(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.GetString(3)));
+        }
+        return items;
+    }
+
+    public async Task<bool> HasActiveAuthoringFenceAsync(CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT EXISTS(SELECT 1 FROM authoring_mutation_fences)";
+        return Convert.ToInt32(await command.ExecuteScalarAsync(ct), CultureInfo.InvariantCulture) != 0;
+    }
+
+    public async Task<PlannerMaintenanceLease?> TryAcquireMaintenanceLeaseAsync(
+        string operation,
+        CancellationToken ct = default)
+    {
+        string runId = $"maintenance:{MaintenanceOwnerGeneration}:{operation}:{Guid.NewGuid():N}";
+        string leaseId = Guid.NewGuid().ToString("N");
+        await using SqliteConnection connection = OpenConnection();
+        await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
+        try
+        {
+            int inserted = await ExecuteAsyncWithCount(
+                connection,
+                """
+                INSERT OR IGNORE INTO authoring_mutation_fences(ProcessorKind, RunId, LeaseId, AcquiredAt)
+                VALUES(@processorKind, @runId, @leaseId, @acquiredAt)
+                """,
+                ct,
+                ("@processorKind", AuthoringProcessorKind),
+                ("@runId", runId),
+                ("@leaseId", leaseId),
+                ("@acquiredAt", Format(DateTimeOffset.UtcNow)));
+            await ExecuteRawAsync(connection, "COMMIT", ct);
+            return inserted == 1 ? new PlannerMaintenanceLease(runId, leaseId) : null;
+        }
+        catch
+        {
+            await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
+            throw;
+        }
+    }
+
+    public async Task<int> RecoverInterruptedMaintenanceLeasesAsync(CancellationToken ct = default)
+    {
+        if (_startupOwnerLock is null)
+        {
+            throw new InvalidOperationException(
+                "Planner startup ownership must be acquired before recovering maintenance leases.");
+        }
+        await using SqliteConnection connection = OpenConnection();
+        return await ExecuteAsyncWithCount(
+            connection,
+            """
+            DELETE FROM authoring_mutation_fences
+            WHERE ProcessorKind = @processorKind
+              AND RunId LIKE 'maintenance:%'
+              AND RunId NOT LIKE @ownerPrefix
+            """,
+            ct,
+            ("@processorKind", AuthoringProcessorKind),
+            ("@ownerPrefix", $"maintenance:{MaintenanceOwnerGeneration}:%"));
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _startupOwnerLock?.Dispose();
+            _startupOwnerLock = null;
+        }
+        base.Dispose(disposing);
+    }
+
+    public async Task ReleaseMaintenanceLeaseAsync(
+        PlannerMaintenanceLease lease,
+        CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await ExecuteAsync(
+            connection,
+            """
+            DELETE FROM authoring_mutation_fences
+            WHERE ProcessorKind = @processorKind AND RunId = @runId AND LeaseId = @leaseId
+            """,
+            ct,
+            ("@processorKind", AuthoringProcessorKind),
+            ("@runId", lease.RunId),
+            ("@leaseId", lease.LeaseId));
+    }
+
+    public async Task<IReadOnlyList<PlannedTicketRunPartition>> GetRunPartitionsAsync(
+        string runId,
+        CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await CreateCurrentSnapshotReceiptBackedTicketsAsync(connection, ct);
+        await EnsureRunCorpusReceiptProvenanceAsync(connection, runId, ct);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            WITH RECURSIVE run_chain(Id) AS (
+                SELECT @runId
+                UNION
+                SELECT lineage.PreviousRunId
+                FROM authoring_revalidation_lineage lineage
+                INNER JOIN run_chain chain ON lineage.RunId = chain.Id
+            ),
+            completed AS (
+                SELECT i.Id, i.BusinessKey
+                FROM authoring_run_items i
+                INNER JOIN run_chain chain ON chain.Id = i.RunId
+                WHERE i.Status = @complete
+                  AND i.AcceptedReceiptId IS NOT NULL)
+            SELECT j.WorkGroupClean, j.WorkGroup, IFNULL(j.Specification, 'Unspecified'), IFNULL(j.Type, '')
+            FROM completed i
+            INNER JOIN planned_jira_hydration j
+                ON j.IssueKey = i.BusinessKey AND j.JiraKey = i.BusinessKey
+            WHERE j.WorkGroupClean IS NOT NULL AND j.WorkGroupClean <> '' AND j.Type IS NOT NULL AND j.Type <> ''
+            UNION ALL
+            SELECT p.WorkGroupClean, p.WorkGroupDisplay, p.Specification, p.Type
+            FROM completed i
+            INNER JOIN planned_ticket_run_item_partitions p ON p.RunItemId = i.Id
+            WHERE p.WorkGroupClean IS NOT NULL AND p.WorkGroupClean <> '' AND p.Type IS NOT NULL AND p.Type <> ''
+            UNION ALL
+            SELECT t.WorkGroupClean, t.WorkGroupDisplay, t.Specification, t.Type
+            FROM planned_ticket_topics t
+            WHERE EXISTS(
+                SELECT 1
+                FROM authoring_run_items i
+                WHERE i.RunId = @runId
+                  AND i.ItemKind LIKE 'maintenance:%')
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue("@complete", AuthoringStatusValues.Items.Complete);
+        List<(string? Clean, string? Display, string? Specification, string? Type)> rows = [];
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            rows.Add((
+                ReadNullableString(reader, 0),
+                ReadNullableString(reader, 1),
+                ReadNullableString(reader, 2),
+                ReadNullableString(reader, 3)));
+        }
+        await reader.DisposeAsync();
+
+        var affected = rows
+            .Select(row => (
+                WorkGroupClean: NormalizePartitionValue(row.Clean, "unattributed"),
+                WorkGroupDisplay: string.IsNullOrWhiteSpace(row.Display)
+                    ? NormalizePartitionValue(row.Clean, "unattributed")
+                    : row.Display.Trim(),
+                Specification: NormalizePartitionValue(row.Specification, "Unspecified"),
+                Type: NormalizePartitionValue(row.Type, string.Empty)))
+            .GroupBy(row => (row.WorkGroupClean, row.Specification, row.Type))
+            .Select(group => (
+                group.Key.WorkGroupClean,
+                WorkGroupDisplay: group.Select(row => row.WorkGroupDisplay)
+                    .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
+                    ?? group.Key.WorkGroupClean,
+                group.Key.Specification,
+                group.Key.Type))
+            .OrderBy(
+                partition => GetPartitionKey(
+                    partition.WorkGroupClean,
+                    partition.Specification,
+                    partition.Type),
+                StringComparer.Ordinal)
+            .ToArray();
+
+        List<PlannedTicketRunPartition> partitions = [];
+        foreach (var partition in affected)
+        {
+            IReadOnlyList<(string Key, string ReceiptId)> members =
+                await ReadCurrentPartitionMembersAsync(
+                    connection,
+                    partition.WorkGroupClean,
+                    partition.Specification,
+                    partition.Type,
+                    ct);
+            string fingerprint = AuthoringResultHasher.HashNormalizedUtf8(
+                string.Join("\n", members.Select(member => $"{member.Key}:{member.ReceiptId}")));
+            partitions.Add(new PlannedTicketRunPartition(
+                partition.WorkGroupClean,
+                partition.WorkGroupDisplay,
+                partition.Specification,
+                partition.Type,
+                GetPartitionKey(partition.WorkGroupClean, partition.Specification, partition.Type),
+                fingerprint,
+                members.Select(member => member.Key).ToArray()));
+        }
+        return partitions;
+    }
+
+    private static async Task EnsureRunCorpusReceiptProvenanceAsync(
+        SqliteConnection connection,
+        string runId,
+        CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            $"""
+            WITH RECURSIVE run_chain(Id) AS (
+                SELECT @runId
+                UNION
+                SELECT lineage.PreviousRunId
+                FROM authoring_revalidation_lineage lineage
+                INNER JOIN run_chain chain ON lineage.RunId = chain.Id
+            )
+            SELECT COUNT(*)
+            FROM authoring_run_items i
+            INNER JOIN run_chain chain ON chain.Id = i.RunId
+            WHERE i.Status = @complete
+              AND i.AcceptedReceiptId IS NOT NULL
+              AND i.ItemKind NOT LIKE 'maintenance:%'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM {CurrentSnapshotReceiptBackedTicketsTable} valid
+                  WHERE valid.RunItemId = i.Id
+              )
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue(
+            "@complete",
+            AuthoringStatusValues.Items.Complete);
+        if (Convert.ToInt32(
+                await command.ExecuteScalarAsync(ct),
+                CultureInfo.InvariantCulture) != 0)
+        {
+            throw new InvalidOperationException(
+                "One or more planned tickets lack valid current receipt provenance.");
+        }
+    }
+
+    public async Task<IReadOnlyDictionary<string, long>> GetSnapshotTableCountsAsync(
+        CancellationToken ct = default)
+    {
+        string[] tables =
+        [
+            "planned_tickets",
+            "planned_ticket_repos",
+            "planned_ticket_repo_changes",
+            "planned_ticket_repo_impacts",
+            "planned_ticket_change_validations",
+            "planned_ticket_testing_considerations",
+            "planned_ticket_open_questions",
+            "planned_ticket_hydration",
+            "planned_jira_hydration",
+            "planned_ticket_jira_content",
+            "planned_ticket_topics",
+            "planned_ticket_topic_groups",
+            "planned_ticket_topic_members",
+            "planned_ticket_topic_repos",
+            "planned_ticket_partition_receipts",
+            "jira_review_workgroups",
+        ];
+        Dictionary<string, long> counts = new(StringComparer.Ordinal);
+        await using SqliteConnection connection = OpenConnection();
+        foreach (string table in tables)
+        {
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = $"SELECT COUNT(*) FROM {table}";
+            counts[table] = Convert.ToInt64(
+                await command.ExecuteScalarAsync(ct),
+                CultureInfo.InvariantCulture);
+        }
+        return counts;
+    }
+
+    public async Task<int> GetSnapshotReceiptCountAsync(
+        string runId,
+        CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await CreateCurrentSnapshotReceiptBackedTicketsAsync(connection, ct);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            $"""
+            SELECT COUNT(*)
+            FROM (
+                SELECT r.Id
+                FROM authoring_result_receipts r
+                WHERE r.RunId = @runId
+                UNION
+                SELECT ReceiptId
+                FROM {CurrentSnapshotReceiptBackedTicketsTable}
+            )
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        return Convert.ToInt32(
+            await command.ExecuteScalarAsync(ct),
+            CultureInfo.InvariantCulture);
     }
 
     private static readonly string[] DeleteOrder =
@@ -317,8 +1163,10 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
         await begin.ExecuteNonQueryAsync(ct);
         try
         {
+            await EnsureTicketMutationAllowedAsync(connection, batch.TicketKey, ct);
             await DeleteHydrationRowsAsync(connection, batch.TicketKey, ct);
             await InsertParentAsync(connection, batch.Parent, ct);
+            await ReplaceCanonicalJiraFieldsAsync(connection, batch.Parent, ct);
             foreach (HydrationJiraRow r in batch.JiraRows) await InsertJiraAsync(connection, r, ct);
             foreach (HydrationZulipRow r in batch.ZulipRows) await InsertZulipAsync(connection, r, ct);
             foreach (HydrationGitHubRow r in batch.GitHubRows) await InsertGitHubAsync(connection, r, ct);
@@ -353,8 +1201,8 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
     private static async Task InsertParentAsync(SqliteConnection connection, HydrationTicketRow r, CancellationToken ct)
     {
         await ExecuteAsync(connection,
-            "INSERT INTO planned_ticket_hydration (IssueKey, Priority, Resolution, ResolutionDescriptionPlain, Specification, RaisedInVersion, SelectedBallot, ChangeCategory, Impact, Labels, CommentCount, DescriptionPlain, HydratedAt, HydrationStatus, HydrationReason) " +
-            "VALUES (@IssueKey, @Priority, @Resolution, @ResolutionDescriptionPlain, @Specification, @RaisedInVersion, @SelectedBallot, @ChangeCategory, @Impact, @Labels, @CommentCount, @DescriptionPlain, @HydratedAt, @HydrationStatus, @HydrationReason)",
+            "INSERT INTO planned_ticket_hydration (IssueKey, Priority, Resolution, ResolutionDescriptionPlain, Specification, RaisedInVersion, SelectedBallot, ChangeCategory, Impact, Labels, CommentCount, DescriptionPlain, DescriptionHtml, ResolutionDescriptionHtml, Reporter, CreatedAt, RelatedArtifactsRaw, RelatedPagesRaw, HydratedAt, HydrationStatus, HydrationReason) " +
+            "VALUES (@IssueKey, @Priority, @Resolution, @ResolutionDescriptionPlain, @Specification, @RaisedInVersion, @SelectedBallot, @ChangeCategory, @Impact, @Labels, @CommentCount, @DescriptionPlain, @DescriptionHtml, @ResolutionDescriptionHtml, @Reporter, @CreatedAt, @RelatedArtifactsRaw, @RelatedPagesRaw, @HydratedAt, @HydrationStatus, @HydrationReason)",
             ct,
             ("@IssueKey", r.TicketKey),
             ("@Priority", Nullable(r.Priority)),
@@ -368,6 +1216,12 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
             ("@Labels", Nullable(r.Labels)),
             ("@CommentCount", Nullable(r.CommentCount)),
             ("@DescriptionPlain", Nullable(r.DescriptionPlain)),
+            ("@DescriptionHtml", Nullable(r.DescriptionHtml)),
+            ("@ResolutionDescriptionHtml", Nullable(r.ResolutionDescriptionHtml)),
+            ("@Reporter", Nullable(r.Reporter)),
+            ("@CreatedAt", r.CreatedAt.HasValue ? Format(r.CreatedAt.Value) : (object)DBNull.Value),
+            ("@RelatedArtifactsRaw", Nullable(r.RelatedArtifactsRaw)),
+            ("@RelatedPagesRaw", Nullable(r.RelatedPagesRaw)),
             ("@HydratedAt", Format(r.HydratedAt)),
             ("@HydrationStatus", r.HydrationStatus),
             ("@HydrationReason", Nullable(r.HydrationReason)));
@@ -379,8 +1233,8 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
             ? null
             : (Hl7WorkGroupNameCleaner.Clean(r.WorkGroup) is string s && !string.IsNullOrEmpty(s) ? s : null);
         await ExecuteAsync(connection,
-            "INSERT INTO planned_jira_hydration (IssueKey, JiraKey, Title, Status, Type, Priority, Resolution, ResolutionDescriptionPlain, WorkGroup, WorkGroupClean, Specification, UpdatedAt, Url, HydratedAt, HydrationStatus, HydrationReason) " +
-            "VALUES (@IssueKey, @JiraKey, @Title, @Status, @Type, @Priority, @Resolution, @ResolutionDescriptionPlain, @WorkGroup, @WorkGroupClean, @Specification, @UpdatedAt, @Url, @HydratedAt, @HydrationStatus, @HydrationReason)",
+            "INSERT INTO planned_jira_hydration (IssueKey, JiraKey, Title, Status, Type, Priority, Resolution, ResolutionDescriptionPlain, WorkGroup, WorkGroupClean, Specification, UpdatedAt, Url, DescriptionHtml, ResolutionDescriptionHtml, Reporter, CreatedAt, RelatedArtifactsRaw, RelatedPagesRaw, HydratedAt, HydrationStatus, HydrationReason) " +
+            "VALUES (@IssueKey, @JiraKey, @Title, @Status, @Type, @Priority, @Resolution, @ResolutionDescriptionPlain, @WorkGroup, @WorkGroupClean, @Specification, @UpdatedAt, @Url, @DescriptionHtml, @ResolutionDescriptionHtml, @Reporter, @CreatedAt, @RelatedArtifactsRaw, @RelatedPagesRaw, @HydratedAt, @HydrationStatus, @HydrationReason)",
             ct,
             ("@IssueKey", r.TicketKey),
             ("@JiraKey", r.JiraKey),
@@ -395,9 +1249,37 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
             ("@Specification", Nullable(r.Specification)),
             ("@UpdatedAt", r.UpdatedAt.HasValue ? Format(r.UpdatedAt.Value) : (object)DBNull.Value),
             ("@Url", Nullable(r.Url)),
+            ("@DescriptionHtml", Nullable(r.DescriptionHtml)),
+            ("@ResolutionDescriptionHtml", Nullable(r.ResolutionDescriptionHtml)),
+            ("@Reporter", Nullable(r.Reporter)),
+            ("@CreatedAt", r.CreatedAt.HasValue ? Format(r.CreatedAt.Value) : (object)DBNull.Value),
+            ("@RelatedArtifactsRaw", Nullable(r.RelatedArtifactsRaw)),
+            ("@RelatedPagesRaw", Nullable(r.RelatedPagesRaw)),
             ("@HydratedAt", Format(r.HydratedAt)),
             ("@HydrationStatus", r.HydrationStatus),
             ("@HydrationReason", Nullable(r.HydrationReason)));
+    }
+
+    private static async Task ReplaceCanonicalJiraFieldsAsync(
+        SqliteConnection connection,
+        HydrationTicketRow row,
+        CancellationToken ct)
+    {
+        await ExecuteAsync(
+            connection,
+            "DELETE FROM planned_ticket_jira_content WHERE TicketKey = @ticketKey",
+            ct,
+            ("@ticketKey", row.TicketKey));
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO planned_ticket_jira_content(TicketKey, DescriptionHtml, ResolutionDescriptionHtml)
+            VALUES(@ticketKey, @descriptionHtml, @resolutionDescriptionHtml)
+            """,
+            ct,
+            ("@ticketKey", row.TicketKey),
+            ("@descriptionHtml", row.DescriptionHtml),
+            ("@resolutionDescriptionHtml", row.ResolutionDescriptionHtml));
     }
 
     private static async Task InsertZulipAsync(SqliteConnection connection, HydrationZulipRow r, CancellationToken ct)
@@ -472,6 +1354,81 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
             ("@Source", r.Source));
     }
 
+    public async Task SaveWorkGroupCatalogAsync(
+        IReadOnlyList<HydrationWorkGroupRow> workGroups,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(workGroups);
+        await using SqliteConnection connection = OpenConnection();
+        await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
+        try
+        {
+            await EnsureLegacyAuthoringModeAsync(connection, ct);
+            await EnsureGeneralMutationAllowedAsync(connection, ct);
+            await ReplaceWorkGroupCatalogAsync(connection, workGroups, ct);
+            await ExecuteRawAsync(connection, "COMMIT", ct);
+        }
+        catch
+        {
+            await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
+            throw;
+        }
+    }
+
+    public async Task SaveWorkGroupCatalogForRunAsync(
+        IReadOnlyList<HydrationWorkGroupRow> workGroups,
+        string runId,
+        string stageId,
+        string stageLeaseId,
+        string inputFingerprint,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(workGroups);
+        await using SqliteConnection connection = OpenConnection();
+        await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
+        try
+        {
+            await EnsureStageLeaseAsync(
+                connection,
+                runId,
+                stageId,
+                stageLeaseId,
+                inputFingerprint,
+                "workgroup-catalog",
+                string.Empty,
+                ct);
+            await ReplaceWorkGroupCatalogAsync(connection, workGroups, ct);
+            await ExecuteRawAsync(connection, "COMMIT", ct);
+        }
+        catch
+        {
+            await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
+            throw;
+        }
+    }
+
+    private static async Task ReplaceWorkGroupCatalogAsync(
+        SqliteConnection connection,
+        IReadOnlyList<HydrationWorkGroupRow> workGroups,
+        CancellationToken ct)
+    {
+        await ExecuteRawAsync(connection, "DELETE FROM jira_review_workgroups", ct);
+        foreach (HydrationWorkGroupRow workGroup in workGroups)
+        {
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO jira_review_workgroups(Code, Name, NameClean, UpdatedAt)
+                VALUES(@code, @name, @nameClean, @updatedAt)
+                """,
+                ct,
+                ("@code", workGroup.Code),
+                ("@name", workGroup.Name),
+                ("@nameClean", workGroup.NameClean),
+                ("@updatedAt", Format(workGroup.UpdatedAt)));
+        }
+    }
+
     // ---------------------------------------------------------------------
     // Hydration reads
 
@@ -494,7 +1451,7 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
     private static async Task<PlannedTicketHydrationRow?> ReadHydrationParentAsync(SqliteConnection connection, string key, CancellationToken ct)
     {
         await using SqliteCommand command = connection.CreateCommand();
-        command.CommandText = "SELECT IssueKey, Priority, Resolution, ResolutionDescriptionPlain, Specification, RaisedInVersion, SelectedBallot, ChangeCategory, Impact, Labels, CommentCount, DescriptionPlain, HydratedAt, HydrationStatus, HydrationReason FROM planned_ticket_hydration WHERE IssueKey = @key";
+        command.CommandText = "SELECT IssueKey, Priority, Resolution, ResolutionDescriptionPlain, Specification, RaisedInVersion, SelectedBallot, ChangeCategory, Impact, Labels, CommentCount, DescriptionPlain, HydratedAt, HydrationStatus, HydrationReason, DescriptionHtml, ResolutionDescriptionHtml, Reporter, CreatedAt, RelatedArtifactsRaw, RelatedPagesRaw FROM planned_ticket_hydration WHERE IssueKey = @key";
         command.Parameters.AddWithValue("@key", key);
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct)) return null;
@@ -513,14 +1470,20 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
             reader.IsDBNull(11) ? null : reader.GetString(11),
             ParseDate(reader.GetString(12)),
             reader.GetString(13),
-            reader.IsDBNull(14) ? null : reader.GetString(14));
+            reader.IsDBNull(14) ? null : reader.GetString(14),
+            reader.IsDBNull(15) ? null : reader.GetString(15),
+            reader.IsDBNull(16) ? null : reader.GetString(16),
+            reader.IsDBNull(17) ? null : reader.GetString(17),
+            reader.IsDBNull(18) ? null : (DateTimeOffset?)ParseDate(reader.GetString(18)),
+            reader.IsDBNull(19) ? null : reader.GetString(19),
+            reader.IsDBNull(20) ? null : reader.GetString(20));
     }
 
     private static async Task<IReadOnlyList<PlannedJiraHydrationRow>> ReadJiraHydrationAsync(SqliteConnection connection, string key, CancellationToken ct)
     {
         List<PlannedJiraHydrationRow> rows = [];
         await using SqliteCommand command = connection.CreateCommand();
-        command.CommandText = "SELECT IssueKey, JiraKey, Title, Status, Type, Priority, Resolution, ResolutionDescriptionPlain, WorkGroup, WorkGroupClean, Specification, UpdatedAt, Url, HydratedAt, HydrationStatus, HydrationReason FROM planned_jira_hydration WHERE IssueKey = @key ORDER BY JiraKey";
+        command.CommandText = "SELECT IssueKey, JiraKey, Title, Status, Type, Priority, Resolution, ResolutionDescriptionPlain, WorkGroup, WorkGroupClean, Specification, UpdatedAt, Url, HydratedAt, HydrationStatus, HydrationReason, DescriptionHtml, ResolutionDescriptionHtml, Reporter, CreatedAt, RelatedArtifactsRaw, RelatedPagesRaw FROM planned_jira_hydration WHERE IssueKey = @key ORDER BY JiraKey";
         command.Parameters.AddWithValue("@key", key);
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
@@ -541,7 +1504,13 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
                 reader.IsDBNull(12) ? null : reader.GetString(12),
                 ParseDate(reader.GetString(13)),
                 reader.GetString(14),
-                reader.IsDBNull(15) ? null : reader.GetString(15)));
+                reader.IsDBNull(15) ? null : reader.GetString(15),
+                reader.IsDBNull(16) ? null : reader.GetString(16),
+                reader.IsDBNull(17) ? null : reader.GetString(17),
+                reader.IsDBNull(18) ? null : reader.GetString(18),
+                reader.IsDBNull(19) ? null : (DateTimeOffset?)ParseDate(reader.GetString(19)),
+                reader.IsDBNull(20) ? null : reader.GetString(20),
+                reader.IsDBNull(21) ? null : reader.GetString(21)));
         }
         return rows;
     }
@@ -678,79 +1647,12 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
 
         DateTimeOffset savedAt = payload.SavedAt ?? DateTimeOffset.UtcNow;
         await using SqliteConnection connection = OpenConnection();
-        await using SqliteCommand begin = connection.CreateCommand();
-        begin.CommandText = "BEGIN IMMEDIATE";
-        await begin.ExecuteNonQueryAsync(ct);
+        await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
         try
         {
-            // Replace all topics for this (workgroup, spec, type) tuple.
-            await using (SqliteCommand findTopics = connection.CreateCommand())
-            {
-                findTopics.CommandText = "SELECT RowId FROM planned_ticket_topics WHERE WorkGroupClean = @w AND Specification = @s AND Type = @t";
-                findTopics.Parameters.AddWithValue("@w", payload.WorkGroupClean);
-                findTopics.Parameters.AddWithValue("@s", payload.Specification);
-                findTopics.Parameters.AddWithValue("@t", payload.Type);
-                List<long> oldTopicRowIds = [];
-                await using SqliteDataReader reader = await findTopics.ExecuteReaderAsync(ct);
-                while (await reader.ReadAsync(ct))
-                {
-                    oldTopicRowIds.Add(reader.GetInt64(0));
-                }
-                foreach (long rowId in oldTopicRowIds)
-                {
-                    await ExecuteAsync(connection, "DELETE FROM planned_ticket_topic_repos WHERE TopicRowId = @r", ct, ("@r", rowId));
-                    await ExecuteAsync(connection, "DELETE FROM planned_ticket_topic_members WHERE TopicRowId = @r", ct, ("@r", rowId));
-                    await ExecuteAsync(connection, "DELETE FROM planned_ticket_topic_groups WHERE TopicRowId = @r", ct, ("@r", rowId));
-                    await ExecuteAsync(connection, "DELETE FROM planned_ticket_topics WHERE RowId = @r", ct, ("@r", rowId));
-                }
-            }
-
-            foreach (PlannedTicketTopicPayload topic in payload.Topics)
-            {
-                long topicRowId = await InsertTopicAndReturnRowIdAsync(connection, payload, topic, savedAt, ct);
-
-                IReadOnlyList<string> normalizedRepos = PlannedTicketTopicGroupingPayloadValidator.NormalizeSpannedRepos(topic.SpannedRepos);
-                for (int i = 0; i < normalizedRepos.Count; i++)
-                {
-                    await ExecuteAsync(connection,
-                        "INSERT INTO planned_ticket_topic_repos (Id, TopicRowId, RepoKey, OrderInTopic) VALUES (@id, @t, @r, @o)",
-                        ct,
-                        ("@id", Guid.NewGuid().ToString("N")),
-                        ("@t", topicRowId),
-                        ("@r", normalizedRepos[i]),
-                        ("@o", i));
-                }
-
-                int groupOrderInTopic = 0;
-                foreach (PlannedTicketTopicGroupPayload group in topic.LinkedTicketGroups)
-                {
-                    long topicGroupRowId = await InsertTopicGroupAndReturnRowIdAsync(connection, topicRowId, group, savedAt, groupOrderInTopic++, ct);
-                    foreach (PlannedTicketTopicGroupMemberPayload m in group.Members)
-                    {
-                        await ExecuteAsync(connection,
-                            "INSERT INTO planned_ticket_topic_members (Id, TopicRowId, TopicGroupRowId, TicketKey, OrderInContainer) VALUES (@id, @t, @g, @k, @o)",
-                            ct,
-                            ("@id", Guid.NewGuid().ToString("N")),
-                            ("@t", topicRowId),
-                            ("@g", topicGroupRowId),
-                            ("@k", m.TicketKey),
-                            ("@o", m.Order));
-                    }
-                }
-
-                int remainingOrder = 0;
-                foreach (string remaining in topic.RemainingTicketKeys)
-                {
-                    await ExecuteAsync(connection,
-                        "INSERT INTO planned_ticket_topic_members (Id, TopicRowId, TopicGroupRowId, TicketKey, OrderInContainer) VALUES (@id, @t, NULL, @k, @o)",
-                        ct,
-                        ("@id", Guid.NewGuid().ToString("N")),
-                        ("@t", topicRowId),
-                        ("@k", remaining),
-                        ("@o", remainingOrder++));
-                }
-            }
-
+            await EnsureLegacyAuthoringModeAsync(connection, ct);
+            await EnsureGeneralMutationAllowedAsync(connection, ct);
+            _ = await SaveTopicGroupingCoreAsync(connection, payload, savedAt, ct);
             await ExecuteRawAsync(connection, "COMMIT", ct);
         }
         catch
@@ -758,6 +1660,152 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
             await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
             throw;
         }
+    }
+
+    public async Task SaveTopicGroupingForRunAsync(
+        PlannedTicketTopicGroupingPayload payload,
+        string runId,
+        string stageId,
+        string stageLeaseId,
+        string inputFingerprint,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        PlannedTicketTopicGroupingPayloadValidator.ThrowIfInvalid(payload);
+        DateTimeOffset savedAt = payload.SavedAt ?? DateTimeOffset.UtcNow;
+        string partitionKey = GetPartitionKey(
+            payload.WorkGroupClean,
+            payload.Specification,
+            payload.Type);
+        await using SqliteConnection connection = OpenConnection();
+        await ExecuteRawAsync(connection, "BEGIN IMMEDIATE", ct);
+        try
+        {
+            await EnsureStageLeaseAsync(
+                connection,
+                runId,
+                stageId,
+                stageLeaseId,
+                inputFingerprint,
+                "grouping",
+                partitionKey,
+                ct);
+            await EnsureGroupingTicketsBelongToPartitionAsync(connection, payload, ct);
+            (int topics, int groups, int members) =
+                await SaveTopicGroupingCoreAsync(connection, payload, savedAt, ct);
+            await SavePartitionReceiptAsync(
+                connection,
+                runId,
+                stageId,
+                partitionKey,
+                inputFingerprint,
+                topics,
+                groups,
+                members,
+                savedAt,
+                ct);
+            await ExecuteRawAsync(connection, "COMMIT", ct);
+        }
+        catch
+        {
+            await ExecuteRawAsync(connection, "ROLLBACK", CancellationToken.None);
+            throw;
+        }
+    }
+
+    public async Task<AuthoringRunStageReceipt?> GetGroupingReceiptAsync(
+        string runId,
+        string stageId,
+        string partitionKey,
+        string inputFingerprint,
+        CancellationToken ct = default)
+    {
+        await using SqliteConnection connection = OpenConnection();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT TopicRows, TopicGroupRows, MemberRows, PersistedAt
+            FROM planned_ticket_partition_receipts
+            WHERE RunId = @runId
+              AND StageId = @stageId
+              AND PartitionKey = @partitionKey
+              AND InputFingerprint = @inputFingerprint
+            """;
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue("@stageId", stageId);
+        command.Parameters.AddWithValue("@partitionKey", partitionKey);
+        command.Parameters.AddWithValue("@inputFingerprint", inputFingerprint);
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct)
+            ? new AuthoringRunStageReceipt(
+                runId,
+                stageId,
+                partitionKey,
+                inputFingerprint,
+                reader.GetInt32(0),
+                reader.GetInt32(1),
+                reader.GetInt32(2),
+                ParseDate(reader.GetString(3)))
+            : null;
+    }
+
+    private static async Task<(int Topics, int Groups, int Members)> SaveTopicGroupingCoreAsync(
+        SqliteConnection connection,
+        PlannedTicketTopicGroupingPayload payload,
+        DateTimeOffset savedAt,
+        CancellationToken ct)
+    {
+        await using (SqliteCommand findTopics = connection.CreateCommand())
+        {
+            findTopics.CommandText = "SELECT RowId FROM planned_ticket_topics WHERE WorkGroupClean = @w AND Specification = @s AND Type = @t";
+            findTopics.Parameters.AddWithValue("@w", payload.WorkGroupClean);
+            findTopics.Parameters.AddWithValue("@s", payload.Specification);
+            findTopics.Parameters.AddWithValue("@t", payload.Type);
+            List<long> oldTopicRowIds = [];
+            await using SqliteDataReader reader = await findTopics.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                oldTopicRowIds.Add(reader.GetInt64(0));
+            }
+            foreach (long rowId in oldTopicRowIds)
+            {
+                await ExecuteAsync(connection, "DELETE FROM planned_ticket_topic_repos WHERE TopicRowId = @r", ct, ("@r", rowId));
+                await ExecuteAsync(connection, "DELETE FROM planned_ticket_topic_members WHERE TopicRowId = @r", ct, ("@r", rowId));
+                await ExecuteAsync(connection, "DELETE FROM planned_ticket_topic_groups WHERE TopicRowId = @r", ct, ("@r", rowId));
+                await ExecuteAsync(connection, "DELETE FROM planned_ticket_topics WHERE RowId = @r", ct, ("@r", rowId));
+            }
+        }
+
+        int topicRows = 0;
+        int groupRows = 0;
+        int memberRows = 0;
+        foreach (PlannedTicketTopicPayload topic in payload.Topics)
+        {
+            long topicRowId = await InsertTopicAndReturnRowIdAsync(connection, payload, topic, savedAt, ct);
+            topicRows++;
+            IReadOnlyList<string> normalizedRepos = PlannedTicketTopicGroupingPayloadValidator.NormalizeSpannedRepos(topic.SpannedRepos);
+            for (int i = 0; i < normalizedRepos.Count; i++)
+                await ExecuteAsync(connection, "INSERT INTO planned_ticket_topic_repos (Id, TopicRowId, RepoKey, OrderInTopic) VALUES (@id, @t, @r, @o)", ct, ("@id", Guid.NewGuid().ToString("N")), ("@t", topicRowId), ("@r", normalizedRepos[i]), ("@o", i));
+
+            int groupOrderInTopic = 0;
+            foreach (PlannedTicketTopicGroupPayload group in topic.LinkedTicketGroups)
+            {
+                long topicGroupRowId = await InsertTopicGroupAndReturnRowIdAsync(connection, topicRowId, group, savedAt, groupOrderInTopic++, ct);
+                groupRows++;
+                foreach (PlannedTicketTopicGroupMemberPayload member in group.Members)
+                {
+                    await ExecuteAsync(connection, "INSERT INTO planned_ticket_topic_members (Id, TopicRowId, TopicGroupRowId, TicketKey, OrderInContainer) VALUES (@id, @t, @g, @k, @o)", ct, ("@id", Guid.NewGuid().ToString("N")), ("@t", topicRowId), ("@g", topicGroupRowId), ("@k", member.TicketKey), ("@o", member.Order));
+                    memberRows++;
+                }
+            }
+            int remainingOrder = 0;
+            foreach (string remaining in topic.RemainingTicketKeys)
+            {
+                await ExecuteAsync(connection, "INSERT INTO planned_ticket_topic_members (Id, TopicRowId, TopicGroupRowId, TicketKey, OrderInContainer) VALUES (@id, @t, NULL, @k, @o)", ct, ("@id", Guid.NewGuid().ToString("N")), ("@t", topicRowId), ("@k", remaining), ("@o", remainingOrder++));
+                memberRows++;
+            }
+        }
+        return (topicRows, groupRows, memberRows);
     }
 
     private static async Task<long> InsertTopicAndReturnRowIdAsync(
@@ -1037,7 +2085,7 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
         List<PlannedJiraHydrationRow> rows = [];
         await using SqliteConnection connection = OpenConnection();
         await using SqliteCommand command = connection.CreateCommand();
-        command.CommandText = "SELECT IssueKey, JiraKey, Title, Status, Type, Priority, Resolution, ResolutionDescriptionPlain, WorkGroup, WorkGroupClean, Specification, UpdatedAt, Url, HydratedAt, HydrationStatus, HydrationReason FROM planned_jira_hydration WHERE WorkGroupClean = @w AND IssueKey = JiraKey ORDER BY JiraKey";
+        command.CommandText = "SELECT IssueKey, JiraKey, Title, Status, Type, Priority, Resolution, ResolutionDescriptionPlain, WorkGroup, WorkGroupClean, Specification, UpdatedAt, Url, HydratedAt, HydrationStatus, HydrationReason, DescriptionHtml, ResolutionDescriptionHtml, Reporter, CreatedAt, RelatedArtifactsRaw, RelatedPagesRaw FROM planned_jira_hydration WHERE WorkGroupClean = @w AND IssueKey = JiraKey ORDER BY JiraKey";
         command.Parameters.AddWithValue("@w", workGroupClean);
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
@@ -1057,7 +2105,13 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
                 reader.IsDBNull(12) ? null : reader.GetString(12),
                 ParseDate(reader.GetString(13)),
                 reader.GetString(14),
-                reader.IsDBNull(15) ? null : reader.GetString(15)));
+                reader.IsDBNull(15) ? null : reader.GetString(15),
+                reader.IsDBNull(16) ? null : reader.GetString(16),
+                reader.IsDBNull(17) ? null : reader.GetString(17),
+                reader.IsDBNull(18) ? null : reader.GetString(18),
+                reader.IsDBNull(19) ? null : (DateTimeOffset?)ParseDate(reader.GetString(19)),
+                reader.IsDBNull(20) ? null : reader.GetString(20),
+                reader.IsDBNull(21) ? null : reader.GetString(21)));
         }
         return rows;
     }
@@ -1307,6 +2361,409 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
         return rows;
     }
 
+    private static async Task CapturePreChangePartitionAsync(
+        SqliteConnection connection,
+        string ticketKey,
+        string runItemId,
+        DateTimeOffset capturedAt,
+        CancellationToken ct)
+    {
+        string? workGroupClean = null;
+        string? workGroupDisplay = null;
+        string? specification = null;
+        string? type = null;
+        await using (SqliteCommand command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                SELECT WorkGroupClean, WorkGroup, IFNULL(Specification, 'Unspecified'), IFNULL(Type, '')
+                FROM planned_jira_hydration
+                WHERE IssueKey = @key AND JiraKey = @key
+                LIMIT 1
+                """;
+            command.Parameters.AddWithValue("@key", ticketKey);
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            if (await reader.ReadAsync(ct))
+            {
+                workGroupClean = ReadNullableString(reader, 0);
+                workGroupDisplay = ReadNullableString(reader, 1);
+                specification = ReadNullableString(reader, 2);
+                type = ReadNullableString(reader, 3);
+            }
+        }
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO planned_ticket_run_item_partitions(
+                RunItemId, TicketKey, WorkGroupClean, WorkGroupDisplay, Specification, Type, CapturedAt)
+            VALUES(@runItemId, @ticketKey, @workGroupClean, @workGroupDisplay, @specification, @type, @capturedAt)
+            ON CONFLICT(RunItemId) DO UPDATE SET
+                TicketKey = excluded.TicketKey,
+                WorkGroupClean = excluded.WorkGroupClean,
+                WorkGroupDisplay = excluded.WorkGroupDisplay,
+                Specification = excluded.Specification,
+                Type = excluded.Type,
+                CapturedAt = excluded.CapturedAt
+            """,
+            ct,
+            ("@runItemId", runItemId),
+            ("@ticketKey", ticketKey),
+            ("@workGroupClean", workGroupClean),
+            ("@workGroupDisplay", workGroupDisplay),
+            ("@specification", specification),
+            ("@type", type),
+            ("@capturedAt", Format(capturedAt)));
+    }
+
+    private static async Task UpsertAuthoringStateAsync(
+        SqliteConnection connection,
+        string ticketKey,
+        string classification,
+        string graphHash,
+        string? receiptContentHash,
+        string? runId,
+        string? runItemId,
+        string? operationId,
+        DateTimeOffset updatedAt,
+        CancellationToken ct)
+    {
+        await ExecuteAsync(
+            connection,
+            """
+            INSERT INTO planned_ticket_authoring_state(
+                TicketKey, Classification, GraphHash, ReceiptContentHash,
+                LegacyCompletionId, LegacyCompletedProcessingAt,
+                RunId, RunItemId, OperationId, UpdatedAt)
+            VALUES(
+                @ticketKey, @classification, @graphHash, @receiptContentHash,
+                (SELECT CompletionId FROM jira_processing_source_tickets WHERE Key = @ticketKey),
+                (SELECT CompletedProcessingAt FROM jira_processing_source_tickets WHERE Key = @ticketKey),
+                @runId, @runItemId, @operationId, @updatedAt)
+            ON CONFLICT(TicketKey) DO UPDATE SET
+                Classification = excluded.Classification,
+                GraphHash = excluded.GraphHash,
+                ReceiptContentHash = excluded.ReceiptContentHash,
+                LegacyCompletionId = CASE
+                    WHEN excluded.Classification = 'legacy-unverified'
+                    THEN excluded.LegacyCompletionId
+                    ELSE planned_ticket_authoring_state.LegacyCompletionId
+                END,
+                LegacyCompletedProcessingAt = CASE
+                    WHEN excluded.Classification = 'legacy-unverified'
+                    THEN excluded.LegacyCompletedProcessingAt
+                    ELSE planned_ticket_authoring_state.LegacyCompletedProcessingAt
+                END,
+                RunId = excluded.RunId,
+                RunItemId = excluded.RunItemId,
+                OperationId = excluded.OperationId,
+                UpdatedAt = excluded.UpdatedAt
+            """,
+            ct,
+            ("@ticketKey", ticketKey),
+            ("@classification", classification),
+            ("@graphHash", graphHash),
+            ("@receiptContentHash", receiptContentHash),
+            ("@runId", runId),
+            ("@runItemId", runItemId),
+            ("@operationId", operationId),
+            ("@updatedAt", Format(updatedAt)));
+    }
+
+    private static async Task<string> ComputePlannedGraphHashAsync(
+        SqliteConnection connection,
+        string key,
+        CancellationToken ct)
+    {
+        StringBuilder builder = new();
+        (string Section, string Sql, int? ReplacementLinesOrdinal)[] queries =
+        [
+            ("ticket", "SELECT Key, Resolution, ResolutionSummary, FeatureProposal, DesignRationale FROM planned_tickets WHERE Key = @key", null),
+            ("repos", "SELECT RepoKey, RepoRevision, Justification FROM planned_ticket_repos WHERE IssueKey = @key ORDER BY RepoKey, RepoRevision, Justification", null),
+            ("changes", "SELECT RepoKey, ChangeSequence, FilePath, ChangeTitle, ChangeDescription, SourceLineStart, SourceLineEnd, ReplacementLines, Reason FROM planned_ticket_repo_changes WHERE IssueKey = @key ORDER BY RepoKey, ChangeSequence, FilePath", 7),
+            ("impacts", "SELECT RepoKey, AffectedFilePath, HowAffected FROM planned_ticket_repo_impacts WHERE IssueKey = @key ORDER BY RepoKey, AffectedFilePath", null),
+            ("validations", "SELECT RepoKey, ValidationSequence, Action FROM planned_ticket_change_validations WHERE IssueKey = @key ORDER BY RepoKey, ValidationSequence", null),
+            ("testing", "SELECT RepoKey, ConsiderationSequence, Consideration FROM planned_ticket_testing_considerations WHERE IssueKey = @key ORDER BY RepoKey, ConsiderationSequence", null),
+            ("questions", "SELECT RepoKey, QuestionSequence, Question FROM planned_ticket_open_questions WHERE IssueKey = @key ORDER BY RepoKey, QuestionSequence", null),
+        ];
+        foreach ((string section, string sql, int? replacementLinesOrdinal) in queries)
+        {
+            builder.Append("section:").Append(section).Append('\n');
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = sql;
+            command.Parameters.AddWithValue("@key", key);
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                for (int ordinal = 0; ordinal < reader.FieldCount; ordinal++)
+                {
+                    if (reader.IsDBNull(ordinal))
+                    {
+                        builder.Append("<null>");
+                    }
+                    else if (replacementLinesOrdinal == ordinal)
+                    {
+                        builder.Append(ReplacementLineJson.Serialize(
+                            ReplacementLineJson.Deserialize(reader.GetString(ordinal))));
+                    }
+                    else
+                    {
+                        builder.Append(reader.GetValue(ordinal));
+                    }
+                    builder.Append('\u001f');
+                }
+                builder.Append('\n');
+            }
+        }
+        return AuthoringResultHasher.HashNormalizedUtf8(builder.ToString());
+    }
+
+    private static async Task EnsureStageLeaseAsync(
+        SqliteConnection connection,
+        string runId,
+        string stageId,
+        string stageLeaseId,
+        string inputFingerprint,
+        string stageName,
+        string partitionKey,
+        CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT 1 FROM authoring_run_stages
+            WHERE Id = @stageId AND RunId = @runId AND LeaseId = @leaseId
+              AND InputFingerprint = @inputFingerprint
+              AND StageName = @stageName AND PartitionKey = @partitionKey
+              AND Status = @status
+              AND EXISTS(
+                  SELECT 1 FROM authoring_mutation_fences
+                  WHERE ProcessorKind = @processorKind AND RunId = @runId)
+            """;
+        command.Parameters.AddWithValue("@stageId", stageId);
+        command.Parameters.AddWithValue("@runId", runId);
+        command.Parameters.AddWithValue("@leaseId", stageLeaseId);
+        command.Parameters.AddWithValue("@inputFingerprint", inputFingerprint);
+        command.Parameters.AddWithValue("@stageName", stageName);
+        command.Parameters.AddWithValue("@partitionKey", partitionKey);
+        command.Parameters.AddWithValue("@status", AuthoringStatusValues.Stages.InProgress);
+        command.Parameters.AddWithValue("@processorKind", AuthoringProcessorKind);
+        if (await command.ExecuteScalarAsync(ct) is null)
+        {
+            throw new AuthoringConflictException(
+                AuthoringConflictCode.StageLeaseLost,
+                $"Stage '{stageId}' no longer owns input '{inputFingerprint}'.");
+        }
+    }
+
+    private static async Task EnsureLegacyAuthoringModeAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT Mode
+            FROM authoring_processor_modes
+            WHERE ProcessorKind = @processorKind
+            """;
+        command.Parameters.AddWithValue(
+            "@processorKind",
+            AuthoringProcessorKind);
+        string? mode = Convert.ToString(await command.ExecuteScalarAsync(ct));
+        if (string.IsNullOrWhiteSpace(mode) ||
+            mode == AuthoringStatusValues.ProcessorModes.Legacy)
+        {
+            return;
+        }
+        throw new AuthoringConflictException(
+            mode == AuthoringStatusValues.ProcessorModes.CuttingOver
+                ? AuthoringConflictCode.CutoverInProgress
+                : AuthoringConflictCode.AuthoringNotActivated,
+            $"Legacy planned-ticket writes are unavailable while processor mode is '{mode}'.");
+    }
+
+    private static async Task EnsureGeneralMutationAllowedAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        string? fenceRunId = await ReadFenceRunIdAsync(connection, ct);
+        if (fenceRunId is null || fenceRunId.StartsWith("maintenance:", StringComparison.Ordinal))
+        {
+            return;
+        }
+        throw new AuthoringConflictException(
+            AuthoringConflictCode.MutationFenceUnavailable,
+            $"Mutation is fenced by authoring run '{fenceRunId}'.");
+    }
+
+    private static async Task EnsureTicketMutationAllowedAsync(
+        SqliteConnection connection,
+        string ticketKey,
+        CancellationToken ct)
+    {
+        string? fenceRunId = await ReadFenceRunIdAsync(connection, ct);
+        if (fenceRunId is null || fenceRunId.StartsWith("maintenance:", StringComparison.Ordinal))
+        {
+            return;
+        }
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT 1 FROM authoring_run_items
+            WHERE RunId = @runId AND BusinessKey COLLATE NOCASE = @ticketKey
+              AND AcceptedReceiptId IS NOT NULL
+            """;
+        command.Parameters.AddWithValue("@runId", fenceRunId);
+        command.Parameters.AddWithValue("@ticketKey", ticketKey);
+        if (await command.ExecuteScalarAsync(ct) is not null)
+        {
+            return;
+        }
+        throw new AuthoringConflictException(
+            AuthoringConflictCode.MutationFenceUnavailable,
+            $"Ticket '{ticketKey}' is fenced by authoring run '{fenceRunId}'.");
+    }
+
+    private static async Task<string?> ReadFenceRunIdAsync(
+        SqliteConnection connection,
+        CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT RunId FROM authoring_mutation_fences WHERE ProcessorKind = @processorKind";
+        command.Parameters.AddWithValue("@processorKind", AuthoringProcessorKind);
+        return (string?)await command.ExecuteScalarAsync(ct);
+    }
+
+    private static async Task EnsureGroupingTicketsBelongToPartitionAsync(
+        SqliteConnection connection,
+        PlannedTicketTopicGroupingPayload payload,
+        CancellationToken ct)
+    {
+        IEnumerable<string> ticketKeys = payload.Topics.SelectMany(topic =>
+            topic.RemainingTicketKeys.Concat(
+                topic.LinkedTicketGroups.SelectMany(group => group.Members.Select(member => member.TicketKey))));
+        foreach (string ticketKey in ticketKeys.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM planned_ticket_authoring_state s
+                    INNER JOIN authoring_result_receipts r ON r.OperationId = s.OperationId
+                    INNER JOIN authoring_run_items i
+                        ON i.Id = s.RunItemId
+                       AND i.AcceptedReceiptId = r.Id
+                       AND i.Status IN (@complete, @superseded)
+                    INNER JOIN planned_jira_hydration j
+                        ON j.IssueKey = s.TicketKey AND j.JiraKey = s.TicketKey
+                    WHERE s.Classification = 'receipt-backed'
+                      AND s.TicketKey = @ticketKey
+                      AND j.WorkGroupClean = @workGroupClean
+                      AND IFNULL(j.Specification, 'Unspecified') = @specification
+                      AND IFNULL(j.Type, '') = @type)
+                """;
+            command.Parameters.AddWithValue("@complete", AuthoringStatusValues.Items.Complete);
+            command.Parameters.AddWithValue("@superseded", AuthoringStatusValues.Items.Superseded);
+            command.Parameters.AddWithValue("@ticketKey", ticketKey);
+            command.Parameters.AddWithValue("@workGroupClean", payload.WorkGroupClean);
+            command.Parameters.AddWithValue("@specification", payload.Specification);
+            command.Parameters.AddWithValue("@type", payload.Type);
+            bool valid = Convert.ToInt32(
+                await command.ExecuteScalarAsync(ct),
+                CultureInfo.InvariantCulture) != 0;
+            if (!valid)
+            {
+                throw new AuthoringConflictException(
+                    AuthoringConflictCode.StageFingerprintMismatch,
+                    $"Ticket '{ticketKey}' does not belong to grouping partition '{GetPartitionKey(payload.WorkGroupClean, payload.Specification, payload.Type)}'.");
+            }
+        }
+    }
+
+    private static async Task<IReadOnlyList<(string Key, string ReceiptId)>>
+        ReadCurrentPartitionMembersAsync(
+            SqliteConnection connection,
+            string workGroupClean,
+            string specification,
+            string type,
+            CancellationToken ct)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            $"""
+            SELECT v.TicketKey, v.ReceiptId
+            FROM {CurrentSnapshotReceiptBackedTicketsTable} v
+            INNER JOIN planned_jira_hydration j
+                ON j.IssueKey = v.TicketKey AND j.JiraKey = v.TicketKey
+            WHERE j.WorkGroupClean = @workGroupClean
+              AND IFNULL(j.Specification, 'Unspecified') = @specification
+              AND IFNULL(j.Type, '') = @type
+            ORDER BY v.TicketKey
+            """;
+        command.Parameters.AddWithValue("@workGroupClean", workGroupClean);
+        command.Parameters.AddWithValue("@specification", specification);
+        command.Parameters.AddWithValue("@type", type);
+        List<(string Key, string ReceiptId)> members = [];
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            members.Add((reader.GetString(0), reader.GetString(1)));
+        }
+        return members;
+    }
+
+    private static Task SavePartitionReceiptAsync(
+        SqliteConnection connection,
+        string runId,
+        string stageId,
+        string partitionKey,
+        string inputFingerprint,
+        int topicRows,
+        int groupRows,
+        int memberRows,
+        DateTimeOffset persistedAt,
+        CancellationToken ct)
+        => ExecuteAsync(
+            connection,
+            """
+            INSERT INTO planned_ticket_partition_receipts(
+                RunId, StageId, PartitionKey, InputFingerprint,
+                TopicRows, TopicGroupRows, MemberRows, PersistedAt)
+            VALUES(@runId, @stageId, @partitionKey, @inputFingerprint,
+                   @topicRows, @groupRows, @memberRows, @persistedAt)
+            ON CONFLICT(RunId, PartitionKey) DO UPDATE SET
+                StageId = excluded.StageId,
+                InputFingerprint = excluded.InputFingerprint,
+                TopicRows = excluded.TopicRows,
+                TopicGroupRows = excluded.TopicGroupRows,
+                MemberRows = excluded.MemberRows,
+                PersistedAt = excluded.PersistedAt
+            """,
+            ct,
+            ("@runId", runId),
+            ("@stageId", stageId),
+            ("@partitionKey", partitionKey),
+            ("@inputFingerprint", inputFingerprint),
+            ("@topicRows", topicRows),
+            ("@groupRows", groupRows),
+            ("@memberRows", memberRows),
+            ("@persistedAt", Format(persistedAt)));
+
+    public static string GetPartitionKey(
+        string? workGroupClean,
+        string? specification,
+        string? type)
+        => string.Join(
+            "\u001f",
+            NormalizePartitionValue(workGroupClean, "unattributed"),
+            NormalizePartitionValue(specification, "Unspecified"),
+            NormalizePartitionValue(type, string.Empty));
+
+    private static string NormalizePartitionValue(string? value, string fallback)
+        => string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+
     private static void ExecuteRaw(SqliteConnection connection, string sql)
     {
         using SqliteCommand cmd = connection.CreateCommand();
@@ -1330,6 +2787,21 @@ public sealed class PlannerDatabase(string dbPath, ILogger<PlannerDatabase> logg
             cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
         }
         await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    private static async Task<int> ExecuteAsyncWithCount(
+        SqliteConnection connection,
+        string sql,
+        CancellationToken ct,
+        params (string Name, object? Value)[] parameters)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = sql;
+        foreach ((string name, object? value) in parameters)
+        {
+            command.Parameters.AddWithValue(name, value ?? DBNull.Value);
+        }
+        return await command.ExecuteNonQueryAsync(ct);
     }
 
     private static object Nullable(object? value) => value ?? DBNull.Value;

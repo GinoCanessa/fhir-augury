@@ -7,7 +7,6 @@
 @inject OrchestratorClient Orchestrator
 @inject ApiInvoker Invoker
 @inject OpenApiCatalogClient OpenApi
-@inject IConfiguration Configuration
 @inject IJSRuntime JS
 
 <PageTitle>API Tests — FHIR Augury Dev UI</PageTitle>
@@ -41,6 +40,14 @@
         </select>
     </div>
 </div>
+
+@if (_endpointLoadError is not null)
+{
+    <div class="alert alert-warning" role="alert">
+        <i class="bi bi-exclamation-triangle"></i>
+        Source tabs could not be loaded from the Orchestrator: @_endpointLoadError
+    </div>
+}
 
 @if (_descriptor is not null)
 {
@@ -152,7 +159,7 @@
             }
             <button class="btn btn-sm btn-outline-secondary ms-auto" type="button"
                     @onclick="RefreshOpenApiAsync" disabled="@_openApiLoading"
-                    title="Re-fetch openapi.json from this source">
+                    title="Re-fetch the merged Orchestrator openapi.json">
                 <i class="bi bi-arrow-clockwise"></i> Refresh
             </button>
         </div>
@@ -163,7 +170,7 @@
                 {
                     <div class="text-body-secondary small">
                         <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-                        Fetching <code>@(_selectedEndpoint?.Address.TrimEnd('/'))/api/v1/openapi.json</code>…
+                        Fetching <code>@(Orchestrator.Address.TrimEnd('/'))/api/v1/openapi.json</code>…
                     </div>
                 }
                 else if (_openApiError is not null)
@@ -174,8 +181,8 @@
                 {
                     <div class="text-body-secondary small">
                         No matching operation found for
-                        <code>@_descriptor.Method.Method @_descriptor.PathTemplate</code> in this source's
-                        OpenAPI document.
+                        <code>@_descriptor.Method.Method @_descriptor.PathTemplate</code> in the merged
+                        Orchestrator OpenAPI document.
                     </div>
                 }
                 else
@@ -383,6 +390,7 @@
     private string SelectedApiId { get; set; } = "";
 
     private List<SourceEndpointInfo> _endpoints = [];
+    private string? _endpointLoadError;
     private IReadOnlyList<ApiEndpointDescriptor> _catalog = [];
     private ApiEndpointDescriptor? _descriptor;
     private SourceEndpointInfo? _selectedEndpoint =>
@@ -410,26 +418,31 @@
     private string? _openApiError;
     private OpenApiOperationInfo? _openApiInfo;
 
-    protected override Task OnInitializedAsync()
+    protected override async Task OnInitializedAsync()
     {
-        IConfigurationSection sourcesSection = Configuration.GetSection("DevUi:Sources");
-        List<SourceEndpointInfo> sources = [];
-        foreach (IConfigurationSection child in sourcesSection.GetChildren())
+        _endpoints = [new SourceEndpointInfo(SourceApiCatalog.Orchestrator, Orchestrator.Address)];
+        try
         {
-            string name = child.Key;
-            string address = child["Address"] ?? "";
-            if (!string.IsNullOrEmpty(address))
-                sources.Add(new SourceEndpointInfo(name, address));
+            IReadOnlyList<string> enabledSourceNames = await Orchestrator.GetEnabledSourceNamesAsync();
+            foreach (string sourceName in enabledSourceNames)
+            {
+                if (OrchestratorProxyRouteMatrix.IsKnownSource(sourceName))
+                    _endpoints.Add(new SourceEndpointInfo(sourceName, Orchestrator.Address));
+            }
         }
-        _endpoints = sources.OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList();
-        _endpoints.Insert(0, new SourceEndpointInfo("orchestrator", Orchestrator.Address));
-
-        if (!string.IsNullOrEmpty(DefaultSource))
+        catch (Exception ex)
         {
-            SelectedSource = DefaultSource;
+            _endpointLoadError = ex.Message;
+        }
+
+        if (!string.IsNullOrEmpty(DefaultSource)
+            && _endpoints.Any(endpoint =>
+                string.Equals(endpoint.Name, DefaultSource, StringComparison.OrdinalIgnoreCase)))
+        {
+            SelectedSource = _endpoints.First(endpoint =>
+                string.Equals(endpoint.Name, DefaultSource, StringComparison.OrdinalIgnoreCase)).Name;
             _catalog = SourceApiCatalog.GetCatalog(SelectedSource);
         }
-        return Task.CompletedTask;
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -443,9 +456,11 @@
             string? storedApi = await JS.InvokeAsync<string?>("sessionStorage.getItem", "apitest.api");
 
             if (string.IsNullOrEmpty(SelectedSource) && !string.IsNullOrEmpty(storedSource)
-                && _endpoints.Any(e => e.Name == storedSource))
+                && _endpoints.Any(e =>
+                    string.Equals(e.Name, storedSource, StringComparison.OrdinalIgnoreCase)))
             {
-                SelectedSource = storedSource;
+                SelectedSource = _endpoints.First(e =>
+                    string.Equals(e.Name, storedSource, StringComparison.OrdinalIgnoreCase)).Name;
                 _catalog = SourceApiCatalog.GetCatalog(SelectedSource);
             }
 
@@ -550,16 +565,14 @@
 
     private async Task LoadOpenApiAsync(bool forceRefresh)
     {
-        if (_descriptor is null || _selectedEndpoint is null) return;
+        if (_descriptor is null) return;
         _openApiLoading = true;
         _openApiError = null;
         _openApiInfo = null;
         StateHasChanged();
         try
         {
-            string clientName = string.Equals(SelectedSource, SourceApiCatalog.Orchestrator,
-                StringComparison.OrdinalIgnoreCase) ? "orchestrator" : "source-direct";
-            System.Text.Json.JsonDocument doc = await OpenApi.GetOrFetchAsync(clientName, _selectedEndpoint.Address);
+            System.Text.Json.JsonDocument doc = await OpenApi.GetOrFetchAsync();
             _openApiInfo = OpenApiCatalogClient.FindOperation(doc, _descriptor.PathTemplate, _descriptor.Method);
         }
         catch (Exception ex)
@@ -610,7 +623,7 @@
         }
         try
         {
-            _preview = ApiUrlBuilder.Build(_selectedEndpoint.Address, _descriptor, _values);
+            _preview = ApiUrlBuilder.Build(Orchestrator.Address, _descriptor, _values);
             _previewError = null;
         }
         catch (ApiInvocationValidationException ex)
@@ -652,9 +665,7 @@
         StateHasChanged();
         try
         {
-            string clientName = string.Equals(SelectedSource, SourceApiCatalog.Orchestrator,
-                StringComparison.OrdinalIgnoreCase) ? "orchestrator" : "source-direct";
-            _result = await Invoker.InvokeAsync(clientName, _selectedEndpoint.Address, _descriptor, _values);
+            _result = await Invoker.InvokeAsync(_descriptor, _values);
             if (_result.IsSuccess)
             {
                 TryParseSearchHits(_result.ResponseBody);

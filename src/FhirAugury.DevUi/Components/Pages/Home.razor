@@ -1,311 +1,225 @@
 @page "/"
-@using FhirAugury.Common.Api
-@using FhirAugury.DevUi.Services
-@inject OrchestratorClient Orchestrator
+@implements IAsyncDisposable
+@inject IServiceScopeFactory ScopeFactory
+@inject TicketWorkflowCatalog Catalog
+@inject ILogger<Home> Logger
 
-<PageTitle>Dashboard — FHIR Augury Dev UI</PageTitle>
+<PageTitle>Operations — FHIR Augury Dev UI</PageTitle>
 
-<h1 class="mb-3"><i class="bi bi-speedometer2"></i> Service Dashboard</h1>
-
-@if (_loading)
-{
-    <div class="d-flex align-items-center gap-2 my-4">
-        <div class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></div>
-        <span>Loading service status…</span>
+<div class="page-heading">
+    <div>
+        <p class="page-heading__eyebrow">Guided ticket processing</p>
+        <h1>Operations workspace</h1>
+        <p class="page-heading__summary">
+            Prepare discussion tickets and plan application work through
+            processor-owned, resumable runs.
+        </p>
     </div>
-}
-else if (_error is not null)
-{
-    <div class="alert alert-danger" role="alert">
-        <i class="bi bi-exclamation-triangle-fill"></i>
-        <strong>Error connecting to orchestrator:</strong> @_error
-    </div>
-    <button class="btn btn-outline-primary" @onclick="LoadDataAsync">
-        <i class="bi bi-arrow-clockwise"></i> Retry
+    <button class="btn btn-outline-primary"
+            type="button"
+            @onclick="RefreshAll">
+        @if (InProgressCount > 0)
+        {
+            <span class="spinner-border spinner-border-sm"
+                  aria-hidden="true"></span>
+        }
+        else
+        {
+            <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+        }
+        Refresh and recheck
     </button>
-}
-else
-{
-    <div class="mb-3">
-        <button class="btn btn-outline-primary btn-sm" @onclick="LoadDataAsync">
-            <i class="bi bi-arrow-clockwise"></i> Refresh
-        </button>
+</div>
+
+<div class="workspace-boundary">
+    <i class="bi bi-info-circle-fill" aria-hidden="true"></i>
+    <span>
+        This workspace creates and recovers ticket runs. Use the Aspire
+        dashboard to start or stop the Orchestrator, source services, and
+        processors, and to inspect their logs and traces.
+    </span>
+</div>
+
+<div class="operation-announcer"
+     aria-live="polite"
+     aria-atomic="true">
+    @if (InProgressCount > 0)
+    {
+        <span>
+            Workspace observations are in progress.
+            Available history and navigation remain usable.
+        </span>
+    }
+    @if (FailureCount > 0)
+    {
+        <span>
+            @FailureCount workspace observation(s) failed or are unavailable.
+            Retained history is labeled as stale.
+        </span>
+    }
+    else if (InProgressCount == 0)
+    {
+        <span>
+            All workspace observations have completed.
+            Check workflow readiness before starting a run.
+        </span>
+    }
+</div>
+
+<section class="overview-section"
+         aria-labelledby="readiness-heading">
+    <div class="section-heading">
+        <div>
+            <p class="section-heading__eyebrow">Current observations</p>
+            <h2 id="readiness-heading">Workflow readiness</h2>
+        </div>
+        <p>
+            Readiness is evidence from the Orchestrator, not a resource
+            lifecycle control.
+        </p>
     </div>
-
-    <div class="table-responsive">
-        <table class="table table-striped table-hover align-middle">
-            <thead class="table-dark">
-                <tr>
-                    <th>Service</th>
-                    <th>Address</th>
-                    <th>Status</th>
-                    <th class="text-end">Items</th>
-                    <th class="text-end">DB Size</th>
-                    <th>Last Sync</th>
-                    <th>Last Error</th>
-                    <th>Indexes</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                @* Orchestrator row *@
-                <tr>
-                    <td><strong><i class="bi bi-diagram-3 me-1"></i>Orchestrator</strong></td>
-                    <td><code>@Orchestrator.Address</code></td>
-                    <td><span class="badge bg-success">healthy</span></td>
-                    <td class="text-end">@_services.Sum(s => (long)s.ItemCount).ToString("N0")</td>
-                    <td class="text-end">@FormatBytes(_services.Sum(s => s.DbSizeBytes))</td>
-                    <td><span class="text-muted">—</span></td>
-                    <td><span class="text-muted">—</span></td>
-                    <td><span class="text-muted">—</span></td>
-                    <td>
-                        <a class="btn btn-sm btn-primary" href="/api-test">
-                            <i class="bi bi-terminal"></i> API Tests
-                        </a>
-                    </td>
-                </tr>
-
-                @foreach (ServiceHealthInfo service in _services)
-                {
-                    <tr>
-                        <td><strong>@service.Name</strong></td>
-                        <td><code>@(service.HttpAddress ?? "—")</code></td>
-                        <td>
-                            <span class="badge @GetStatusBadgeClass(service.Status)">@service.Status</span>
-                        </td>
-                        <td class="text-end">@service.ItemCount.ToString("N0")</td>
-                        <td class="text-end">@FormatBytes(service.DbSizeBytes)</td>
-                        <td>@FormatTimestamp(service.LastSyncAt)</td>                        <td>
-                            @if (!string.IsNullOrEmpty(service.LastError))
-                            {
-                                <span class="text-danger" title="@service.LastError">
-                                    <i class="bi bi-exclamation-circle"></i> @Truncate(service.LastError, 40)
-                                </span>
-                            }
-                            else
-                            {
-                                <span class="text-muted">—</span>
-                            }
-                        </td>
-                        <td>
-                            @if (service.Indexes is { Count: > 0 })
-                            {
-                                int rebuilding = service.Indexes.Count(i => i.IsRebuilding);
-                                <button class="btn btn-sm btn-outline-info"
-                                        @onclick="() => ToggleIndexes(service.Name)"
-                                        aria-expanded="@(_expandedIndexes.Contains(service.Name))">
-                                    @service.Indexes.Count indexes
-                                    @if (rebuilding > 0)
-                                    {
-                                        <span class="badge bg-warning text-dark ms-1">@rebuilding rebuilding</span>
-                                    }
-                                </button>
-                            }
-                            else
-                            {
-                                <span class="text-muted">—</span>
-                            }
-                        </td>
-                        <td>
-                            <a class="btn btn-sm btn-primary" href="@($"/api-test?source={service.Name}")">
-                                <i class="bi bi-terminal"></i> API Tests
-                            </a>
-                        </td>
-                    </tr>
-
-                    @if (_expandedIndexes.Contains(service.Name) && service.Indexes is { Count: > 0 })
-                    {
-                        <tr>
-                            <td colspan="9" class="bg-body-secondary p-0">
-                                <div class="p-3">
-                                    <div class="d-flex justify-content-between align-items-center mb-2">
-                                        <h6 class="mb-0">Indexes — @service.Name</h6>
-                                        @{
-                                            string allKey = RebuildKey(service.Name, "all");
-                                            string allType = "all";
-                                            bool allRebuilding = _rebuildingKeys.Contains(allKey);
-                                        }
-                                        <button class="btn btn-sm btn-outline-warning"
-                                                disabled="@allRebuilding"
-                                                @onclick="() => RebuildIndexAsync(service.Name, allType)">
-                                            @if (allRebuilding)
-                                            {
-                                                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-                                            }
-                                            else
-                                            {
-                                                <i class="bi bi-arrow-repeat"></i>
-                                            }
-                                            Rebuild All
-                                        </button>
-                                    </div>
-                                    <table class="table table-sm table-bordered mb-0">
-                                        <thead>
-                                            <tr>
-                                                <th>Name</th>
-                                                <th>Description</th>
-                                                <th>Status</th>
-                                                <th class="text-end">Records</th>
-                                                <th>Last Rebuild</th>
-                                                <th>Error</th>
-                                                <th>Actions</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            @foreach (IndexStatusInfo idx in service.Indexes)
-                                            {
-                                                string rebuildKey = RebuildKey(service.Name, idx.Name);
-                                                bool isRebuildRequested = _rebuildingKeys.Contains(rebuildKey);
-                                                <tr>
-                                                    <td><code>@idx.Name</code></td>
-                                                    <td>@idx.Description</td>
-                                                    <td>
-                                                        @if (idx.IsRebuilding)
-                                                        {
-                                                            <span class="badge bg-warning text-dark">
-                                                                <i class="bi bi-arrow-repeat spin"></i> Rebuilding
-                                                            </span>
-                                                        }
-                                                        else
-                                                        {
-                                                            <span class="badge bg-success">Ready</span>
-                                                        }
-                                                    </td>
-                                                    <td class="text-end">@idx.RecordCount.ToString("N0")</td>
-                                                    <td>@FormatTimestamp(idx.LastRebuildCompletedAt)</td>
-                                                    <td>
-                                                        @if (!string.IsNullOrEmpty(idx.LastError))
-                                                        {
-                                                            <span class="text-danger" title="@idx.LastError">
-                                                                <i class="bi bi-exclamation-circle"></i> @Truncate(idx.LastError, 30)
-                                                            </span>
-                                                        }
-                                                        else
-                                                        {
-                                                            <span class="text-muted">—</span>
-                                                        }
-                                                    </td>
-                                                    <td>
-                                                        <button class="btn btn-sm btn-outline-warning"
-                                                                disabled="@(isRebuildRequested || allRebuilding)"
-                                                                @onclick="() => RebuildIndexAsync(service.Name, idx.Name)">
-                                                            @if (isRebuildRequested)
-                                                            {
-                                                                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-                                                            }
-                                                            else
-                                                            {
-                                                                <i class="bi bi-arrow-repeat"></i>
-                                                            }
-                                                            Rebuild
-                                                        </button>
-                                                    </td>
-                                                </tr>
-                                            }
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </td>
-                        </tr>
-                    }
-                }
-            </tbody>
-        </table>
+    <div class="readiness-grid">
+        @foreach (TicketWorkflowDefinition workflow in Catalog.Workflows)
+        {
+            <ReadinessObservationPanel @key="workflow.RouteKey"
+                                       Workflow="@workflow"
+                                       Observation="@_snapshot.ReadinessFor(workflow.RouteKey)" />
+        }
     </div>
-}
+</section>
+
+<section class="overview-section"
+         aria-labelledby="workflows-heading">
+    <div class="section-heading">
+        <div>
+            <p class="section-heading__eyebrow">Choose a task</p>
+            <h2 id="workflows-heading">Ticket workflows</h2>
+        </div>
+        <p>
+            Active and recovering runs appear before recent terminal
+            history. Each history can be refreshed independently.
+        </p>
+    </div>
+    <div class="workflow-grid">
+        @foreach (TicketWorkflowDefinition workflow in Catalog.Workflows)
+        {
+            <WorkflowCard @key="workflow.RouteKey"
+                          Workflow="@workflow"
+                          History="@_snapshot.Workflows[workflow.RouteKey].History"
+                          Readiness="@_snapshot.ReadinessFor(workflow.RouteKey)"
+                          OnRefresh="@(() => RefreshHistory(workflow.RouteKey))" />
+        }
+    </div>
+</section>
 
 @code {
-    private bool _loading = true;
-    private string? _error;
-    private List<ServiceHealthInfo> _services = [];
-    private HashSet<string> _expandedIndexes = [];
-    private HashSet<string> _rebuildingKeys = [];
+    private AsyncServiceScope? _scope;
+    private TicketWorkspaceSession? _session;
+    private TicketWorkspaceSnapshot _snapshot = null!;
+    private Func<TicketWorkspaceSnapshot, Task>? _changed;
+    private bool _started;
+    private bool _disposed;
 
-    protected override async Task OnInitializedAsync()
+    private IEnumerable<WorkspaceObservationPhase> Phases =>
+        _snapshot.Workflows.Values
+            .Select(workspace => workspace.History.Phase)
+            .Append(_snapshot.Readiness.Phase);
+
+    private int InProgressCount =>
+        Phases.Count(phase => phase is
+            WorkspaceObservationPhase.Pending or
+            WorkspaceObservationPhase.Loading);
+
+    private int FailureCount =>
+        Phases.Count(phase => phase is
+            WorkspaceObservationPhase.Unavailable or
+            WorkspaceObservationPhase.Failed);
+
+    protected override void OnInitialized()
     {
-        await LoadDataAsync();
+        AsyncServiceScope scope = ScopeFactory.CreateAsyncScope();
+        _scope = scope;
+        _session = scope.ServiceProvider
+            .GetRequiredService<TicketWorkspaceSession>();
+        _snapshot = _session.Snapshot;
     }
 
-    private async Task LoadDataAsync()
+    protected override Task OnAfterRenderAsync(bool firstRender)
     {
-        _loading = true;
-        _error = null;
-        StateHasChanged();
+        if (firstRender && !_started && !_disposed &&
+            _session is TicketWorkspaceSession session)
+        {
+            _started = true;
+            _changed = snapshot => ApplySnapshotAsync(session, snapshot);
+            session.Changed += _changed;
+            session.Start();
+        }
+        return Task.CompletedTask;
+    }
 
+    private async Task ApplySnapshotAsync(
+        TicketWorkspaceSession session,
+        TicketWorkspaceSnapshot snapshot)
+    {
         try
         {
-            _services = await Orchestrator.GetServicesAsync();
+            await InvokeAsync(() =>
+            {
+                if (_disposed || !ReferenceEquals(_session, session) ||
+                    snapshot.Revision <= _snapshot.Revision)
+                {
+                    return;
+                }
+                _snapshot = snapshot;
+                StateHasChanged();
+            });
         }
         catch (Exception ex)
         {
-            _error = ex.Message;
-        }
-        finally
-        {
-            _loading = false;
-        }
-    }
-
-    private void ToggleIndexes(string serviceName)
-    {
-        if (!_expandedIndexes.Remove(serviceName))
-        {
-            _expandedIndexes.Add(serviceName);
+            Logger.LogError(
+                ex,
+                "Could not render workspace revision {Revision}",
+                snapshot.Revision);
         }
     }
 
-    private static string RebuildKey(string service, string indexType) => $"{service}:{indexType}";
-
-    private async Task RebuildIndexAsync(string service, string indexType)
+    private void RefreshAll()
     {
-        string key = RebuildKey(service, indexType);
-        _rebuildingKeys.Add(key);
-        StateHasChanged();
-
-        try
+        if (!_disposed)
         {
-            await Orchestrator.RebuildIndexAsync(service, indexType);
-        }
-        finally
-        {
-            _rebuildingKeys.Remove(key);
-            await LoadDataAsync();
+            _session?.RefreshAll();
         }
     }
 
-    private static string GetStatusBadgeClass(string status) => status.ToLowerInvariant() switch
+    private void RefreshHistory(string workflow)
     {
-        "healthy" => "bg-success",
-        "degraded" => "bg-warning text-dark",
-        "unavailable" or "timeout" => "bg-danger",
-        "not_configured" => "bg-secondary",
-        _ => "bg-info",
-    };
-
-    private static string FormatBytes(long bytes)
-    {
-        if (bytes <= 0) return "—";
-        string[] units = ["B", "KB", "MB", "GB"];
-        double size = bytes;
-        int unit = 0;
-        while (size >= 1024 && unit < units.Length - 1)
+        if (!_disposed)
         {
-            size /= 1024;
-            unit++;
+            _session?.RefreshHistory(workflow);
         }
-        return $"{size:F1} {units[unit]}";
     }
 
-    private static string FormatTimestamp(DateTimeOffset? dto)
+    public async ValueTask DisposeAsync()
     {
-        if (dto is null) return "—";
-        TimeSpan ago = DateTimeOffset.UtcNow - dto.Value;
-        if (ago.TotalMinutes < 1) return "just now";
-        if (ago.TotalHours < 1) return $"{(int)ago.TotalMinutes}m ago";
-        if (ago.TotalDays < 1) return $"{(int)ago.TotalHours}h ago";
-        return dto.Value.LocalDateTime.ToString("yyyy-MM-dd HH:mm");
-    }
+        if (_disposed)
+        {
+            return;
+        }
+        _disposed = true;
+        TicketWorkspaceSession? session = _session;
+        Func<TicketWorkspaceSnapshot, Task>? changed = _changed;
+        AsyncServiceScope? scope = _scope;
+        _session = null;
+        _changed = null;
+        _scope = null;
 
-    private static string Truncate(string text, int maxLength) =>
-        text.Length <= maxLength ? text : string.Concat(text.AsSpan(0, maxLength), "…");
+        if (session is not null && changed is not null)
+        {
+            session.Changed -= changed;
+        }
+        if (scope is AsyncServiceScope ownedScope)
+        {
+            await ownedScope.DisposeAsync();
+        }
+    }
 }

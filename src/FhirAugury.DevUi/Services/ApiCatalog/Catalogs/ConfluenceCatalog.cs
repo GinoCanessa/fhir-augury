@@ -13,6 +13,18 @@ public static class ConfluenceCatalog
             .. SharedSourceEndpoints.LifecycleEndpoints(),
             .. SharedSourceEndpoints.IngestionEndpoints(),
 
+            // Ingestion block (Confluence-only)
+            new ApiEndpointDescriptor("ingestion.block", "Ingestion Block", "Ingestion",
+                HttpMethod.Get, "api/v1/ingestion-block", [],
+                Description: "Reports whether Confluence ingestion is parked on a browser challenge."),
+            new ApiEndpointDescriptor("ingestion.block-clear", "Ingestion Block (clear)", "Ingestion",
+                HttpMethod.Post, "api/v1/ingestion-block/clear",
+                [
+                    new ApiParameter("clearedBy", ApiParameterKind.Query, Required: false,
+                        Placeholder: "operator name"),
+                ],
+                Description: "Reopens the ingestion gate after the browser challenge has been solved."),
+
             // Items
             new ApiEndpointDescriptor("items.list", "List items", "Items",
                 HttpMethod.Get, "api/v1/items",
@@ -104,6 +116,14 @@ public static class ConfluenceCatalog
             // Spaces
             new ApiEndpointDescriptor("spaces.list", "List spaces", "Spaces",
                 HttpMethod.Get, "api/v1/spaces", []),
+
+            // Cache
+            new ApiEndpointDescriptor("cache.reconcileReport", "Reconcile report", "Cache",
+                HttpMethod.Get, "api/v1/cache/reconcile-report",
+                [
+                    new ApiParameter("missingSample", ApiParameterKind.Query, Required: false, DefaultValue: "20",
+                        ValueType: ApiParameterValueType.Int),
+                ]),
         ];
 
         return list;

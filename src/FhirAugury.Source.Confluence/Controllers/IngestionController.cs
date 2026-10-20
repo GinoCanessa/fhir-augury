@@ -21,11 +21,19 @@ public class IngestionController(
     ConfluenceXRefRebuilder xrefRebuilder,
     ConfluenceLinkRebuilder linkRebuilder,
     IIndexTracker indexTracker,
+    ConfluenceIngestionGate gate,
     IStartupRebuildStatus? startupRebuild = null) : ControllerBase
 {
+    /// <summary>Runs an ingestion synchronously and returns its result.</summary>
+    /// <response code="412">Ingestion is blocked by an edge challenge; clear it first.</response>
     [HttpPost("ingest")]
     public async Task<IActionResult> TriggerIngestion([FromQuery] string? type, CancellationToken cancellationToken)
     {
+        if (gate.IsBlocked)
+        {
+            return Blocked();
+        }
+
         string ingestionType = type ?? "incremental";
         try
         {
@@ -39,15 +47,27 @@ public class IngestionController(
                 errors = result.Errors,
             });
         }
+        catch (ConfluenceIngestionBlockedException)
+        {
+            // The gate can close between the check above and the run itself.
+            return Blocked();
+        }
         catch (InvalidOperationException ex)
         {
             return Conflict(new { error = ex.Message });
         }
     }
 
+    /// <summary>Queues an ingestion to run in the background.</summary>
+    /// <response code="412">Ingestion is blocked by an edge challenge; a doomed run is never accepted.</response>
     [HttpPost("ingest/trigger")]
     public IActionResult QueueIngestion([FromQuery] string? type)
     {
+        if (gate.IsBlocked)
+        {
+            return Blocked();
+        }
+
         string ingestionType = (type ?? "incremental").ToLowerInvariant();
 
         workQueue.Enqueue(ct => ingestionType switch
@@ -58,6 +78,20 @@ public class IngestionController(
 
         return Accepted(new { status = "queued", type = ingestionType });
     }
+
+    /// <summary>
+    /// The one refusal shape for a network run requested while the gate is
+    /// closed, so callers learn one status rather than three.
+    /// </summary>
+    private IActionResult Blocked() =>
+        StatusCode(StatusCodes.Status412PreconditionFailed, new
+        {
+            error = "Confluence ingestion is blocked by an edge challenge.",
+            fingerprint = gate.Current?.Fingerprint,
+            blockedAt = gate.Current?.BlockedAt,
+            remediation = ConfluenceHumanInterventionRequiredException.RemediationText,
+            clearEndpoint = "POST api/v1/ingestion-block/clear",
+        });
 
     [HttpPost("rebuild")]
     public async Task<IActionResult> RebuildFromCache(CancellationToken cancellationToken)

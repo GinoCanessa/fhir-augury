@@ -11,7 +11,8 @@ internal sealed record ReallocateOptions(
     string FhirSpecDbPath,
     string WorkGroupHint,
     bool AllowStaleClone,
-    bool AllowMixedHeads);
+    bool AllowMixedHeads,
+    Uri? ProcessorBaseUrl);
 
 internal static class CliOptions
 {
@@ -33,6 +34,7 @@ internal static class CliOptions
         string hint = string.Empty;
         bool allowStaleClone = false;
         bool allowMixedHeads = false;
+        Uri? processorBaseUrl = null;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -69,6 +71,25 @@ internal static class CliOptions
                 case "--allow-mixed-heads":
                     allowMixedHeads = true;
                     break;
+                case "--processor":
+                    if (!TryTakeValue(args, ref i, arg, out string processor, out error))
+                    {
+                        options = Default();
+                        return false;
+                    }
+                    if (!Uri.TryCreate(processor, UriKind.Absolute, out processorBaseUrl))
+                    {
+                        options = Default();
+                        error = "--processor must be an absolute HTTP or HTTPS URL.";
+                        return false;
+                    }
+                    if (processorBaseUrl.Scheme is not ("http" or "https"))
+                    {
+                        options = Default();
+                        error = "--processor must be an absolute HTTP or HTTPS URL.";
+                        return false;
+                    }
+                    break;
                 default:
                     options = Default();
                     error = $"Unknown option for 'reallocate': {arg}";
@@ -82,9 +103,16 @@ internal static class CliOptions
             error = "Missing required option --clone <repo-clone-path>.";
             return false;
         }
+        if (!dryRun && processorBaseUrl is null)
+        {
+            options = Default();
+            error = "Non-dry-run reallocation requires --processor <url>.";
+            return false;
+        }
 
         options = new ReallocateOptions(
-            db, clone, repo, dryRun, githubDb, fhirR6Db, fhirSpecDb, hint, allowStaleClone, allowMixedHeads);
+            db, clone, repo, dryRun, githubDb, fhirR6Db, fhirSpecDb, hint,
+            allowStaleClone, allowMixedHeads, processorBaseUrl);
         error = null;
         return true;
     }
@@ -104,5 +132,5 @@ internal static class CliOptions
 
     private static ReallocateOptions Default() => new(
         DefaultDb, string.Empty, null, false, DefaultGitHubDb, DefaultFhirR6Db, DefaultFhirSpecDb,
-        string.Empty, false, false);
+        string.Empty, false, false, null);
 }

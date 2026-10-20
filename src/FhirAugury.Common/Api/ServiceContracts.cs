@@ -24,9 +24,10 @@ public record HealthCheckResponse(
 
 /// <summary>Aggregated services status from the orchestrator.</summary>
 public record ServicesStatusResponse(
-    List<ServiceHealthInfo> Services);
+    List<ServiceHealthInfo> Services,
+    DateTimeOffset? LastCheckedAt = null);
 
-/// <summary>Health and status of a single source service.</summary>
+/// <summary>Health and status of an orchestrator, source, or processing service.</summary>
 public record ServiceHealthInfo
 {
     public required string Name { get; init; }
@@ -39,6 +40,17 @@ public record ServiceHealthInfo
     public DateTimeOffset? LastSyncAt { get; init; }
     public string? LastError { get; init; }
     public List<IndexStatusInfo>? Indexes { get; init; }
+    public string ServiceKind { get; init; } = "source";
+    public bool Enabled { get; init; } = true;
+    public bool Configured { get; init; } = true;
+    public DateTimeOffset? CheckedAt { get; init; }
+    public string? ProcessingStatus { get; init; }
+    public bool? ProcessingIsRunning { get; init; }
+    public int? ProcessingRemainingCount { get; init; }
+    public int? ProcessingInFlightCount { get; init; }
+    public int? ProcessingErrorCount { get; init; }
+    public DateTimeOffset? LastItemCompletedAt { get; init; }
+    public List<string> RequiredServices { get; init; } = [];
 }
 
 /// <summary>Available service endpoints from the orchestrator.</summary>

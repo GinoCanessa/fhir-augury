@@ -1,7 +1,10 @@
+using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Configuration;
+using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Jira.Common.Agent;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processing.Jira.Common.Database.Records;
@@ -10,6 +13,9 @@ using FhirAugury.Processing.Jira.Common.Filtering;
 using FhirAugury.Processing.Jira.Common.Processing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace FhirAugury.Processing.Jira.Common.Hosting;
@@ -58,14 +64,41 @@ public static class JiraProcessingServiceCollectionExtensions
         services.AddSingleton(defaults ?? JiraProcessingFilterDefaults.None);
         services.AddSingleton<JiraProcessingFilterResolver>(sp => new JiraProcessingFilterResolver(sp.GetRequiredService<JiraProcessingFilterDefaults>()));
         services.AddSingleton<JiraLocalProcessingRequestFactory>();
+        services.AddSingleton<JiraProcessingDatabase>(sp =>
+        {
+            string path = sp.GetRequiredService<IOptions<ProcessingServiceOptions>>().Value.DatabasePath;
+            JiraProcessingDatabase database = new(
+                path,
+                sp.GetRequiredService<ILogger<JiraProcessingDatabase>>());
+            database.Initialize();
+            return database;
+        });
+        services.AddSingleton<AuthoringRetryPolicy>();
+        services.TryAddSingleton<
+            IAuthoringSnapshotWorkflowGuard,
+            AllowAllAuthoringSnapshotWorkflowGuard>();
+        services.AddSingleton<AuthoringRunStore>(sp => new AuthoringRunStore(
+            sp.GetRequiredService<JiraProcessingDatabase>(),
+            sp.GetRequiredService<ILogger<AuthoringRunStore>>(),
+            sp.GetRequiredService<AuthoringRetryPolicy>()));
+        services.AddSingleton<AuthoringRunControlService>();
+        services.AddSingleton<AuthoringRunFinalizer>();
         services.AddSingleton<JiraProcessingSourceTicketStore>();
         services.AddSingleton<IProcessingWorkItemStore<JiraProcessingSourceTicketRecord>>(sp => sp.GetRequiredService<JiraProcessingSourceTicketStore>());
+        services.AddSingleton<JiraConfiguredTicketSelector>();
+        services.AddSingleton<JiraAuthoringRunCoordinator>();
+        services.AddSingleton<IAuthoringRunLifecycleAdapter>(sp =>
+            sp.GetRequiredService<JiraAuthoringRunCoordinator>());
+        services.AddSingleton<JiraAuthoringWorkItemStore>();
+        services.AddSingleton<IAuthoringQueueStore<JiraAuthoringWorkItem>>(sp =>
+            sp.GetRequiredService<JiraAuthoringWorkItemStore>());
         services.AddSingleton<JiraAgentCommandRenderer>();
         services.AddSingleton<IJiraAgentCliRunner, JiraAgentCliRunner>();
         services.AddSingleton<IJiraAgentExtensionTokenProvider, EmptyJiraAgentExtensionTokenProvider>();
         services.AddSingleton<IProcessingWorkItemHandler<JiraProcessingSourceTicketRecord>, JiraTicketProcessingHandler>();
+        services.AddSingleton<IAuthoringWorkItemHandler<JiraAuthoringWorkItem>, JiraAuthoringWorkItemHandler>();
         services.AddSingleton<ProcessingQueueRunner<JiraProcessingSourceTicketRecord>>();
-        services.AddHostedService<ProcessingHostedService<JiraProcessingSourceTicketRecord>>();
+        services.AddSingleton<AuthoringQueueRunner<JiraAuthoringWorkItem>>();
         services.AddHttpClient<DirectJiraTicketDiscoveryClient>((sp, client) =>
         {
             JiraProcessingOptions options = sp.GetRequiredService<IOptions<JiraProcessingOptions>>().Value;
@@ -84,6 +117,8 @@ public static class JiraProcessingServiceCollectionExtensions
                 ? sp.GetRequiredService<OrchestratorJiraTicketDiscoveryClient>()
                 : sp.GetRequiredService<DirectJiraTicketDiscoveryClient>();
         });
+        services.AddSingleton<IJiraTicketLabelMatcher>(sp =>
+            (IJiraTicketLabelMatcher)sp.GetRequiredService<IJiraTicketDiscoveryClient>());
         services.AddSingleton<JiraTicketSyncService>();
         services.AddSingleton<JiraTicketSyncWorker>();
         services.AddHostedService(sp => sp.GetRequiredService<JiraTicketSyncWorker>());

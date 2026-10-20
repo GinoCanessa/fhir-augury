@@ -119,24 +119,7 @@ public static class JiraLocalProcessingQueryBuilder
         BuildList(JiraLocalProcessingListRequest request, TableMapping mapping)
     {
         (string where, List<SqliteParameter> parameters) = BuildWhere(request, mapping);
-
-        int limit = (request.Limit is null || request.Limit.Value <= 0)
-            ? DefaultLimit
-            : request.Limit.Value;
-        int offset = (request.Offset is null || request.Offset.Value < 0)
-            ? 0
-            : request.Offset.Value;
-
-        StringBuilder sb = new StringBuilder();
-        sb.Append($"SELECT {BuildSelectColumns(mapping)} FROM {mapping.TableName}");
-        sb.Append(where);
-        sb.Append(" ORDER BY Key ASC");
-        sb.Append(" LIMIT @limit OFFSET @offset");
-
-        parameters.Add(new SqliteParameter("@limit", limit));
-        parameters.Add(new SqliteParameter("@offset", offset));
-
-        return (sb.ToString(), parameters);
+        return BuildPagedList(request, mapping, where, parameters);
     }
 
     /// <summary>Builds the random-single-ticket query.</summary>
@@ -164,6 +147,79 @@ public static class JiraLocalProcessingQueryBuilder
 
         string sql = $"SELECT COUNT(*) FROM {mapping.TableName}{where}";
         return (sql, parameters);
+    }
+
+    /// <summary>Combines inherited filters with optional keys and raw label-text criteria.</summary>
+    public static (string WhereSql, List<SqliteParameter> Parameters)
+        BuildSelectionWhere(JiraLocalProcessingSelectionRequest request) => BuildSelectionWhere(request, Fhir);
+
+    public static (string WhereSql, List<SqliteParameter> Parameters)
+        BuildSelectionWhere(JiraLocalProcessingSelectionRequest request, TableMapping mapping)
+    {
+        (string where, List<SqliteParameter> parameters) = BuildWhere(request, mapping);
+        StringBuilder sb = new StringBuilder(where);
+
+        if (request.Keys is { Count: > 0 })
+        {
+            List<string> names = [];
+            foreach (string key in request.Keys)
+            {
+                string name = $"@selectionKey{names.Count}";
+                names.Add(name);
+                parameters.Add(new SqliteParameter(name, key));
+            }
+            sb.Append($" AND Key IN ({string.Join(", ", names)})");
+        }
+
+        JiraLabelTextPredicateBuilder.AppendFilter(sb, parameters, request.LabelText);
+        return (sb.ToString(), parameters);
+    }
+
+    /// <summary>Builds a selection query with filtering before paging.</summary>
+    public static (string Sql, List<SqliteParameter> Parameters)
+        BuildSelectionList(JiraLocalProcessingSelectionRequest request) => BuildSelectionList(request, Fhir);
+
+    public static (string Sql, List<SqliteParameter> Parameters)
+        BuildSelectionList(JiraLocalProcessingSelectionRequest request, TableMapping mapping)
+    {
+        (string where, List<SqliteParameter> parameters) = BuildSelectionWhere(request, mapping);
+        return BuildPagedList(request, mapping, where, parameters);
+    }
+
+    /// <summary>Builds the count of all matches for the selection query.</summary>
+    public static (string Sql, List<SqliteParameter> Parameters)
+        BuildSelectionCount(JiraLocalProcessingSelectionRequest request) => BuildSelectionCount(request, Fhir);
+
+    public static (string Sql, List<SqliteParameter> Parameters)
+        BuildSelectionCount(JiraLocalProcessingSelectionRequest request, TableMapping mapping)
+    {
+        (string where, List<SqliteParameter> parameters) = BuildSelectionWhere(request, mapping);
+        return ($"SELECT COUNT(*) FROM {mapping.TableName}{where}", parameters);
+    }
+
+    private static (string Sql, List<SqliteParameter> Parameters) BuildPagedList(
+        JiraLocalProcessingListRequest request,
+        TableMapping mapping,
+        string where,
+        List<SqliteParameter> parameters)
+    {
+        int limit = (request.Limit is null || request.Limit.Value <= 0)
+            ? DefaultLimit
+            : request.Limit.Value;
+        int offset = (request.Offset is null || request.Offset.Value < 0)
+            ? 0
+            : request.Offset.Value;
+
+        StringBuilder sb = new StringBuilder();
+        sb.Append($"SELECT {BuildSelectColumns(mapping)} FROM {mapping.TableName}");
+        sb.Append(where);
+        sb.Append(" ORDER BY Key ASC");
+        sb.Append(" LIMIT @limit OFFSET @offset");
+
+        parameters.Add(new SqliteParameter("@limit", limit));
+        parameters.Add(new SqliteParameter("@offset", offset));
+
+        return (sb.ToString(), parameters);
     }
 
     private static string BuildSelectColumns(TableMapping mapping)

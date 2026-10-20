@@ -35,7 +35,7 @@ contract for the Orchestrator:
 | Endpoint | Description |
 |----------|-------------|
 | `Search` | FTS5 full-text search within the source, returns scored results with snippets |
-| `GetItem` | Retrieve a single item by ID |
+| `GetItem` | Retrieve a single item by ID. Jira adds optional source-read provenance and display-name-only people. |
 | `ListItems` | List items with optional filters and pagination |
 | `GetRelated` | Find related items within the source |
 | `GetSnapshot` | Point-in-time snapshot of an item |
@@ -69,6 +69,9 @@ Each source also exposes source-specific HTTP API endpoints for domain queries:
 | `QueryIssues` | Arbitrary JQL-like query |
 | `GetIssueNumbers` | Bulk issue number lookup |
 | `GetIssueSnapshot` | Detailed issue snapshot |
+| `ListLocalProcessingTickets` | Page processor candidates with the Jira source generation represented by the page |
+| `POST /api/v1/public-people/preview` | Read-only, bounded preview of policy-safe public-person population |
+| `POST /api/v1/public-people/apply` | Conditional apply of an acknowledged source-owned preview |
 
 ### Zulip Endpoints
 
@@ -82,6 +85,7 @@ Each source also exposes source-specific HTTP API endpoints for domain queries:
 | `GetMessagesByUser` | Messages filtered by sender |
 | `QueryMessages` | Arbitrary message query |
 | `GetThreadSnapshot` | Thread snapshot with context |
+| `GET /api/v1/references/resolve?reference=...` | Typed, indexed-only resolution of a numeric message or legacy thread reference |
 
 ### Confluence Endpoints
 
@@ -197,15 +201,24 @@ mode is used; otherwise Cookie mode.
 **Data model:**
 
 - `JiraIssueRecord` — Issue key, title, description, status, priority, 32+
-  fields including HL7 custom fields and parsed vote components
+  fields including HL7 custom fields and parsed vote components; reporter and
+  assignee user IDs bind public display names to the actual Jira identities
 - `JiraCommentRecord` — Comment author, body, body plain text, timestamps (IssueKey FK)
+- `JiraUserRecord` — Jira username plus display name,
+  `HasAccountUsername` origin evidence, and a `HasExplicitDisplayName`
+  eligibility flag; username-derived placeholders are never public people
+  data
+- `JiraSourceStateRecord` — Singleton content revision and
+  mutation-in-progress fence for consistent source reads
 
 16 HL7-specific custom fields are mapped to domain properties (e.g.,
 `customfield_11302` → Specification, `customfield_11400` → WorkGroup).
 
 **Database tables:** `jira_issues` (Key unique, 32+ columns),
 `jira_comments` (IssueKey FK), `jira_issue_related` (related issue keys),
-`jira_issue_labels` (issue-to-label junction), `jira_index_workgroups`,
+`jira_issue_labels` (issue-to-label junction), `jira_users`,
+`jira_issue_inpersons` (issue-to-requester junction), `jira_source_state`,
+`jira_index_workgroups`,
 `jira_index_specifications`, `jira_index_ballots`, `jira_index_labels`,
 `jira_index_types`, `jira_index_priorities`, `jira_index_statuses`,
 `jira_index_resolutions` (index/lookup tables), `jira_issues_fts` (FTS5),
@@ -217,6 +230,108 @@ mode is used; otherwise Cookie mode.
 **Pagination:** Offset-based (`startAt` vs `total`).
 
 **Special feature:** Also supports XML RSS export parsing via `JiraXmlParser`.
+
+#### Source-owned Jira provenance
+
+Jira source freshness and local read consistency are deliberately separate:
+
+- Every known Jira project has a nullable latest-successful upstream
+  watermark. Only an error-free `full` or `incremental` ingestion can advance
+  it to that run's completion time. `completed_with_errors`, thrown failures,
+  cache preload, and rebuild preserve the prior value. A database rebuild
+  restores known project values and never infers freshness from cache
+  filenames or replay time.
+- The singleton `jira_source_state` row carries a monotonic
+  `ContentRevision`, `MutationInProgress`, and `UpdatedAt`. Every source
+  mutation advances/fences this generation, including local-processing status
+  changes. This revision answers "which local content generation was read";
+  the project watermark answers "when was upstream Jira last refreshed."
+- Jira item reads and local-processing list/count reads capture their result
+  plus a `SourceReadProvenance` in one SQLite read transaction. The envelope
+  contains `Source`, `ContentRevision`, `IsStable`, and
+  `ProjectLastSuccessfulRefreshAt`. A read during a mutation is reported as
+  unstable rather than presented as a consistent generation.
+
+Paged processor discovery requires every page to be stable and to carry the
+same content revision and project watermarks. It restarts the whole sequence
+for at most three passes when those coordinates change, then retains the
+tickets but suppresses provenance rather than claiming a mixed generation.
+Each candidate is stamped only with the watermark for its own project.
+
+#### Display-name-only Jira people
+
+`GET /api/v1/items/{key}` adds an `ItemPeopleResponse` containing nullable
+Reporter and Assignee names plus a deterministic `InPersonRequesters` list.
+Names are resolved only through the exact Jira user identity with
+`HasExplicitDisplayName = 1`. The requester list is trimmed, case-insensitively
+deduplicated, and sorted. `HasAccountUsername` distinguishes a true Jira
+account username from the synthetic key used for display-name-only rows;
+unknown migrated origins are treated conservatively as account-backed, and a
+later real-account observation upgrades that evidence without downgrading it.
+
+The shared public display-name policy trims nonblank values, rejects a value
+equal to its proven account username case-insensitively, and rejects values
+containing an email-address-shaped token. The source applies that policy again
+while constructing the complete response and sets
+`PublicDisplayNamePolicyVersion` to the current version even when no people
+remain. Missing, older, unknown, or future markers are not trusted by
+downstream hydration. Usernames, email addresses, and Jira user IDs never
+cross this structured contract. Old rows without qualifying evidence remain
+ineligible; deliberate source-owned population can supply a proven
+policy-safe name without ordinary ingestion. The existing string
+metadata remains a separate compatibility surface and is not used by Preparer
+hydration.
+
+#### Deliberate public-people preview/apply
+
+The Orchestrator exposes the source operations at
+`POST /api/v1/jira/public-people/preview` and
+`POST /api/v1/jira/public-people/apply`. The Dev UI API catalog lists
+`public-people.preview` and `public-people.apply` under **Public People
+Maintenance**. These are separate source maintenance operations, not
+publication, processor authoring, or ingestion commands.
+
+Preview accepts `keys` and `evidenceMode` (`cache-only`, the default, or an
+explicit `upstream` opt-in). It is read-only, uses no display-name identity
+matching, and binds exact identities, explicit same-revision observations,
+before-images, and complete shared-user reference impact. Public responses
+contain safe ticket/role reason codes and affected-ticket coordinates/counts,
+not raw private identity/name evidence. A missing role differs from a missing
+field or malformed value. Unknown request fields and unsupported modes are
+rejected rather than ignored.
+
+Source-written acquisition receipts are required to trust cached XML/JSON
+observations. Legacy raw caches without those receipts are **untrusted
+unknown-origin evidence**, not a backfill shortcut. Explicit upstream mode
+uses the source's existing authenticated Jira client without ingestion; a
+different upstream ticket revision, conflicting observations, missing exact
+identity/name evidence, or policy rejection can still prevent population.
+This capability does not guarantee recovery of every empty name.
+
+Source-local bounds are 2,000 requested keys, 10,000 affected ticket
+coordinates, eight outstanding previews, and a 15-minute lifetime measured
+after preview completion. Limits cause explicit refusal, never a truncated
+apply scope. Restart discards outstanding previews.
+
+Apply accepts only `previewToken` and `acknowledgeSharedUserImpact`. An
+operator must expressly acknowledge the full disclosed effect on nonselected
+tickets when required; shared-user name changes never rebind those tickets.
+The pipeline gate excludes concurrent ingestion. One SQLite `BEGIN IMMEDIATE`
+transaction rechecks the source generation, identities, revisions,
+before-images, observations, and impact; conditionally writes people and
+missing proven bindings; rebuilds only the people lookups; and increments the
+local content generation when data changed. People, lookups, and generation
+commit together. Before commit, cancellation or conditional-write failure
+rolls them back; late cancellation does not undo a known commit.
+Non-people fields, existing bindings, mutation markers, ingestion state, and
+project upstream-refresh watermarks are preserved; it never clears another
+writer's `MutationInProgress`.
+
+Stale/expired/consumed previews require a fresh preview. After an apply response
+is lost, inspect the source outcome and preview again rather than blindly
+replaying the token. See the [Discussion operator procedure](../user/generating-discussion-tickets.md#populate-source-people-only-after-an-explicit-preview).
+Source backfill does not update a Preparer snapshot or site; a separately
+admitted linked enrichment run is needed for new publication metadata.
 
 ---
 
@@ -273,6 +388,35 @@ message ID per stream. Sets `anchor = lastId + 1` and fetches forward.
 **Pagination:** Anchor-based (`anchor`, `num_before=0`, `num_after=batchSize`).
 Continues until `found_newest` is true.
 
+#### Typed reference resolution and transport
+
+Clients use gateway
+`GET /api/v1/zulip/references/resolve?reference=...`, forwarded to the source's
+`GET /api/v1/references/resolve`. A positive numeric message ID is resolved
+only from indexed message/stream/topic context and yields the canonical
+`/near/<messageId>` URL. A legacy `stream:topic` reference likewise needs
+indexed backing. Delimiter ambiguity is an explicit `ambiguous-reference`
+conflict, not a guessed split; unindexed references return `not-found`.
+Resolution never fetches upstream or indexes new content.
+
+The shared `ZulipReferenceResolutionResponse` identifies the exact reference
+and its outcome, kind, safe URL, context, and diagnostics. Timestamps on this
+contract and the thread response are canonical nullable UTC
+`DateTimeOffset` values, not raw SQLite timestamp strings. Aggregated dates
+compare instants across offsets. Malformed optional source dates become null
+with an `invalid-timestamp` diagnostic without discarding an otherwise valid
+indexed link. Malformed JSON/envelopes, unsupported/ambiguous references,
+authentication failures, unavailable sources, timeouts, and not-found results
+remain distinguishable to hydration as per-reference outcomes.
+
+An old thread response could include a safe URL even for zero indexed
+messages. That URL or a legacy `resolved` flag alone is not proof of source
+backing. Publication enrichment retains qualified prior context as last-known
+on a failed lookup, but marks an unbacked retained URL as unverified and
+preserves the failure reason. It never discovers or rewrites analytical
+associations. The transport contract and its automated fixtures do not prove
+that every historical JSON failure or any reported live corpus is recovered.
+
 ---
 
 ### Confluence (`Source.Confluence` — `:5180`)
@@ -281,10 +425,10 @@ Continues until `found_newest` is true.
 |----------|-------|
 | **Default target** | `https://confluence.hl7.org` |
 | **Auth methods** | Session cookie or HTTP Basic (username + API token) |
-| **Data types** | Spaces + pages + comments |
+| **Data types** | Spaces + pages + comments + attachments (metadata and bytes) |
 | **Database** | `confluence.db` |
 | **API** | HTTP API controllers |
-| **Page size** | 25 |
+| **Page size** | 25 (fill); 200 (`SweepPageSize`, body-less sweep) |
 | **HTTP timeout** | 5 minutes |
 | **Cache support** | Yes |
 
@@ -293,27 +437,60 @@ Continues until `found_newest` is true.
 - **Cookie mode** (default): Session cookie in the `cookie` header
 - **Basic mode**: HTTP Basic with `username:token`
 
+HL7's Confluence answers the read surface **anonymously**, so a credential is
+about *coverage* (restricted content) rather than access. It also sits behind an
+AWS WAF that rejects any non-browser-shaped `User-Agent` with `405`. See
+[Confluence API notes](confluence-api-notes.md).
+
 **Data model:**
 
 - `ConfluenceSpaceRecord` — Space key, name, description, URL
-- `ConfluencePageRecord` — Page ID, space key, title, parent ID, body
-  (storage format + plain text), labels, version, URL
+- `ConfluencePageRecord` — Page ID, space key, title, status
+  (`current` / `archived`), parent ID, body (storage format + plain text),
+  labels, version, URL
 - `ConfluenceCommentRecord` — Author, date, body as plain text (PageId FK)
+- `ConfluenceAttachmentRecord` — File name, media type, size, version,
+  download URL, and the cache key of the downloaded bytes (PageId FK)
 
 Body content is converted from Confluence storage format (XHTML) to plain text
 by `ConfluenceContentParser`, which handles macros, images, and attachments.
 
 **Database tables:** `confluence_spaces` (Key unique), `confluence_pages`
-(ConfluenceId unique, SpaceKey), `confluence_comments` (PageId FK),
+(ConfluenceId unique, SpaceKey, Status), `confluence_comments` (PageId FK),
+`confluence_attachments` (ConfluenceAttachmentId unique, PageId FK),
 `confluence_pages_fts` (FTS5), `index_keywords`, `index_corpus`,
 `index_doc_stats`, `sync_state`, `ingestion_log`.
 
-**Incremental sync:** Uses Confluence CQL:
-`lastModified >= "{since}" AND space in ("FHIR","FHIRI","SOA") AND type = page`
+**Incremental sync: manifest reconciliation.** There is no watermark and no
+full/incremental split. Acquisition splits into a cheap, body-less **sweep**
+that enumerates everything that *should* exist in a space into a per-space
+manifest stored in the cache, and an expensive **fill** that fetches only what
+the manifest says is missing or stale. Completeness is therefore a pure function
+of `(manifest, cache files)`, computable offline at any moment — see
+`GET /api/v1/cache/reconcile-report`.
 
-**Pagination:** Offset-based. Continues while `_links.next` exists.
+A manifest is written only when that space's sweep ran to exhaustion, so a
+partially failed run can never advance a watermark past pages it missed. Items
+the manifest no longer names are **tombstoned** by moving their cache file under
+`_vanished/`, never deleted, because absence can also mean "not visible to the
+credential this run used". Replay is manifest-driven and is the only path that
+writes the database.
 
-**Default spaces:** `["FHIR", "FHIRI", "SOA"]`
+**Sweep and fill:** each space is swept as three body-less streams —
+`GET /rest/api/content?spaceKey=…&type=page&expand=version` for pages, and CQL
+`type = comment` / `type = attachment` searches with
+`expand=version,container[,metadata]` for the rest. All three paginate through
+`_links.next` to exhaustion. The fill is one
+`GET /rest/api/content/{id}?expand=<profile>` per item, so every unit is
+independently retryable.
+
+**Default spaces:** every non-archived global space on the instance (~140).
+Configuration may still restrict the set; `Spaces = []` tracks nothing.
+
+**Attachments:** metadata is always swept, cached, replayed and indexed. Bytes
+are downloaded unless a blob exceeds `AttachmentMaxBytes` (default 100 MB), in
+which case the row still records the size and download URL with a null cache
+key and the space reports `complete_with_skips`.
 
 ---
 
@@ -346,7 +523,9 @@ The GitHub source supports two data provider implementations selected via the
   authentication automatically and supports GitHub Enterprise
 
 The `gh-cli` provider is configured via the `GhCli` section with settings for
-executable path, query limits, hostname, and process timeout.
+executable path, query limits, hostname, process timeout, process concurrency,
+and the history-backfill controls (see
+[History backfill](#history-backfill) below).
 
 **Data model:**
 
@@ -367,13 +546,83 @@ mirrored across the orchestrator proxy, CLI (`github-items list`), MCP
 (`ListGitHubItems`), and the DevUI API catalog.
 
 During PR ingestion the source also populates `github_commit_pr_links` (the
-commit→PR mapping, written via `gh pr view --json commits` with replace-on-resync
-semantics so force-pushes don't leave stale links) and ingests inline
-(line-anchored) PR review-thread comments via
+commit→PR mapping, written from the combined `gh pr view` detail fetch below with
+replace-on-resync semantics so force-pushes don't leave stale links) and ingests
+inline (line-anchored) PR review-thread comments via
 `gh api repos/{repo}/pulls/{n}/comments`, so the full PR conversation flows
 through the xref/BM25 pipeline. Commit responses (`MapCommitToJson`) expose a
 `prs` array of applying PRs plus a deterministic `primaryPr` (merged →
 base-branch-is-repo-default → lowest PR number).
+
+Per-PR detail (comments, reviews, commits, `baseRefName`, `mergedAt`) is fetched
+in a **single** `gh pr view --json comments,reviews,commits,baseRefName,mergedAt`
+call. Each section is applied under its own try/catch, so a malformed section or
+a database failure in one cannot discard the other two; a failure lands the PR in
+the backfill's pending-retry set (below) for repair on the next pass.
+
+### History backfill
+
+The moving incremental window (`updated:>=`) can never reach a repo's older
+history, so each repo gets a one-time full-history backfill. It is resumable and
+self-repairing, and its state lives in **two** `sync_state` sub-source namespaces:
+
+| Sub-source | Purpose | `Status` values |
+|------------|---------|-----------------|
+| `backfill:<repo>` | **Terminal** completion marker. Written only when the repo's corpus is genuinely complete. | `success` |
+| `backfill-progress:<repo>` | **In-flight** resume state. Cursor JSON in `LastCursor`. | `partial`, `repair_required` |
+
+Only a `backfill:<repo>` row at `Status = "success"` gates a repo out of the
+needs-backfill set. Keeping partial progress under a *separate* prefix is a
+rollback-safety choice: an older binary matches only on `backfill:` and treats
+any such row as complete, so a partial row written there would silently skip the
+backfill forever. After a revert, progress rows are simply ignored and the
+backfill re-runs from scratch — the pre-change behavior — so no manual database
+cleanup is required.
+
+`GitHubSyncStateReader.GetMostRecentOperational` allowlists
+`["incremental", "full", "rebuild"]`, so neither prefix can corrupt the
+incremental window or surface as the reported "last sync".
+
+**Watermark and pending retries.** Each phase (issues, then PRs) is materialized
+and sorted **descending** by item number, so a single watermark describes
+everything already done: every item numbered at or above `IssuesCompletedAbove` /
+`PrsCompletedAbove` has been fully processed *except* those listed in
+`PendingRetry`. The watermark advances only past items whose detail work returned
+cleanly, is committed in a `finally` so an interrupted item is never counted as
+done, and only ever descends — so re-walking an already-completed prefix cannot
+regress it. Items whose detail fetch failed go into `PendingRetry` and are
+re-attempted on the next pass; the set is capped at 1,000 entries, and on
+overflow the watermark freezes rather than skipping unrecorded work.
+
+A phase is marked complete only when it enumerated to exhaustion, was not
+cancelled, **and** returned fewer items than `GhCli.BackfillLimit`. A count equal
+to the limit means the list was truncated and older items are unreachable, so the
+phase is left incomplete and a warning is logged.
+
+**Stall valve.** A permanently unfetchable item (a deleted or transferred PR)
+would otherwise keep `PendingRetry` non-empty forever. When a pass ends with both
+phases exhausted and the retry set no smaller than it started,
+`StalledRepairPasses` increments; at `GhCli.BackfillMaxRepairPasses` (default 3)
+the repo is marked complete anyway and a warning names the abandoned numbers.
+
+**Cancellation.** Stopping the service mid-backfill is a clean-but-incomplete
+outcome, not a failure: the run aborts within one item, logs a single
+informational line, checkpoints its progress, and does **not** fall through into
+the incremental pass. The next launch resumes below the watermark. Periodic
+checkpointing every `GhCli.BackfillCheckpointInterval` items (default 250) bounds
+what a hard kill can lose.
+
+**Forcing a re-backfill.** To discard all state for a repo and start over:
+
+```http
+POST /api/v1/ingest?type=backfill&repo=<owner>/<name>&force=true
+```
+
+`repo` is validated against the configured repository list (it flows into `gh`
+argument construction, so free-form values are rejected with `400`). Without
+`force`, an explicit repo run *resumes* from the existing cursor rather than
+re-fetching. The same parameters are accepted by the fire-and-forget
+`POST /api/v1/ingest/trigger`.
 
 **FHIR artifact indexing:**
 
@@ -522,8 +771,8 @@ Listing, Snapshot) to expose the new source through the MCP interface.
 |---------|------|-------|------------|--------|
 | **Ports** | 5160 | 5170 | 5180 | 5190 |
 | **Auth methods** | Cookie or Basic | Basic, `.zuliprc` | Cookie or Basic | Bearer (PAT) |
-| **Incremental strategy** | JQL time filter | Cursor-based (msg ID) | CQL time filter | `since` param |
-| **Pagination** | Offset | Anchor | Offset | Page number |
+| **Incremental strategy** | JQL time filter | Cursor-based (msg ID) | Manifest reconciliation | `since` param |
+| **Pagination** | Offset | Anchor | `_links.next` to exhaustion | Page number |
 | **Rate limiting** | Retry only | Retry only | Retry only | Dedicated limiter |
 | **Cache support** | ✅ | ✅ | ✅ | ✅ |
 | **Default page/batch** | 100 | 1000 | 25 | 100 |

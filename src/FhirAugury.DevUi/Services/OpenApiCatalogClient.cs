@@ -5,31 +5,33 @@ using System.Text.Json;
 namespace FhirAugury.DevUi.Services;
 
 /// <summary>
-/// Fetches and caches per-source OpenAPI documents and exposes a small helper
-/// for locating the operation that matches a catalog descriptor's
+/// Fetches and caches the merged Orchestrator OpenAPI document and exposes a
+/// helper for locating the operation that matches a catalog descriptor's
 /// path-template + HTTP method. Used by the API tester page to surface inline
 /// schema information (notably the <c>requestBody</c> shape) so users can see
 /// what a generic <c>body</c> parameter expects.
 /// </summary>
-public sealed class OpenApiCatalogClient(IHttpClientFactory httpClientFactory)
+public sealed class OpenApiCatalogClient(
+    IHttpClientFactory httpClientFactory,
+    OrchestratorClient orchestratorClient)
 {
     private static readonly JsonSerializerOptions PrettyJson = new() { WriteIndented = true };
 
     private readonly ConcurrentDictionary<string, JsonDocument> _cache = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Returns the cached OpenAPI document for the given HTTP base address,
-    /// fetching it from <c>{httpBase}/api/v1/openapi.json</c> on first use.
+    /// Returns the cached merged OpenAPI document, fetching it from the
+    /// configured Orchestrator on first use.
     /// </summary>
-    public async Task<JsonDocument> GetOrFetchAsync(string clientName, string httpBase, CancellationToken ct = default)
+    public async Task<JsonDocument> GetOrFetchAsync(CancellationToken ct = default)
     {
-        string key = httpBase.TrimEnd('/');
+        string key = orchestratorClient.Address.TrimEnd('/');
         if (_cache.TryGetValue(key, out JsonDocument? existing))
         {
             return existing;
         }
 
-        HttpClient client = httpClientFactory.CreateClient(clientName);
+        HttpClient client = httpClientFactory.CreateClient("orchestrator");
         string url = $"{key}/api/v1/openapi.json";
         using HttpResponseMessage response = await client.GetAsync(url, ct);
         response.EnsureSuccessStatusCode();
@@ -60,10 +62,23 @@ public sealed class OpenApiCatalogClient(IHttpClientFactory httpClientFactory)
 
         // Catalog templates are typically "api/v1/..." (no leading slash);
         // OpenAPI paths are "/api/v1/...". Try both forms.
-        string normalized = "/" + pathTemplate.TrimStart('/');
+        string pathOnly = pathTemplate.Split('?', 2)[0];
+        string normalized = "/" + pathOnly.TrimStart('/');
         JsonElement pathItem = default;
         bool found = paths.TryGetProperty(normalized, out pathItem)
-            || paths.TryGetProperty(pathTemplate, out pathItem);
+            || paths.TryGetProperty(pathOnly, out pathItem);
+        if (!found)
+        {
+            foreach (JsonProperty candidate in paths.EnumerateObject())
+            {
+                if (!RouteTemplatesMatch(normalized, candidate.Name))
+                    continue;
+
+                pathItem = candidate.Value;
+                found = true;
+                break;
+            }
+        }
         if (!found)
         {
             return null;
@@ -96,6 +111,30 @@ public sealed class OpenApiCatalogClient(IHttpClientFactory httpClientFactory)
 
         return new OpenApiOperationInfo(operationId, summary, description, requestBody, parameters);
     }
+
+    private static bool RouteTemplatesMatch(string catalogPath, string openApiPath)
+    {
+        string[] catalogSegments = catalogPath.Trim('/').Split('/');
+        string[] openApiSegments = openApiPath.Trim('/').Split('/');
+        if (catalogSegments.Length != openApiSegments.Length)
+            return false;
+
+        for (int i = 0; i < catalogSegments.Length; i++)
+        {
+            string catalogSegment = catalogSegments[i];
+            string openApiSegment = openApiSegments[i];
+            if (string.Equals(catalogSegment, openApiSegment, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (IsRouteToken(catalogSegment) || IsRouteToken(openApiSegment))
+                continue;
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsRouteToken(string segment) =>
+        segment.StartsWith('{') && segment.EndsWith('}');
 
     private static string SerializeWithRefs(JsonElement element, JsonDocument document)
     {

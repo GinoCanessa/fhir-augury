@@ -88,8 +88,8 @@ public class WorkGroupsController(
     /// three forms interchangeably. On <see cref="WorkGroupResolveOutcome.Ambiguous"/>
     /// returns 409 with the candidate list; on
     /// <see cref="WorkGroupResolveOutcome.NotFound"/> preserves the
-    /// historical "unknown group → empty list" 200 response so callers
-    /// (e.g. the index-prepared-db skill) do not need bespoke 404 handling.
+    /// historical "unknown group → empty list" 200 response so clients do not
+    /// need bespoke 404 handling for an empty workgroup.
     /// </summary>
     [HttpGet("work-groups/{groupCode}/issues")]
     [ProducesResponseType(StatusCodes.Status200OK)]

@@ -33,6 +33,10 @@ public class FileSystemResponseCache : IResponseCache
     {
         string path = ResolvePath(source, key);
 
+        // FileShare.Delete lets AtomicFileWriter's File.Move(..., overwrite: true)
+        // replace this file while a reader holds it open. Without it, a reader on
+        // Windows can make that move fail with a sharing violation — so a mid-run
+        // completeness report could break the very sweep it is reporting on.
         // Retry to handle races with concurrent PutAsync (temp+move)
         for (int attempt = 0; attempt < 3; attempt++)
         {
@@ -44,7 +48,7 @@ public class FileSystemResponseCache : IResponseCache
 
             try
             {
-                content = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                content = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
                 return true;
             }
             catch (FileNotFoundException)

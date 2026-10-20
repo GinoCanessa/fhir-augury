@@ -1,0 +1,208 @@
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using FhirAugury.Processing.Contracts;
+
+namespace FhirAugury.Publishing.Tickets;
+
+public sealed record TicketSiteManifestFilters(
+    string? Spec,
+    string? Project,
+    string? Wg);
+
+public sealed record TicketSiteManifest(
+    string SiteKind,
+    string ProcessorKind,
+    string RunId,
+    string SnapshotId,
+    long AuthoringEpoch,
+    long SnapshotSequence,
+    int SnapshotSchemaVersion,
+    string SnapshotSha256,
+    long SnapshotSizeBytes,
+    string EmbeddedDbSha256,
+    long EmbeddedDbSizeBytes,
+    int IncludedItemCount,
+    int IncludedReceiptCount,
+    IReadOnlyDictionary<string, long> TableCounts,
+    TicketSiteManifestFilters Filters,
+    string Title,
+    string RendererAssetsVersion,
+    string BuildIdentity,
+    string OutputPath,
+    DateTimeOffset GeneratedAt,
+    string? DisplayTitle = null,
+    DateTimeOffset? JiraSourceLastSuccessfulRefreshAt = null,
+    int? RendererSchemaVersion = null,
+    DiscussionPublicationReadiness? DiscussionReadiness = null,
+    DiscussionCorpusSummary? DiscussionCorpus = null)
+{
+    public const string FileName = "site-manifest.json";
+
+    private static readonly JsonSerializerOptions SerializerOptions = new(
+        JsonSerializerDefaults.Web)
+    {
+        WriteIndented = true,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
+
+    internal static TicketSiteManifest Create(
+        string siteKind,
+        AuthoringSnapshotDescriptor descriptor,
+        int includedItemCount,
+        IReadOnlyDictionary<string, long> tableCounts,
+        ResolvedFilters filters,
+        string title,
+        string rendererAssetsVersion,
+        string embeddedDbSha256,
+        long embeddedDbSizeBytes,
+        string outputPath,
+        DateTimeOffset generatedAt,
+        TicketSitePresentation? discussionPresentation = null)
+    {
+        string buildIdentity = ComputeBuildIdentity(
+            siteKind,
+            filters,
+            title,
+            rendererAssetsVersion,
+            descriptor.Sha256,
+            embeddedDbSha256,
+            discussionPresentation?.SiteName,
+            discussionPresentation?.JiraSourceLastSuccessfulRefreshAt,
+            discussionPresentation?.RendererSchemaVersion,
+            discussionPresentation?.Readiness,
+            discussionPresentation?.CorpusSummary);
+        return new(
+            siteKind,
+            descriptor.ProcessorKind,
+            descriptor.RunId,
+            descriptor.SnapshotId,
+            descriptor.AuthoringEpoch,
+            descriptor.Sequence,
+            descriptor.SchemaVersion,
+            descriptor.Sha256,
+            descriptor.SizeBytes,
+            embeddedDbSha256,
+            embeddedDbSizeBytes,
+            includedItemCount,
+            descriptor.ReceiptCount,
+            tableCounts,
+            new TicketSiteManifestFilters(
+                filters.Specification,
+                filters.Project,
+                filters.WorkGroup),
+            title,
+            rendererAssetsVersion,
+            buildIdentity,
+            outputPath,
+            generatedAt,
+            discussionPresentation?.SiteName,
+            discussionPresentation?.JiraSourceLastSuccessfulRefreshAt,
+            discussionPresentation?.RendererSchemaVersion,
+            discussionPresentation?.Readiness,
+            discussionPresentation?.CorpusSummary);
+    }
+
+    public string ComputeBuildIdentity()
+        => ComputeBuildIdentity(
+            SiteKind,
+            new ResolvedFilters(Filters.Spec, Filters.Project, Filters.Wg),
+            Title,
+            RendererAssetsVersion,
+            SnapshotSha256,
+            EmbeddedDbSha256,
+            DisplayTitle,
+            JiraSourceLastSuccessfulRefreshAt,
+            RendererSchemaVersion,
+            DiscussionReadiness,
+            DiscussionCorpus);
+
+    internal static string ComputeBuildIdentity(
+        string siteKind,
+        ResolvedFilters filters,
+        string title,
+        string rendererAssetsVersion,
+        string sourceIdentity,
+        string embeddedDbSha256,
+        string? displayTitle = null,
+        DateTimeOffset? jiraSourceLastSuccessfulRefreshAt = null,
+        int? rendererSchemaVersion = null,
+        DiscussionPublicationReadiness? discussionReadiness = null,
+        DiscussionCorpusSummary? discussionCorpus = null)
+    {
+        List<string> coordinates =
+        [
+            "site-kind=" + siteKind,
+            "spec=" + (filters.Specification ?? string.Empty),
+            "project=" + (filters.Project ?? string.Empty),
+            "wg=" + (filters.WorkGroup ?? string.Empty),
+            "title=" + title,
+            "renderer-assets=" + rendererAssetsVersion,
+            "source=" + sourceIdentity,
+            "embedded-db=" + embeddedDbSha256,
+        ];
+        if (displayTitle is not null ||
+            jiraSourceLastSuccessfulRefreshAt is not null ||
+            rendererSchemaVersion is not null ||
+            discussionReadiness is not null ||
+            discussionCorpus is not null)
+        {
+            coordinates.Add("display-title=" + (displayTitle ?? string.Empty));
+            coordinates.Add(
+                "jira-source-last-successful-refresh-at=" +
+                (jiraSourceLastSuccessfulRefreshAt?.ToString(
+                    "O",
+                    CultureInfo.InvariantCulture) ?? string.Empty));
+            coordinates.Add(
+                "renderer-schema-version=" +
+                (rendererSchemaVersion?.ToString(
+                    CultureInfo.InvariantCulture) ?? string.Empty));
+            coordinates.Add(
+                "discussion-readiness=" +
+                (discussionReadiness is null
+                    ? string.Empty
+                    : TicketSitePresentationJson.Serialize(
+                        discussionReadiness)));
+        }
+        if (discussionCorpus is not null)
+        {
+            coordinates.Add(
+                "discussion-corpus=" +
+                TicketSitePresentationJson.Serialize(discussionCorpus));
+        }
+        string input = string.Join("\n", coordinates);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(input)))
+            .ToLowerInvariant();
+    }
+
+    internal static async Task WriteAsync(
+        string directory,
+        TicketSiteManifest manifest,
+        CancellationToken ct)
+    {
+        Directory.CreateDirectory(directory);
+        await File.WriteAllTextAsync(
+            Path.Combine(directory, FileName),
+            JsonSerializer.Serialize(manifest, SerializerOptions),
+            ct).ConfigureAwait(false);
+    }
+
+    public static string ToSummaryJson(TicketSiteManifest manifest)
+        => JsonSerializer.Serialize(manifest, SerializerOptions);
+
+    public static TicketSiteManifest Read(string path)
+        => JsonSerializer.Deserialize<TicketSiteManifest>(
+            File.ReadAllText(path),
+            SerializerOptions)
+        ?? throw new InvalidOperationException($"Site manifest '{path}' is empty.");
+
+    public static async Task<TicketSiteManifest> ReadAsync(
+        string path,
+        CancellationToken ct = default)
+        => JsonSerializer.Deserialize<TicketSiteManifest>(
+            await File.ReadAllTextAsync(path, ct).ConfigureAwait(false),
+            SerializerOptions)
+        ?? throw new InvalidOperationException($"Site manifest '{path}' is empty.");
+}

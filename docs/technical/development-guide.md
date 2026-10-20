@@ -287,6 +287,184 @@ The orchestrator registers:
 - `ServiceHealthMonitor`, `HealthCheckWorker`
 - HTTP API controllers (`OrchestratorController`)
 
+### Prepared-ticket publication reconciliation invariants
+
+Changed-ticket Discussion publication is a Preparer-owned workflow. Keep these
+boundaries when changing it:
+
+- **Service ownership:** only the Jira source service reads its source
+  database, and only the Preparer opens its processing database. The planner,
+  Preparer, Dev UI, and CLI obtain current Jira evidence through the typed
+  Orchestrator HTTP boundary. The Orchestrator forwards start/status/retry/
+  abandon requests; it does not inspect Preparer tables.
+- **Separate purposes:** `publication-refresh` is metadata-only and must refuse
+  accepted source-revision drift. `publication-reconciliation` is the only
+  replacement workflow for that drift. Do not make refresh re-author or
+  regroup as a convenience fallback.
+- **Complete admission:** verify the completed source run and immutable
+  baseline, read every accepted baseline ticket from one stable Jira content
+  generation, collect every mismatch, then repeat the observation under the
+  mutation fence. Persist the comparison, mixed carry-forward/re-author item
+  set, and fences in one caller-owned SQLite transaction.
+- **Staging isolation:** accepting a changed item writes its receipt, complete
+  authored payload, and complete hydration into run-scoped staging in the same
+  transaction. It must not change canonical ticket/hydration rows. The corpus
+  overlay resolves carried tickets only at frozen receipt coordinates and
+  revised tickets only from matching complete staging; never merge old and new
+  child rows.
+- **Fixed unchanged context:** derive the complete grouping closure from old
+  and proposed memberships, including both sides of partition moves and all
+  shared containers whose text, identity, membership, or ordering can change.
+  Stage complete partition replacements. Unchanged authored ticket content is
+  fixed input; do not re-author it or rewrite partitions outside the closure.
+- **Durable overlay-only grouping:** production finalization creates one
+  retryable `publication-reconciliation-grouping` stage per impacted
+  partition, keyed by the candidate overlay corpus fingerprint. Pass revised
+  keys and complete overlay membership to the configured grouping worker.
+  Reconciliation clustering/hydration reads must use `PreparedTicketCorpusView`
+  for that exact run and partition, and exact-context writes must create staged
+  replacements plus matching receipts without touching canonical grouping.
+  Keep ordinary grouping-maintenance reads and canonical writes unchanged.
+  Complete zero-member partitions explicitly with `topics: []`, resume only
+  missing/error stages, and defer closure/unaffected checks until every stage
+  is complete.
+- **Exact unaffected protection:** fingerprint canonical authored rows and
+  receipt coordinates for unaffected tickets and grouping rows/order outside
+  the closure independently. The reconciliation run's own mutable
+  `authoring_runs` lifecycle row is excluded from the authored-output
+  fingerprint; no canonical ticket, receipt coordinate, or unaffected
+  grouping row is excluded.
+- **Complete publication grouping proof:** reconciliation contract v3 binds
+  both the canonical corpus and the full resulting grouping. Use
+  `ComputeReconciliationGroupingFingerprint` with unaffected canonical
+  partition outputs and complete staged replacements, then compare it with
+  the grouping read back from the sanitized candidate. Empty, zero-member
+  replacements remove partitions from that output but remain in the impact
+  audit. Promote `candidate.GroupingFingerprint` into the public descriptor;
+  keep `GroupingImpactFingerprint` only in reconciliation-specific audit
+  proof/status. The publisher must recompute and compare both complete
+  fingerprints from a real immutable producer pair, not accept hash shape or
+  discard a computed grouping hash.
+- **Reconciliation evidence migration:** private and public reconciliation
+  proofs require version 3. Versions 1/2 remain readable for status/audit
+  only and cannot group, materialize, recover, promote, or establish
+  readiness. Nullable constructor/JSON fields exist for genuine legacy
+  diagnostics, not to make the v3 full fingerprint optional. Never infer a
+  missing hash, reuse the impact digest, or relabel old evidence. The shared
+  canonical serialization remains v1, as do refresh and dedicated
+  canonical-epoch recovery proof contracts.
+- **Immutable output:** while reconciliation is still staged, reserve the
+  snapshot ID, processor/run, sequence, authoring epoch, schema, item/receipt
+  counts, temporary/final paths, and creation time. Build and sanitize the
+  schema-v3 overlay, write exactly one matching provenance row, checkpoint,
+  integrity/count-check, and only then size and hash those exact bytes. Freeze
+  all coordinates and the post-provenance digest in the candidate descriptor.
+  A successful reconciliation creates a new run/snapshot/sequence/file pair
+  and never edits the source publication.
+- **Database-first, not cross-resource atomic:** one immediate transaction on
+  one connection revalidates the exact candidate digest and durable coordinate
+  reservation, applies revised canonical graphs and complete impacted
+  grouping, creates the snapshot record from those coordinates, and journals
+  `snapshot-publish-pending` with the same identity. Promotion must not
+  generate a new snapshot ID or sequence after hashing. Filesystem publication
+  occurs after commit. The journal and mutation fence make that gap durable;
+  never describe it as a physical atomic transaction.
+- **Idempotent recovery:** startup and explicit retry must handle absent,
+  matching, or conflicting final files; missing/corrupt temporary candidates;
+  creating/promoted/ready or missing snapshot rows; missing staging;
+  checksum/provenance mismatch; ready-before-run-complete; and
+  run-complete-before-journal-ready. Candidate and final databases are
+  read-only evidence: never create/replace provenance or adopt a checksum
+  calculated from unjournaled bytes. Require the exact journaled digest, size,
+  candidate/promotion coordinates, table counts, and snapshot record on every
+  accepted path. Cancellation or contradictory evidence returns
+  `promotion-recovery-failure` and retains the fence; competing attempts may
+  converge only on the same validated bytes. Never reapply a promoted
+  canonical fingerprint or overwrite a conflicting final file.
+- **Audited abandonment:** only a database-promoted pending reconciliation may
+  enter `canonical-unpublished`, and only with a non-blank operator reason.
+  It transitions the generic run only from `finalizing` or recoverable
+  `error` to terminal, non-recoverable `abandoned`; preserves the reconciliation
+  audit and prior verified pair; and releases both fences and active capacity
+  without rollback or publication.
+- **Durable-intent restriction:** `DatabaseOnly = 0` defines a
+  snapshot-producing run regardless of purpose. Check unresolved
+  canonical-unpublished state at admission, immediately before a queued run
+  acquires the mutation fence, before candidate creation, and immediately
+  before finalization/promotion. Terminally refuse a prequeued forbidden run
+  before fence acquisition. Database-only ordinary work may continue.
+  `canonical-epoch-recovery` is the sole snapshot-producing bypass.
+- **Shared guard boundary:** generic Jira registration supplies an optional
+  allow-all `IAuthoringSnapshotWorkflowGuard`; the Preparer replaces it with
+  its database implementation. Keep the generic scheduler dependent only on
+  that Processing.Common interface—never on Preparer tables or contracts.
+  SQLite triggers on run/fence/snapshot/finalization writes remain
+  last-ditch race guards and their sentinel must translate to the same HTTP
+  `409 canonical-unpublished-restriction` envelope as proactive rejection.
+  Preserve abandoned/recovery run coordinates through Orchestrator, typed
+  client, CLI, and Dev UI error projections.
+- **Dedicated canonical recovery:** only an unresolved terminal
+  `abandoned`/`canonical-unpublished` reconciliation in the current active
+  authoring epoch may admit `canonical-epoch-recovery`. Create a distinct
+  run linked through `SourceRunId`, with all items complete and their
+  existing accepted receipts. Freeze current corpus, full grouping, exact
+  canonical row values, source abandonment, recipe, journal, and fence in
+  one immediate transaction. Do not launch authoring/grouping workers,
+  reuse the abandoned run, or assume no database-only output has been
+  accepted since abandonment. Duplicate start returns the same active or
+  retryable run.
+- **Exact-current recovery evidence:** revalidate epoch, abandonment,
+  selection, fence, receipt-backed corpus, grouping, and exact canonical
+  values before materialization and final CAS. Keep canonical output and
+  the old publication unchanged. Recovery's dedicated v1 proof and full
+  grouping serialization are independent of reconciliation contract v3;
+  never reinterpret an impact digest as full grouping output.
+- **Provenance-before-hash recovery:** reserve snapshot coordinates, then
+  copy/sanitize schema v3, write exactly one provenance row, checkpoint,
+  integrity/count-check, and hash the resulting bytes. Recompute the
+  candidate's full corpus/grouping fingerprints. An interrupted untrusted
+  copy can be rebuilt using its reservation; a trusted candidate cannot.
+  Journal its post-provenance hash/size/coordinates and snapshot record
+  together before moving the file without overwrite. On retry neither
+  candidate nor final file is opened for mutation.
+- **One fenced resolution CAS:** after verifying the final file, hold its
+  bytes read-only through one shared-connection SQLite transaction.
+  Revalidate journal, snapshot record, recipe, complete selection, current
+  state, source epoch, and fence; append the resolution; mark snapshot and
+  journal ready; complete the recovery run; and release the fence. The
+  resolution anti-join releases only the matching restriction. Never
+  rewrite abandonment status/time/reason or complete/clear restrictions
+  before this transaction. Filesystem publication remains a separate
+  journaled boundary, not a physical SQLite/filesystem atomic operation.
+- **Same-run startup and retry:** resume unresolved recovery journals before
+  generic snapshot cleanup. If a dedicated recovery still conflicts,
+  defer generic cleanup rather than deleting its evidence or independently
+  advancing its snapshot to ready. A crash after the file move but before
+  CAS must converge on the same verified bytes and resolution. Missing,
+  corrupt, or contradictory evidence retains the restriction, retryable
+  run, and fence; no automatic fallback to the old publication is allowed.
+- **Recovery public surfaces:** preserve typed failure codes and related
+  source/recovery coordinates. The historical run keeps its audit and links
+  to recovery; the recovery links back and exposes its verified snapshot.
+  Publisher readiness must recompute and compare the entire immutable
+  corpus and grouping proof, not merely trust the purpose marker or digest
+  shape. Recovery verifies canonical state, not a new Jira observation.
+
+Credential-free end-to-end tests should create their SQLite corpus and
+immutable snapshots at runtime. Cover multiple revised tickets, a changed
+shared container and order, a partition move, exact unaffected ticket/receipt/
+grouping bytes or fingerprints, each durable promotion boundary, idempotent
+restart, and abandonment eligibility. Do not check in `.db` fixtures or
+require Jira credentials.
+
+For canonical-epoch recovery, also cover invalid/duplicate admission,
+all-complete selections without workers, append-only history, stale epochs,
+changed hydration/grouping/receipts, unhashed reservations, modified
+post-provenance bytes, missing snapshot records, failure at the final shared
+CAS, a published file before restart, explicit same-run retry, publisher
+fingerprint/row tampering, and UI controls/links. Keep fixture-generated
+databases and publications isolated from live caches and services.
+
 ### Error Handling
 
 - **HTTP errors:** Standard HTTP status codes for error responses (404, 503,

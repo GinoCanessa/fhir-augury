@@ -211,11 +211,13 @@ Source API list filters and ingestion selection lists use the [null-as-default, 
   "Confluence": {
     "BaseUrl": "https://confluence.hl7.org",
     "AuthMode": "cookie",
-    "Spaces": ["FHIR", "FHIRI", "SOA"],
     "CachePath": "./cache",
     "DatabasePath": "./data/confluence.db",
     "SyncSchedule": "1.00:00:00",
     "MinSyncAge": "04:00:00",
+    "SweepPageSize": 200,
+    "SpaceSweepMaxAge": "00:00:00",
+    "AttachmentMaxBytes": 104857600,
     "ReloadFromCacheOnStartup": false,
     "OrchestratorAddress": null,
     "IngestionPaused": false,
@@ -255,7 +257,10 @@ Source API list filters and ingestion selection lists use the [null-as-default, 
 | `Cookie` | string | | Session cookie for cookie auth |
 | `Username` | string | | Username for basic auth |
 | `ApiToken` | string | | API token for basic auth |
-| `Spaces` | string[] | `["FHIR","FHIRI","SOA"]` | Confluence spaces to index |
+| `Spaces` | string[]? | `null` | Spaces to index. `null` discovers **every non-archived global space on the instance** (~140); `[]` indexes none. See [source filter conventions](source-filter-conventions.md). |
+| `SweepPageSize` | int | `200` | Page size for the body-less sweep. HL7's Confluence honours 200 verbatim, so the whole instance enumerates in roughly 1,660 requests (~5.5 minutes at 5 req/s). Must be greater than zero. |
+| `SpaceSweepMaxAge` | TimeSpan | `00:00:00` | A space whose manifest is younger than this is skipped by the sweep and its previous manifest reused. The shipped default re-sweeps every space on every run. This is an *age threshold*, not a per-run request budget. |
+| `AttachmentMaxBytes` | long | `104857600` | Attachment blobs larger than this are not downloaded; their metadata is still swept, cached, replayed and indexed. `0` means unlimited; a **negative value is rejected at startup**. The cap gates *downloading*, not *keeping*: **lowering** it never removes bytes already on disk, and **raising** it turns a previously skipped blob into a gap that closes on the next run. |
 | `CachePath` | string | `./cache` | File-system cache directory |
 | `DatabasePath` | string | `./data/confluence.db` | SQLite database path |
 | `SyncSchedule` | TimeSpan | `1.00:00:00` | Auto-sync interval (1 day) |
@@ -265,7 +270,7 @@ Source API list filters and ingestion selection lists use the [null-as-default, 
 | `IngestionPaused` | bool | `false` | Pause automatic ingestion sync |
 | `RunIngestionOnStartupOnly` | bool | `false` | When `true`, run ingestion exactly once at startup (honoring `MinSyncAge` and `IngestionPaused`) then exit the worker loop. HTTP endpoints stay available. |
 | `Ports.Http` | int | `5180` | HTTP listen port |
-| `RateLimiting.MaxRequestsPerSecond` | int | `5` | Rate limit |
+| `RateLimiting.MaxRequestsPerSecond` | int | `5` | Rate limit, enforced by a dedicated delegating handler on every physical send |
 | `RateLimiting.BackoffBaseSeconds` | int | `2` | Retry backoff base |
 | `RateLimiting.MaxRetries` | int | `3` | Maximum retries |
 | `Bm25.K1` | double | `1.2` | BM25 term frequency saturation |
@@ -277,6 +282,30 @@ Source API list filters and ingestion selection lists use the [null-as-default, 
 | `DictionaryDatabase.SourcePath` | string | `./cache/dictionary` | Source path for dictionary data files |
 | `DictionaryDatabase.DatabasePath` | string | `./data/dictionary.db` | SQLite database path for compiled dictionary |
 | `DictionaryDatabase.ForceRebuild` | bool | `false` | Force rebuild of dictionary database on startup |
+
+### Cache completeness verdicts
+
+`GET /api/v1/cache/reconcile-report` (proxied by the orchestrator at
+`/api/v1/confluence/cache/reconcile-report`) answers "is my cache complete, and
+what is missing?" from local disk, with no network. It is answerable at any
+moment, including part-way through a long initial pull.
+
+Each space reports one of four verdicts:
+
+| Verdict | Meaning |
+|-|-|
+| `complete` | Every item the manifest names is cached at the current version and fidelity profile. |
+| `complete_with_skips` | Every item is accounted for, **but some attachment bytes were excluded by `AttachmentMaxBytes`**. `skippedByPolicy` and `skippedBytes` in the report give the detail. A distinct value rather than a footnote on `complete`, because the verdict travels alone to surfaces that carry no skip counts. |
+| `partial` | Something the manifest names is missing or stale. `missing`, `stale` and `missingIds` say what. |
+| `unknown` | The space has no manifest, a malformed one, an incomplete sweep, or a **failed sweep attempt more recent than the last good manifest**. A space that has never been successfully enumerated reports `unknown` — never `complete`, and never "empty". |
+
+The overall verdict is the least complete of the per-space verdicts.
+
+`/api/v1/stats` surfaces the same counts through `additionalCounts`
+(`manifest_items`, `cached`, `stale`, `missing`, `vanished`,
+`skipped_by_policy`, `attachments`). `skippedBytes` is deliberately **not**
+there: that dictionary is `Dictionary<string, int>` and a byte total would
+overflow it.
 
 ---
 
@@ -302,7 +331,11 @@ Source API list filters and ingestion selection lists use the [null-as-default, 
       "ExecutablePath": "gh",
       "Limit": 1000,
       "Hostname": null,
-      "ProcessTimeout": "00:05:00"
+      "ProcessTimeout": "00:05:00",
+      "MaxConcurrentProcesses": 1,
+      "BackfillLimit": 5000,
+      "BackfillCheckpointInterval": 250,
+      "BackfillMaxRepairPasses": 3
     },
     "Auth": {
       "Token": null,
@@ -375,6 +408,10 @@ Source API list filters and ingestion selection lists use the [null-as-default, 
 | `GhCli.Limit` | int | `1000` | Maximum items per gh CLI query |
 | `GhCli.Hostname` | string? | `null` | GitHub Enterprise hostname (null for github.com) |
 | `GhCli.ProcessTimeout` | TimeSpan | `00:05:00` | Timeout for gh CLI processes |
+| `GhCli.MaxConcurrentProcesses` | int | `1` | Maximum concurrent `gh` processes. Default `1` prevents CLI state-file contention and rate-limit pressure |
+| `GhCli.BackfillLimit` | int | `5000` | Maximum items per `gh` list command during a per-repo history backfill. A phase whose returned count *equals* this value is treated as truncated and left incomplete (with a warning) rather than marked done |
+| `GhCli.BackfillCheckpointInterval` | int | `250` | Items processed between durable backfill checkpoint writes. A hard kill loses at most one interval; the graceful path always checkpoints on exit |
+| `GhCli.BackfillMaxRepairPasses` | int | `3` | Consecutive resume passes that may fail to shrink the pending-retry set before the repo is marked complete anyway, with a warning naming the abandoned items |
 | `Auth.Token` | string | | GitHub PAT (direct) |
 | `Auth.TokenEnvVar` | string | `GITHUB_TOKEN` | Env var containing PAT |
 | `CachePath` | string | `./cache` | File-system cache directory |
@@ -478,7 +515,27 @@ loaded from a prepared FHIR spec database and exposed over FTS.
       "Jira": { "HttpAddress": "http://localhost:5160", "Enabled": true },
       "Zulip": { "HttpAddress": "http://localhost:5170", "Enabled": true },
       "Confluence": { "HttpAddress": "http://localhost:5180", "Enabled": false },
-      "GitHub": { "HttpAddress": "http://localhost:5190", "Enabled": true }
+      "GitHub": { "HttpAddress": "http://localhost:5190", "Enabled": true },
+      "Fhir": { "HttpAddress": "http://localhost:5195", "Enabled": true }
+    },
+    "ProcessingServices": {
+      "Preparer": {
+        "HttpAddress": "http://localhost:5171",
+        "Enabled": true,
+        "Description": "FHIR ticket preparation",
+        "RequiredServices": [ "Jira" ]
+      },
+      "Planner": {
+        "HttpAddress": "http://localhost:5172",
+        "Enabled": true,
+        "Description": "FHIR ticket planning",
+        "RequiredServices": [ "Jira", "GitHub" ]
+      },
+      "BallotNotes": {
+        "HttpAddress": "http://localhost:5174",
+        "Enabled": true,
+        "Description": "FHIR ballot-note authoring"
+      }
     },
     "Search": {
       "DefaultLimit": 20,
@@ -494,6 +551,8 @@ loaded from a prepared FHIR spec database and exposed over FTS.
       "PerSourceTimeoutSeconds": 2
     },
     "ReconnectIntervalSeconds": 30,
+    "HealthCheckIntervalSeconds": 60,
+    "HealthCheckStartupDelaySeconds": 5,
     "DictionaryDatabase": {
       "SourcePath": "./cache/dictionary",
       "DatabasePath": "./data/dictionary.db",
@@ -503,8 +562,8 @@ loaded from a prepared FHIR spec database and exposed over FTS.
 }
 ```
 
-> **Note:** The default `appsettings.json` ships with Jira, Zulip, and GitHub
-> enabled. Confluence is present but disabled by default — set
+> **Note:** The default `appsettings.json` ships with Jira, Zulip, GitHub, and
+> FHIR enabled. Confluence is present but disabled by default — set
 > `Services.Confluence.Enabled` to `true` when deploying the Confluence source
 > service.
 
@@ -516,6 +575,10 @@ loaded from a prepared FHIR spec database and exposed over FTS.
 | `Ports.Http` | int | `5150` | HTTP listen port |
 | `Services.{Name}.HttpAddress` | string | varies | HTTP endpoint for source |
 | `Services.{Name}.Enabled` | bool | `true` | Enable/disable source |
+| `ProcessingServices.{Name}.HttpAddress` | string | varies | HTTP endpoint for a processing service |
+| `ProcessingServices.{Name}.Enabled` | bool | `true` | Include the processing service in Orchestrator discovery, readiness, and proxy routing |
+| `ProcessingServices.{Name}.Description` | string? | varies | Operator-facing processing-service description |
+| `ProcessingServices.{Name}.RequiredServices` | string[] | `[]` | Source-service names used as operator-readiness dependencies. Preparer must declare `Jira`; Planner must declare `Jira` and `GitHub`. |
 | `Search.DefaultLimit` | int | `20` | Default search result limit |
 | `Search.MaxLimit` | int | `100` | Maximum search result limit |
 | `Search.FreshnessWeights` | Dictionary | varies | Per-source freshness weight multipliers |
@@ -526,9 +589,20 @@ loaded from a prepared FHIR spec database and exposed over FTS.
 | `Related.MaxKeyTerms` | int | `15` | Max terms for similarity |
 | `Related.PerSourceTimeoutSeconds` | int | `2` | Timeout in seconds for each source during related item queries |
 | `ReconnectIntervalSeconds` | int | `30` | Interval in seconds between reconnection attempts for offline sources. Set to 0 to disable. |
+| `HealthCheckIntervalSeconds` | int | `60` | Interval in seconds between cached source and processing-service health sweeps |
+| `HealthCheckStartupDelaySeconds` | int | `5` | Delay in seconds before the first health sweep; `0` checks immediately |
 | `DictionaryDatabase.SourcePath` | string | `./cache/dictionary` | Source path for dictionary data files |
 | `DictionaryDatabase.DatabasePath` | string | `./data/dictionary.db` | SQLite database path for compiled dictionary |
 | `DictionaryDatabase.ForceRebuild` | bool | `false` | Force rebuild of dictionary database on startup |
+
+`ProcessingServices.{Name}.RequiredServices` is readiness metadata, not a
+resource-lifecycle control. The shipped mappings are validated against the
+shared ticket-workflow catalog: Preparer requires Jira, and Planner requires
+Jira plus GitHub. A known dependency that is disabled remains a visible
+readiness blocker rather than preventing Orchestrator startup. The AppHost
+applies the same catalog to Aspire `WaitFor()` relationships, but Aspire still
+owns resource start/stop, logs, and traces; `POST /api/v1/services/refresh`
+only performs a health recheck.
 
 ---
 
@@ -540,15 +614,27 @@ loaded from a prepared FHIR spec database and exposed over FTS.
 **Ports:** 5171 (Preparer), 5172 (Planner), 5173 (Applier)
 
 The three Jira FHIR processors — Preparer, Planner, and Applier — share the
-`Processing` configuration shape. The Preparer
-and Planner each queue Jira tickets matching their filters, invoke an agent CLI
-command per ticket, and persist structured output (overwriting prior output for a
-ticket without history). The Applier instead auto-discovers completed plans from
-the Planner database and applies each in a per-(ticket, repo) git worktree. All
-expose `/health`, `/status`, `/processing/start`, `/processing/stop`,
-`/processing/queue`, and `POST /processing/tickets/{key}`.
+`Processing` configuration shape. Preparer and Planner use the run-backed
+authoring lifecycle: the processor freezes source revisions, launches callback
+workers, persists immutable receipts, owns hydration/grouping, and emits
+sanitized review snapshots. Their database paths are private service state, not
+client inputs. The Applier retains its existing work queue over the Planner
+compatibility projection.
 
-### appsettings.json (Planner shown; Preparer omits the `Planner` block)
+For run-backed authoring, `AuthoringMaxAttempts` counts the total number of
+unpersisted authoring claims, including the first attempt and abandoned
+pre-receipt claims. `AuthoringRetryDelay` is a minimum wait measured from the
+failed attempt's durable completion time before automatic retry. An explicit
+manual retry may bypass that wait but never expands the total attempt budget.
+
+### appsettings.json (Planner shown)
+
+Planner's checked-in `SnapshotSchemaVersion` is `1`. Preparer uses the same
+shape but omits the `Planner` block and sets `SnapshotSchemaVersion` to `3`.
+These settings are intentionally processor-specific: the current Preparer host
+**requires** public snapshot schema v3 for provenance and policy-marked public
+people, while Applying remains on Planner v1. Preparer v1/v2 are publisher and
+test compatibility inputs only; they are not supported producer settings.
 
 ```json
 {
@@ -556,7 +642,16 @@ expose `/health`, `/status`, `/processing/start`, `/processing/stop`,
     "DatabasePath": "./data/processor.jira.fhir.planner.db",
     "SyncSchedule": "00:01:00",
     "MaxConcurrentProcessingThreads": 3,
+    "MaxActiveAuthoringRuns": 2147483647,
     "StartProcessingOnStartup": true,
+    "OrphanedInProgressThreshold": "00:10:00",
+    "AuthoringRetryDelay": "00:01:00",
+    "AuthoringMaxAttempts": 3,
+    "SnapshotDirectory": "./data/snapshots/planner",
+    "SnapshotSchemaVersion": 1,
+    "ReconcileSnapshotsOnStartup": true,
+    "ActivateRunBackedAuthoring": true,
+    "PreCutoverBackupPath": "./data/processor.jira.fhir.planner.pre-cutover.db",
     "OrchestratorAddress": "http://localhost:5150",
     "Ports": {
       "Http": 5172
@@ -564,10 +659,10 @@ expose `/health`, `/status`, `/processing/start`, `/processing/stop`,
     "Jira": {
       "TicketStatusesToProcess": ["Resolved - change required"],
       "ProjectsToInclude": ["FHIR"],
-      "SpecificationsToInclude": [],
+      "SpecificationsToInclude": ["FHIR R5 Subscriptions Backport (FHIR)"],
       "WorkGroupsToInclude": null,
       "TicketTypesToProcess": null,
-      "AgentCliCommand": "copilot -p '/ticket-plan {ticketKey} --db {dbPath} --repos {repoFilters} ...'",
+      "AuthoringAgentCliCommand": "copilot -p '/ticket-plan {ticketKey} --repos {repoFilters}' --allow-all",
       "JiraSourceAddress": "http://localhost:5160",
       "OrchestratorAddress": "http://localhost:5150",
       "DiscoverySource": "DirectJiraSource",
@@ -584,32 +679,124 @@ expose `/health`, `/status`, `/processing/start`, `/processing/stop`,
 }
 ```
 
-The `AgentCliCommand` above is abbreviated — the shipped default carries a long
-`--allow-tool`/`--deny-tool` allow-list; consult the project's `appsettings.json`
-for the full value.
+The worker command receives run/item/callback/operation/token/source-revision
+context through processor-generated `FHIR_AUGURY_AUTHORING_*` environment
+variables. Do not put callback tokens or a database path in the command
+template. Preparer uses the equivalent `/ticket-prep {ticketKey}` command.
 
 ### Configuration Options
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `Processing.DatabasePath` | string | per-processor | Structured processor output SQLite DB (overwritten per ticket without history) |
+| `Processing.DatabasePath` | string | per-processor | Private processor-owned SQLite state |
 | `Processing.SyncSchedule` | TimeSpan | `00:01:00` | Queue poll / discovery interval |
 | `Processing.MaxConcurrentProcessingThreads` | int | `3`–`8` | Max tickets processed concurrently (per-processor default) |
+| `Processing.MaxActiveAuthoringRuns` | int | `2147483647`; Preparer overrides to `1` | Maximum live authoring runs admitted for a processor. Live means `queued`, `running`, `finalizing`, or recoverable `error`; terminal runs release capacity. |
 | `Processing.StartProcessingOnStartup` | bool | `true` | Begin processing the queue on boot |
+| `Processing.OrphanedInProgressThreshold` | TimeSpan | `00:10:00` | Age after which an abandoned in-progress claim is recoverable |
+| `Processing.AuthoringRetryDelay` | TimeSpan | `00:01:00` | Minimum interval from a failed attempt's durable completion time before processor-owned automatic retry |
+| `Processing.AuthoringMaxAttempts` | int | `3` | Total unpersisted authoring-attempt ceiling, including the first and abandoned pre-receipt claims |
+| `Processing.SnapshotDirectory` | string | per-processor | Directory owned by the processor for immutable review snapshots |
+| `Processing.SnapshotSchemaVersion` | int | Preparer: `3`; Planner: `1` | Public snapshot schema written by that processor. Preparer startup accepts only `3`; the ticket publisher can still read exact legacy Preparer v1/v2 pairs for degraded Discussion compatibility and treats their people as unavailable. Planner writes and publishes only v1 for Applying. |
+| `Processing.ReconcileSnapshotsOnStartup` | bool | `true` | Recover interrupted snapshot creation/promotion/recording |
+| `Processing.ActivateRunBackedAuthoring` | bool | `true` in Preparer/Planner | Perform the one-way legacy cutover and require initial revalidation |
+| `Processing.PreCutoverBackupPath` | string | per-processor | Verified rollback backup required when activation is enabled |
 | `Processing.OrchestratorAddress` | string | `http://localhost:5150` | Orchestrator HTTP address |
 | `Processing.Ports.Http` | int | per-processor | HTTP listen port (5171 / 5172 / 5173) |
 | `Processing.Jira.TicketStatusesToProcess` | string[] | per-processor | Jira statuses to pull (Preparer: `Triaged`/`Submitted`; Planner: `Resolved - change required`) |
 | `Processing.Jira.ProjectsToInclude` | string[] | `["FHIR"]` | Jira projects to include |
-| `Processing.Jira.SpecificationsToInclude` | string[] | `[]` | Restrict to specific specifications (empty = all) |
+| `Processing.Jira.SpecificationsToInclude` | string[] | Planner: `["FHIR R5 Subscriptions Backport (FHIR)"]` | Restrict to specific specifications; an effective empty list means no specification restriction |
 | `Processing.Jira.WorkGroupsToInclude` | string[]? | `null` | Restrict to specific work groups (null = all) |
 | `Processing.Jira.TicketTypesToProcess` | string[]? | `null` | Restrict to specific ticket types (null = all) |
-| `Processing.Jira.AgentCliCommand` | string | per-processor | Agent command template run per ticket (`{ticketKey}`, `{dbPath}`, `{repoFilters}` tokens; no shell expansion) |
+| `Processing.Jira.AuthoringAgentCliCommand` | string | per-processor | Processor-launched callback worker command (`{ticketKey}` and optional `{repoFilters}`; no shell expansion) |
 | `Processing.Jira.JiraSourceAddress` | string | `http://localhost:5160` | Jira source used for direct discovery |
 | `Processing.Jira.DiscoverySource` | string | `DirectJiraSource` | Where tickets are discovered (`DirectJiraSource` or the orchestrator) |
 | `Processing.Jira.SourceTicketShape` | string | `fhir` | Source ticket DTO shape |
 | `Processing.Planner.RepoFilters` | string[]? | `null` | Planner-only exact `owner/repo` allow-list passed to `ticket-plan` via `{repoFilters}` (null = no restriction) |
 | `Processing.Hydration.BackfillOnStartup` | bool | `true` | Backfill hydrated evidence for existing output on boot |
 | `Processing.Hydration.MaxParallelism` | int | `4` | Max units hydrated concurrently |
+
+### Planner Jira filter repair
+
+The checked-in Planner is restricted to `FHIR R5 Subscriptions Backport (FHIR)`,
+with ordinary `U+0020` spaces, in project `FHIR` and status
+`Resolved - change required`. It is not unrestricted. An effective
+`SpecificationsToInclude = []` means no specification restriction, but an
+empty array in a later configuration provider does not automatically clear
+inherited indexed values.
+
+For the affected installation, both the specification and the `AwaitingMerge`
+label-text exclusion must be under `Processing.Jira`. `AwaitingMerge` is local
+operator intent, not a shipped Planner default. In a separately authorized
+change window, merge these keys into the existing ignored
+`src/FhirAugury.Processor.Jira.Fhir.Planner/appsettings.local.json`:
+
+```json
+{
+  "Processing": {
+    "Jira": {
+      "SpecificationsToInclude": ["FHIR R5 Subscriptions Backport (FHIR)"],
+      "LabelsToExclude": ["AwaitingMerge"]
+    }
+  }
+}
+```
+
+This is a **merge fragment, not a replacement for the whole local file**.
+Leave the existing `Processing.DatabasePath` value at its current parent,
+as a sibling of `Jira`, and preserve unrelated local settings. An authorized
+operator must remove the shallow `Processing.SpecificationsToInclude` and
+`Processing.LabelsToExclude` copies; those paths do not override the options
+bound from `Processing:Jira`.
+
+Planner explicitly layers base `appsettings.json`, then optional
+`appsettings.local.json`, then service-prefixed environment variables.
+Later providers override the **same path**, including array indexes. The
+canonical first-entry paths and environment equivalents are:
+
+| Configuration path | Environment variable |
+|-----|-----|
+| `Processing:Jira:SpecificationsToInclude:0` | `FHIR_AUGURY_PROCESSOR_JIRA_FHIR_PLANNER_Processing__Jira__SpecificationsToInclude__0` |
+| `Processing:Jira:LabelsToExclude:0` | `FHIR_AUGURY_PROCESSOR_JIRA_FHIR_PLANNER_Processing__Jira__LabelsToExclude__0` |
+
+Inspect the effective values from later providers and any additional indexes;
+moving the JSON keys alone cannot rule out an environment override or an
+inherited extra entry.
+
+**Do not resume the affected Planner after only the repository correction.**
+First relocate both local filters and check effective overrides in the
+separately authorized change window. Startup processing can schedule work
+automatically, so after an eventual authorized start, reconcile the
+authoritative processor run inventory, including startup-created runs,
+before submitting an additional explicit run. This repository change does
+not migrate ignored local or environment values, prove live ticket
+membership, or authorize a start.
+
+### Preparer schema-v3 effective-configuration preflight
+
+Run this preflight before ordinary Preparer snapshot production and before
+`refresh-publication`. A current binary can still receive a stale value from
+an ignored or process-level override even though checked-in
+`appsettings.json` says `3`.
+
+1. Inspect the Preparer content root's gitignored
+   `appsettings.local.json` for `Processing:SnapshotSchemaVersion`.
+2. Inspect the process and Aspire resource environment for the exact variable
+   `FHIR_AUGURY_PREPARER_Processing__SnapshotSchemaVersion`. The service
+   prefix is `FHIR_AUGURY_PREPARER_`; `Processing__SnapshotSchemaVersion` is
+   the nested key after that prefix.
+3. Remove the stale override or correct the existing ignored/environment
+   value to `3`. Do not add or commit a local override as part of the repair.
+4. Restart the Preparer and confirm its startup log reports
+   `Effective Preparer snapshot schema version is 3` before attempting the
+   refresh.
+
+The strongly typed options validator rejects any effective value other than
+`3` with `SnapshotSchemaVersion must be 3 for the Preparer service.` Correct
+the local/environment configuration rather than weakening validation.
+Successful legacy publication does not prove that the running producer is
+configured safely: v1/v2 remain readable only so existing immutable pairs can
+render with degraded readiness, and those pairs are never upgraded in place.
 
 > For the operational flow (kick-off curl, monitoring, output locations), see the
 > [processors runbook](technical/processors.md).
@@ -621,12 +808,15 @@ for the full value.
 **Prefix:** `FHIR_AUGURY_BALLOTNOTES_`
 **Port:** 5174
 
-Commit-triggered processor that hydrates ballot-note evidence for a GitHub repo
-+ since-commit window (commit-window walk, ticket attribution, source-file
-resolution, current-note capture) and serves read/query + prose write-back
-endpoints under `/api/v1/ballot-notes`. The `notes-site` tool reads its database
-directly to emit the static review SPA. Registered in the AppHost as
-`processor-github-fhir-ballotnotes` with `WithExplicitStart()`.
+BallotNotes creates immutable hydration executions for GitHub commit windows,
+then runs processor-owned artifact/page/datatype authoring with callback-only
+workers and accepted receipts. Normal runs emit trusted snapshots consumed by
+`notes-site`; the live database is not a renderer input. The AppHost resource
+uses `WithExplicitStart()`.
+
+Its retry settings use the same total-attempt and minimum-delay semantics as
+Preparer and Planner. Automatic retry is scheduler-owned; an explicit retry can
+bypass the wait but cannot reset or increase the configured budget.
 
 > To run a hydration (and for the Preparer/Planner/Applier operational flow),
 > see the [processors runbook](technical/processors.md).
@@ -637,6 +827,17 @@ directly to emit the static review SPA. Registered in the AppHost as
 {
   "BallotNotes": {
     "DatabasePath": "./cache/ballot-notes.db",
+    "AuthoringRetryDelay": "00:01:00",
+    "AuthoringMaxAttempts": 3,
+    "SnapshotDirectory": "./cache/snapshots/ballot-notes",
+    "SnapshotSchemaVersion": 1,
+    "ReconcileSnapshotsOnStartup": true,
+    "ActivateRunBackedAuthoring": true,
+    "PreCutoverBackupPath": "./cache/ballot-notes.pre-cutover.db",
+    "ArtifactAuthoringCommand": "copilot -p \"/notes-artifact {noteId}\" --allow-all",
+    "PageAuthoringCommand": "copilot -p \"/notes-page {noteId}\" --allow-all",
+    "DataTypeAuthoringCommand": "copilot -p \"/notes-datatype {noteId}\" --allow-all",
+    "AuthoringCallbackAddress": null,
     "Ports": {
       "Http": 5174
     },
@@ -654,12 +855,91 @@ directly to emit the static review SPA. Registered in the AppHost as
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `DatabasePath` | string | `./cache/ballot-notes.db` | SQLite notes DB path (read directly by the `notes-site` renderer) |
+| `DatabasePath` | string | `./cache/ballot-notes.db` | Private processor-owned SQLite state |
 | `Ports.Http` | int | `5174` | HTTP listen port |
+| `AuthoringRetryDelay` | TimeSpan | `00:01:00` | Minimum interval from a failed attempt's durable completion time before processor-owned automatic retry |
+| `AuthoringMaxAttempts` | int | `3` | Total unpersisted authoring-attempt ceiling, including the first and abandoned pre-receipt claims |
+| `SnapshotDirectory` | string | `./cache/snapshots/ballot-notes` | Processor-owned immutable snapshot directory |
+| `SnapshotSchemaVersion` | int | `1` | Public snapshot schema version |
+| `ReconcileSnapshotsOnStartup` | bool | `true` | Recover interrupted snapshot publication |
+| `ActivateRunBackedAuthoring` | bool | `true` | Perform one-way cutover and initial prose revalidation |
+| `PreCutoverBackupPath` | string | `./cache/ballot-notes.pre-cutover.db` | Verified backup created before activation |
+| `ArtifactAuthoringCommand` / `PageAuthoringCommand` / `DataTypeAuthoringCommand` | string | per type | Processor-launched worker command containing `{noteId}` and no database/token arguments |
+| `AuthoringCallbackAddress` | string? | `null` | Optional externally reachable callback base; defaults to the local processor address |
 | `Hydration.CloneRoot` | string | `./cache/github/repos` | Root holding per-repo clones (`<owner>_<name>/clone`) |
 | `Hydration.OrchestratorAddress` | string | `http://localhost:5150` | Primary attribution upstream (cross-references + ticket details) |
 | `Hydration.JiraSourceAddress` | string | `http://localhost:5160` | Fallback attribution upstream when the orchestrator is unreachable |
 | `Hydration.MaxParallelism` | int | `4` | Max units hydrated concurrently |
+
+---
+
+## Dev UI
+
+**Prefix:** `FHIR_AUGURY_DEVUI_`
+**Port:** 5210
+
+The Dev UI is a trusted-local Blazor Server client of the Orchestrator. Its
+operations workspace controls only Preparer and Planner runs. It neither
+starts/stops Aspire resources nor reads a live source or processor database.
+
+### Effective defaults
+
+```json
+{
+  "DevUi": {
+    "OrchestratorAddress": "http://localhost:5150",
+    "RecentRunLimit": 20,
+    "RunPollInterval": "00:00:03",
+    "CacheRoot": "..\\..\\cache",
+    "SnapshotCacheRoot": "devui-authoring-snapshots",
+    "ReviewSitesRoot": "devui-review-sites"
+  }
+}
+```
+
+Relative `CacheRoot` values resolve from the Dev UI content root.
+`SnapshotCacheRoot` and `ReviewSitesRoot` resolve beneath `CacheRoot`; absolute
+child paths are also accepted when they remain strict, non-overlapping
+descendants. Under the AppHost, all three are supplied as absolute
+repository-local paths, producing:
+
+```text
+cache\devui-authoring-snapshots\{prepare|plan}\{runId}\
+cache\devui-review-sites\{prepare|plan}\{runId}\{discussion|applying}\
+```
+
+The snapshot directory is private. Only the validated review-site root is
+mapped at `/review-sites`, without directory browsing. Generated sites share
+the Dev UI origin in this trusted-local release.
+
+### Configuration options
+
+| Key | Type | Default | Description |
+|-|-|-|-|
+| `DevUi:OrchestratorAddress` | string | `http://localhost:5150` | Absolute HTTP/HTTPS Orchestrator address; user information is rejected |
+| `DevUi:RecentRunLimit` | int | `20` | Bounded active/recent run-list limit; valid range `1..100` |
+| `DevUi:RunPollInterval` | TimeSpan | `00:00:03` | Sequential detail refresh interval; must be greater than zero |
+| `DevUi:CacheRoot` | string | `..\..\cache` | Approved artifact root; cannot be a filesystem, repository, content, or web root |
+| `DevUi:SnapshotCacheRoot` | string | `devui-authoring-snapshots` | Private verified-pair child of `CacheRoot` |
+| `DevUi:ReviewSitesRoot` | string | `devui-review-sites` | Web-served run-site child of `CacheRoot` |
+
+Startup rejects roots that escape or contain one another, traverse an existing
+reparse point/junction, use unsafe Windows path syntax, or would expose the
+snapshot cache through `wwwroot`. The AppHost uses these exact environment
+variables:
+
+```text
+FHIR_AUGURY_DEVUI_DevUi__OrchestratorAddress
+FHIR_AUGURY_DEVUI_DevUi__CacheRoot
+FHIR_AUGURY_DEVUI_DevUi__SnapshotCacheRoot
+FHIR_AUGURY_DEVUI_DevUi__ReviewSitesRoot
+```
+
+Each verified-pair run directory contains the descriptor, database, and
+`verified-pair.json`; each published sub-site contains `site-manifest.json`.
+The first release retains these ignored `cache\` artifacts indefinitely.
+Operators may remove old workflow/run directories manually while the Dev UI is
+stopped; there is no automatic retention job or cleanup UI.
 
 ---
 

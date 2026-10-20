@@ -23,8 +23,12 @@ builder.Configuration
     .AddJsonFile("appsettings.local.json", optional: true, reloadOnChange: true)
     .AddEnvironmentVariables("FHIR_AUGURY_ORCHESTRATOR_");
 
-builder.Services.Configure<OrchestratorOptions>(
-    builder.Configuration.GetSection(OrchestratorOptions.SectionName));
+builder.Services.AddSingleton<
+    IValidateOptions<OrchestratorOptions>,
+    OrchestratorOptionsValidator>();
+builder.Services.AddOptions<OrchestratorOptions>()
+    .Bind(builder.Configuration.GetSection(OrchestratorOptions.SectionName))
+    .ValidateOnStart();
 
 // ── Aspire service defaults (OpenTelemetry, health checks, resilience) ──
 builder.AddServiceDefaults();

@@ -9,7 +9,10 @@ public class JiraProcessingOptions
     public List<string>? SpecificationsToInclude { get; set; }
     public List<string>? WorkGroupsToInclude { get; set; }
     public List<string>? TicketTypesToProcess { get; set; }
+    public List<string>? LabelsToInclude { get; set; }
+    public List<string>? LabelsToExclude { get; set; }
     public string AgentCliCommand { get; set; } = string.Empty;
+    public string AuthoringAgentCliCommand { get; set; } = string.Empty;
     public string JiraSourceAddress { get; set; } = string.Empty;
     public string? OrchestratorAddress { get; set; }
     public JiraTicketDiscoverySource DiscoverySource { get; set; } = JiraTicketDiscoverySource.DirectJiraSource;
@@ -22,7 +25,9 @@ public class JiraProcessingOptions
         {
             yield return "Processing:Jira:AgentCliCommand must be non-empty.";
         }
-        else if (!AgentCliCommand.Contains("{ticketKey}", StringComparison.Ordinal))
+        else if (!AgentCliCommand.Contains(
+                     "{ticketKey}",
+                     StringComparison.OrdinalIgnoreCase))
         {
             yield return "Processing:Jira:AgentCliCommand must include the {ticketKey} token.";
         }

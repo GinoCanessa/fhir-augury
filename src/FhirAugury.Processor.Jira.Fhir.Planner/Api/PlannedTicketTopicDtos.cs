@@ -1,3 +1,5 @@
+using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Contracts;
+
 namespace FhirAugury.Processor.Jira.Fhir.Planner.Api;
 
 public sealed record PlannedTicketTopicGroupMemberDto(string TicketKey, int Order);
@@ -31,6 +33,7 @@ public sealed class PlannedTicketTopicGroupingRequest
     public required string Specification { get; set; }
     public required string Type { get; set; }
     public List<PlannedTicketTopicRequest> Topics { get; set; } = [];
+    public PlannedTicketGroupingStageContext? Authoring { get; set; }
 }
 
 public sealed class PlannedTicketTopicRequest

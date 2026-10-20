@@ -1,33 +1,82 @@
 @inject IJSRuntime JS
 
-<div class="d-flex align-items-center gap-3">
-    <NavLink class="nav-link" href="/" Match="NavLinkMatch.All">
-        <i class="bi bi-speedometer2"></i> Dashboard
-    </NavLink>
-    <NavLink class="nav-link" href="/api-test">
-        <i class="bi bi-terminal"></i> API Tests
-    </NavLink>
-    <button class="btn btn-sm btn-outline-secondary ms-2" @onclick="ToggleThemeAsync" title="Toggle light/dark theme">
-        <i class="bi @(_isDark ? "bi-sun-fill" : "bi-moon-fill")"></i>
+<div class="app-navigation">
+    <ul class="navbar-nav" aria-label="Workspace sections">
+        <li class="nav-item">
+            <NavLink class="nav-link"
+                     href="/"
+                     Match="NavLinkMatch.All"
+                     @onclick="NotifyNavigationAsync">
+                <i class="bi bi-kanban-fill" aria-hidden="true"></i>
+                Operations
+            </NavLink>
+        </li>
+        <li class="nav-item">
+            <NavLink class="nav-link"
+                     href="/services"
+                     @onclick="NotifyNavigationAsync">
+                <i class="bi bi-hdd-stack-fill" aria-hidden="true"></i>
+                Services
+            </NavLink>
+        </li>
+        <li class="nav-item">
+            <NavLink class="nav-link"
+                     href="/api-test"
+                     @onclick="NotifyNavigationAsync">
+                <i class="bi bi-terminal-fill" aria-hidden="true"></i>
+                API Tests
+            </NavLink>
+        </li>
+    </ul>
+
+    <button class="btn theme-toggle"
+            type="button"
+            title="@ThemeButtonLabel"
+            aria-label="@ThemeButtonLabel"
+            aria-pressed="@_isDark"
+            @onclick="ToggleThemeAsync">
+        <i class="bi @(_isDark ? "bi-sun-fill" : "bi-moon-stars-fill")"
+           aria-hidden="true"></i>
+        <span>@(_isDark ? "Light theme" : "Dark theme")</span>
     </button>
 </div>
 
 @code {
+    [Parameter]
+    public EventCallback OnNavigate { get; set; }
+
     private bool _isDark;
 
-    protected override async Task OnAfterRenderAsync(bool firstRender)
+    private string ThemeButtonLabel =>
+        _isDark
+            ? "Switch to light theme"
+            : "Switch to dark theme";
+
+    protected override async Task OnAfterRenderAsync(
+        bool firstRender)
     {
-        if (firstRender)
+        if (!firstRender)
         {
-            string theme = await JS.InvokeAsync<string>("getTheme");
-            _isDark = theme == "dark";
-            StateHasChanged();
+            return;
         }
+
+        string theme =
+            await JS.InvokeAsync<string>("getTheme");
+        _isDark = string.Equals(
+            theme,
+            "dark",
+            StringComparison.Ordinal);
+        StateHasChanged();
     }
+
+    private Task NotifyNavigationAsync() =>
+        OnNavigate.InvokeAsync();
 
     private async Task ToggleThemeAsync()
     {
         _isDark = !_isDark;
-        await JS.InvokeVoidAsync("setTheme", _isDark ? "dark" : "light");
+        await JS.InvokeVoidAsync(
+            "setTheme",
+            _isDark ? "dark" : "light");
     }
 }

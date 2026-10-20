@@ -1,10 +1,12 @@
 using FhirAugury.Common;
 using FhirAugury.Common.Api;
 using FhirAugury.Common.Database.Records;
+using FhirAugury.Common.Text;
 using FhirAugury.Source.Jira.Api;
 using FhirAugury.Source.Jira.Configuration;
 using FhirAugury.Source.Jira.Database;
 using FhirAugury.Source.Jira.Database.Records;
+using FhirAugury.Source.Jira.Ingestion;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
@@ -26,9 +28,16 @@ public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optio
     {
         JiraServiceOptions options = optionsAccessor.Value;
         using SqliteConnection connection = db.OpenConnection();
+        using SqliteCommand transaction = connection.CreateCommand();
+        transaction.CommandText = "BEGIN DEFERRED;";
+        transaction.ExecuteNonQuery();
         JiraIssueRecord? issue = JiraIssueRecord.SelectSingle(connection, Key: key);
         if (issue is null)
+        {
+            transaction.CommandText = "COMMIT;";
+            transaction.ExecuteNonQuery();
             return NotFound(new { error = $"Issue {key} not found" });
+        }
 
         Dictionary<string, string> metadata = new()
         {
@@ -52,6 +61,7 @@ public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optio
         if (issue.DuplicateOf is not null) metadata["duplicate_of"] = issue.DuplicateOf;
         if (issue.RelatedIssues is not null) metadata["related_issues"] = issue.RelatedIssues;
         if (issue.RelatedArtifacts is not null) metadata["related_artifacts"] = issue.RelatedArtifacts;
+        if (issue.RelatedPages is not null) metadata["related_pages"] = issue.RelatedPages;
         if (includeContent == true && issue.DescriptionPlain is not null) metadata["description_plain"] = issue.DescriptionPlain;
 
         List<CommentInfo>? comments = null;
@@ -61,6 +71,18 @@ public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optio
             comments = commentRecords.Select(c => new CommentInfo(
                 c.Id.ToString(), c.Author, c.Body, c.CreatedAt, null)).ToList();
         }
+
+        ItemPeopleResponse people = new(
+            ResolveExplicitDisplayName(connection, issue.ReporterUserId),
+            ResolveExplicitDisplayName(connection, issue.AssigneeUserId),
+            ReadInPersonRequesters(connection, key))
+        {
+            PublicDisplayNamePolicyVersion =
+                PublicDisplayNamePolicy.CurrentVersion,
+        };
+        SourceReadProvenance provenance = JiraSyncStateHelper.CaptureProvenance(
+            connection,
+            [issue.ProjectKey]);
 
         ItemResponse response = new ItemResponse
         {
@@ -73,8 +95,12 @@ public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optio
             UpdatedAt = issue.UpdatedAt,
             Metadata = metadata,
             Comments = comments,
+            Provenance = provenance,
+            People = people,
         };
 
+        transaction.CommandText = "COMMIT;";
+        transaction.ExecuteNonQuery();
         return Ok(response);
     }
 
@@ -244,5 +270,80 @@ public class ItemsController(JiraDatabase db, IOptions<JiraServiceOptions> optio
             .ToList();
 
         return Ok(links);
+    }
+
+    private static string? ResolveExplicitDisplayName(
+        SqliteConnection connection,
+        int? userId)
+    {
+        if (userId is null)
+        {
+            return null;
+        }
+
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT Username, HasAccountUsername, DisplayName
+            FROM jira_users
+            WHERE Id = @userId
+              AND HasExplicitDisplayName = 1
+              AND trim(DisplayName) <> ''
+            LIMIT 1
+            """;
+        command.Parameters.AddWithValue("@userId", userId.Value);
+        using SqliteDataReader reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            return null;
+        }
+
+        string username = reader.GetString(0);
+        bool hasAccountUsername = reader.GetBoolean(1);
+        string displayName = reader.GetString(2);
+        return PublicDisplayNamePolicy.Normalize(
+            displayName,
+            hasAccountUsername ? username : null);
+    }
+
+    private static IReadOnlyList<string> ReadInPersonRequesters(
+        SqliteConnection connection,
+        string issueKey)
+    {
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT u.Username, u.HasAccountUsername, u.DisplayName
+            FROM jira_issue_inpersons AS requester
+            INNER JOIN jira_users AS u ON u.Id = requester.UserId
+            WHERE requester.IssueKey = @issueKey
+              AND u.HasExplicitDisplayName = 1
+              AND trim(u.DisplayName) <> ''
+            ORDER BY u.DisplayName COLLATE NOCASE, u.DisplayName, u.Id
+            """;
+        command.Parameters.AddWithValue("@issueKey", issueKey);
+
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+        List<string> displayNames = [];
+        using SqliteDataReader reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            string username = reader.GetString(0);
+            bool hasAccountUsername = reader.GetBoolean(1);
+            string? displayName = PublicDisplayNamePolicy.Normalize(
+                reader.GetString(2),
+                hasAccountUsername ? username : null);
+            if (displayName is not null && seen.Add(displayName))
+            {
+                displayNames.Add(displayName);
+            }
+        }
+
+        displayNames.Sort(static (left, right) =>
+        {
+            int result = StringComparer.OrdinalIgnoreCase.Compare(left, right);
+            return result != 0
+                ? result
+                : StringComparer.Ordinal.Compare(left, right);
+        });
+        return displayNames;
     }
 }

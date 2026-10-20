@@ -8,24 +8,23 @@ using FhirAugury.DevUi.Services.ApiCatalog;
 namespace FhirAugury.DevUi.Services;
 
 /// <summary>
-/// Generic invoker that drives any <see cref="ApiEndpointDescriptor"/> against an
-/// arbitrary HTTP base address. <see cref="OrchestratorClient"/> and
-/// <see cref="SourceDirectClient"/> are thin wrappers around this.
+/// Generic invoker that drives any <see cref="ApiEndpointDescriptor"/> through
+/// the configured Orchestrator.
 /// </summary>
-public sealed class ApiInvoker(IHttpClientFactory httpClientFactory)
+public sealed class ApiInvoker(
+    IHttpClientFactory httpClientFactory,
+    OrchestratorClient orchestratorClient)
 {
     private static readonly JsonSerializerOptions PrettyJson = new() { WriteIndented = true };
 
     public async Task<ApiInvocationResult> InvokeAsync(
-        string clientName,
-        string httpBase,
         ApiEndpointDescriptor descriptor,
         IReadOnlyDictionary<string, string?> values,
         CancellationToken ct = default)
     {
-        ApiBuiltRequest req = ApiUrlBuilder.Build(httpBase, descriptor, values);
+        ApiBuiltRequest req = ApiUrlBuilder.Build(orchestratorClient.Address, descriptor, values);
 
-        HttpClient client = httpClientFactory.CreateClient(clientName);
+        HttpClient client = httpClientFactory.CreateClient("orchestrator");
         using HttpRequestMessage message = new(req.Method, req.Url);
         if (req.JsonBody is not null)
             message.Content = new StringContent(req.JsonBody, Encoding.UTF8, "application/json");

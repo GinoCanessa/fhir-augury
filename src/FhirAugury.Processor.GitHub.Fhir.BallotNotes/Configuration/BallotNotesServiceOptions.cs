@@ -1,36 +1,67 @@
 using FhirAugury.Common.Configuration;
+using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Configuration;
 
 namespace FhirAugury.Processor.GitHub.Fhir.BallotNotes.Configuration;
 
 /// <summary>
 /// Strongly typed configuration for the BallotNotes processor. Bound from the
-/// <c>BallotNotes</c> section. The notes DB lives under <c>./cache/</c> because
-/// it is co-consumed by the local <c>notes-site</c> renderer (mirroring
-/// <c>ticket-site</c>'s <c>./cache/jira-preparer.db</c> default).
+/// <c>BallotNotes</c> section. The processor owns the live notes database and
+/// publishes sanitized immutable snapshots for review-site generation.
 /// </summary>
-public sealed class BallotNotesServiceOptions
+public sealed class BallotNotesServiceOptions : ProcessingServiceOptions
 {
-    public const string SectionName = "BallotNotes";
+    public new const string SectionName = "BallotNotes";
 
-    /// <summary>Canonical notes DB path, shared with the notes-site renderer.</summary>
-    public string DatabasePath { get; set; } = "./cache/ballot-notes.db";
-
-    public PortConfiguration Ports { get; set; } = new() { Http = 5174 };
+    public BallotNotesServiceOptions()
+    {
+        DatabasePath = "./cache/ballot-notes.db";
+        SyncSchedule = "00:00:01";
+        MaxConcurrentProcessingThreads = 4;
+        StartProcessingOnStartup = true;
+        Ports = new PortConfiguration { Http = 5174 };
+        SnapshotDirectory = "./cache/snapshots/ballot-notes";
+    }
 
     public BallotNotesHydrationOptions Hydration { get; set; } = new();
+    public string ArtifactAuthoringCommand { get; set; } =
+        "copilot -p \"/notes-artifact {noteId}\" --allow-all";
+    public string PageAuthoringCommand { get; set; } =
+        "copilot -p \"/notes-page {noteId}\" --allow-all";
+    public string DataTypeAuthoringCommand { get; set; } =
+        "copilot -p \"/notes-datatype {noteId}\" --allow-all";
+    public string? AuthoringCallbackAddress { get; set; }
 
     /// <summary>Validates configuration. Returns human-readable errors; empty means valid.</summary>
-    public IEnumerable<string> Validate()
+    public new IEnumerable<string> Validate()
     {
-        if (string.IsNullOrWhiteSpace(DatabasePath))
+        foreach (string error in base.Validate())
         {
-            yield return "DatabasePath must be configured.";
+            yield return error;
         }
-
-        if (Ports.Http <= 0)
+        foreach ((string name, string command) in new[]
         {
-            yield return "Ports:Http must be a positive port number.";
+            (nameof(ArtifactAuthoringCommand), ArtifactAuthoringCommand),
+            (nameof(PageAuthoringCommand), PageAuthoringCommand),
+            (nameof(DataTypeAuthoringCommand), DataTypeAuthoringCommand),
+        })
+        {
+            if (string.IsNullOrWhiteSpace(command) ||
+                !command.Contains(
+                    "{noteId}",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                yield return $"{name} must be non-empty and contain the {{noteId}} token.";
+            }
+            if (command.Contains(
+                    "{dbPath}",
+                    StringComparison.OrdinalIgnoreCase) ||
+                command.Contains(
+                    "{operationToken}",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                yield return $"{name} must use callback context from the worker environment.";
+            }
         }
 
         foreach (string error in Hydration.Validate())

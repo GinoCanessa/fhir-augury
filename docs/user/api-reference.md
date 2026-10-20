@@ -1,8 +1,11 @@
 # API Reference
 
 FHIR Augury v2 uses a microservices architecture with HTTP/REST APIs for all
-communication. The CLI and MCP tools connect to the orchestrator via HTTP. Each
-service exposes an HTTP API for health checks, search, and management operations.
+communication. The CLI and MCP tools connect to the orchestrator via HTTP.
+Source services expose search and ingestion APIs; processor services expose
+health, lifecycle, authoring, and maintenance APIs according to their role.
+The Dev UI also uses the Orchestrator exclusively, including its
+source-oriented API Tests tabs.
 
 ## Architecture
 
@@ -14,6 +17,10 @@ service exposes an HTTP API for health checks, search, and management operations
 | Confluence | 5180 | Indexes confluence.hl7.org |
 | GitHub | 5190 | Indexes HL7 GitHub repos |
 | FHIR | 5195 | Serves FHIR spec reference data (read-only) |
+| Preparer | 5171 | Authors prepared discussion-ticket output |
+| Planner | 5172 | Authors implementation plans |
+| Applier | 5173 | Applies queued plans locally and pushes on demand |
+| BallotNotes | 5174 | Hydrates evidence and authors ballot notes |
 | MCP HTTP | 5200 | HTTP/SSE MCP server (`FhirAugury.McpHttp`) |
 
 > **Note:** The MCP HTTP server (`FhirAugury.McpHttp`) is a separate service on
@@ -54,10 +61,10 @@ readiness probes and dashboards.
 
 > **Note on the difference vs `GET /api/v1/services`.** `health` and
 > `status` are orchestrator-only signals (process liveness / readiness).
-> `services` is the **aggregate dashboard** — it fans out to every source
-> and returns per-source health, last-sync time, item counts, and index
-> state. Use `services` to render UI; use `status` for an automated
-> ready/not-ready decision.
+> `services` is the **aggregate dashboard** — it returns the latest typed
+> observations for the Orchestrator, enabled sources, and enabled processors.
+> Use `services` to render UI; use `status` for an automated ready/not-ready
+> decision.
 
 The legacy unversioned `GET /health` endpoint is still served by the
 default Aspire health-check pipeline.
@@ -66,7 +73,44 @@ default Aspire health-check pipeline.
 
 #### `GET /api/v1/services`
 
-Get health status of all connected services with index information.
+Get the cached typed readiness payload:
+
+```jsonc
+{
+  "services": [
+    {
+      "name": "Planner",
+      "serviceKind": "processing",
+      "status": "healthy",
+      "enabled": true,
+      "configured": true,
+      "checkedAt": "2026-09-10T12:00:00Z",
+      "processingStatus": "running",
+      "processingIsRunning": true,
+      "processingRemainingCount": 2,
+      "processingInFlightCount": 1,
+      "processingErrorCount": 0,
+      "requiredServices": [ "Jira", "GitHub" ]
+    }
+  ],
+  "lastCheckedAt": "2026-09-10T12:00:00Z"
+}
+```
+
+The payload always includes a local Orchestrator entry and every enabled
+configured source/processor, including services not yet successfully observed.
+`serviceKind` distinguishes `orchestrator`, `source`, and `processing`.
+Processing observations include cached lifecycle/queue fields and
+`requiredServices`. A missing observation is not proof that Aspire stopped a
+resource.
+
+#### `POST /api/v1/services/refresh`
+
+Run a fresh bounded health sweep and return the same
+`ServicesStatusResponse`. One service timeout is recorded as that service's
+unavailable observation without discarding the rest of the sweep. This route
+does not start or stop resources; use Aspire for resource lifecycle, logs, and
+traces.
 
 #### `GET /api/v1/endpoints`
 
@@ -160,6 +204,48 @@ comments, and markdown snapshot.
 
 **Example:** `GET /api/v1/content/item/jira/FHIR-43499?includeComments=true&includeSnapshot=true`
 
+Jira item responses add two optional `ItemResponse` members. Other sources and
+older payloads may omit them:
+
+```jsonc
+{
+  "source": "jira",
+  "id": "FHIR-43499",
+  "title": "...",
+  "provenance": {
+    "source": "jira",
+    "contentRevision": 1842,
+    "isStable": true,
+    "projectLastSuccessfulRefreshAt": {
+      "FHIR": "2026-09-08T05:00:00+00:00"
+    }
+  },
+  "people": {
+    "publicDisplayNamePolicyVersion": 1,
+    "reporter": "Ada Lovelace",
+    "assignee": null,
+    "inPersonRequesters": [
+      "Grace Hopper"
+    ]
+  }
+}
+```
+
+`contentRevision` identifies the local Jira database generation and
+`isStable:false` means the read occurred while that generation was being
+mutated. Project timestamps are the latest proven error-free upstream Jira
+full/incremental refreshes, not cache rebuild or response times. `people`
+contains only Jira-authenticated display names that pass the current public
+display-name policy; it never adds username, email, or user ID fields. The
+policy rejects a value equal to its proven account username
+case-insensitively and any value containing an email-address-shaped token.
+`publicDisplayNamePolicyVersion` is optional for wire compatibility, but a Jira
+response that evaluated the complete people payload sets it to the current
+version even when every name is absent. Downstream processors trust people
+only when that marker exactly matches their current policy; missing, older,
+unknown, and future markers fail closed. The requester list is
+case-insensitively deduplicated and deterministically ordered.
+
 ### Ingestion
 
 #### `POST /api/v1/ingest/trigger`
@@ -205,11 +291,13 @@ the freshly-updated source. Both halves of this protocol carry the
 
 ### Typed Source Proxies
 
-Every source endpoint is reachable through a typed orchestrator proxy at
+Source-specific endpoints are reachable through typed orchestrator proxies at
 `/api/v1/{name}/...`, where `{name}` is one of `jira`, `zulip`,
-`confluence`, or `github`. The proxy preserves method, query string,
-body, response status, and ETag / `Last-Modified` headers; it strips
-`Authorization` and `Cookie` headers by design.
+`confluence`, `github`, or `fhir`. Shared content and lifecycle operations may
+instead use an Orchestrator-native aggregate route or typed metadata
+replacement. A typed proxy preserves method, query string, body, response
+status, and ETag / `Last-Modified` headers; it strips `Authorization` and
+`Cookie` headers by design.
 
 Examples:
 
@@ -218,17 +306,564 @@ Examples:
 | `POST` | `/api/v1/jira/query` | Structured Jira issue query |
 | `POST` | `/api/v1/jira/ingest?jira-project=FHIR` | Trigger Jira ingest scoped to one project |
 | `GET`  | `/api/v1/jira/work-groups` | List HL7 work groups |
+| `POST` | `/api/v1/jira/local-processing/tickets?type=fhir` | Page local-processing candidates with source provenance |
 | `POST` | `/api/v1/zulip/query` | Structured Zulip query |
 | `GET`  | `/api/v1/zulip/streams` | List Zulip streams |
 | `GET`  | `/api/v1/zulip/items/{id}/comments` | Always returns `[]` (shape-parity stub) |
 | `GET`  | `/api/v1/zulip/items/{id}/links` | Always returns `[]` (shape-parity stub) |
 | `GET`  | `/api/v1/confluence/pages/{pageId}` | Get a Confluence page |
+| `GET`  | `/api/v1/confluence/ingestion-block` | Is Confluence ingestion blocked by an edge captcha challenge? |
+| `POST` | `/api/v1/confluence/ingestion-block/clear?clearedBy=you` | Clear the block after solving the challenge |
 | `GET`  | `/api/v1/github/repos` | List indexed GitHub repositories |
 | `GET`  | `/api/v1/github/items/snapshot/{**key}` | GitHub action-first item snapshot (catch-all key preserves `owner/name#123`) |
 
 The full set of typed proxy routes is enumerated in
 [Source Endpoint Reference](../technical/source-endpoint-reference.md)
 and surfaced in the merged orchestrator OpenAPI document.
+
+The Dev UI's source tabs use an exhaustive route matrix over these gateway
+surfaces. A tab may select an Orchestrator-native aggregate content route, a
+typed source proxy, or an aggregate readiness/statistics replacement, but the
+invocation base and inline schema document are always the Orchestrator. Source
+tabs do not call the source ports directly.
+
+### Processing-service proxies
+
+The Orchestrator exposes configured processors under
+`/api/v1/processing-services`:
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| `GET` | `/api/v1/processing-services` | List enabled processing services and their configured metadata and cached health |
+| `GET` | `/api/v1/processing-services/{name}/health` | Proxy the named service's health |
+| `GET` | `/api/v1/processing-services/{name}/status` | Proxy processing status |
+| `GET` | `/api/v1/processing-services/{name}/queue` | Proxy queue statistics |
+| `POST` | `/api/v1/processing-services/{name}/start` | Start queue processing |
+| `POST` | `/api/v1/processing-services/{name}/stop` | Stop queue processing |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs` | Create an authoring run |
+| `GET` | `/api/v1/processing-services/{name}/authoring/runs?limit=N` | List bounded operator-visible runs (Preparer and Planner only) |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs/{sourceRunId}/publication-refresh` | Start a linked metadata-only Discussion publication refresh (Preparer only) |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs/{sourceRunId}/publication-reconciliation` | Start changed-ticket Discussion publication reconciliation (Preparer only) |
+| `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation` | Read the frozen comparison, grouping impact, invalidation, and promotion state (Preparer only) |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation/retry` | Retry a pending immutable snapshot publication (Preparer only) |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation/cancel` | Cancel staged reconciliation before trusted or canonical promotion, with an audited reason (Preparer only) |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation/abandon` | Audit post-promotion abandonment without publication (Preparer only) |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs/{sourceRunId}/canonical-epoch-recovery` | Start or find the dedicated recovery of an abandoned canonical epoch (Preparer only) |
+| `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/canonical-epoch-recovery` | Read the recovery recipe, journal, source abandonment, and verified snapshot (Preparer only) |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/canonical-epoch-recovery/retry` | Resume the same canonical-epoch recovery run and snapshot journal (Preparer only) |
+| `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}` | Get run and item status |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible current error item |
+| `POST` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/items/{itemId}/supersede` | Explicitly supersede one current non-receipt-backed error |
+| `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/snapshot` | Get the trusted snapshot descriptor |
+| `GET` | `/api/v1/processing-services/{name}/authoring/runs/{runId}/snapshot/bytes` | Download immutable snapshot bytes |
+
+Shipped configuration enables the names `Preparer`, `Planner`, and
+`BallotNotes`. Applier is directly addressable on port 5173 but is not
+registered with the Orchestrator by default. A generic proxy route does not
+mean every configured service implements the underlying capability:
+Preparer and Planner provide the common lifecycle plus the Jira authoring APIs,
+including bounded run listing and structured conflict coordinates. BallotNotes
+provides its existing authoring surface but not the Jira processors'
+lifecycle/queue surface, bounded run listing, or structured conflict-coordinate
+extension. Applier provides lifecycle/queue but no authoring-run API.
+Receipt lookup and authenticated worker result submission are direct
+processor endpoints; the Orchestrator does not proxy them.
+
+The supersede request body is `{"reason":"<non-empty operator reason>"}`.
+Publication-reconciliation items never advertise generic supersession.
+Attempting that item endpoint returns `409` with exact
+`error:"reconciliation-cancel-required"`, even before a receipt is accepted;
+use the dedicated run-level cancellation route while promotion is still
+`staged`.
+The Orchestrator forwards the request and preserves the processor's response
+body, content type, status code, and `Retry-After`; it does not interpret the
+reason, attempt count, receipt state, or processor-owned lifecycle.
+
+For Preparer and Planner, the run collection defaults to 20 entries and accepts
+`limit` from 1 through 100. It selects at most `limit + 1` operator-visible
+runs before item aggregation, prioritizes `queued`, `running`,
+`finalizing`, and recoverable `error` runs, then orders terminal history newest
+first. Ordinary runs require their durable request marker. Purpose-marked maintenance runs, including `grouping-maintenance`,
+`publication-refresh`, `publication-reconciliation`, and
+`canonical-epoch-recovery`, are also visible
+without that marker so clients can reconcile by `purpose` and `sourceRunId`.
+Initial revalidation and legacy unmarked authoring rows are omitted. The
+response is:
+
+```jsonc
+{
+  "runs": [ /* AuthoringRunStatus */ ],
+  "truncated": false
+}
+```
+
+Use exact-run `GET` as the escape hatch for a known omitted or older run.
+
+Run status appends processor-owned state:
+
+- `state.isTerminal` is `false` for `queued`, `running`, `finalizing`, and
+  `error`; an `error` is recoverable and remains pollable.
+- `state.isTerminal` is `true` for `completed`,
+  `completed-database-only`, `superseded`, and `abandoned`. `abandoned` is a
+  non-recoverable reconciliation outcome; there is no generic terminal
+  `failed` status.
+- `state.nextAutomaticRecoveryAt` describes the next run-level recovery time
+  when known.
+- `purpose` is an additive value such as `authoring`,
+  `initial-revalidation`, `grouping-maintenance`,
+  `publication-refresh`, or `publication-reconciliation`.
+  `canonical-epoch-recovery` identifies the dedicated snapshot recovery
+  workflow and is the only snapshot-producing purpose allowed through an
+  unresolved canonical restriction.
+- `sourceRunId` is additive maintenance lineage. For a
+  `publication-refresh` or `publication-reconciliation`, it identifies the
+  completed run selected by the operator; the maintenance run itself has a
+  different `runId`. For `canonical-epoch-recovery`, it identifies the
+  terminal abandoned reconciliation, never a run to reopen.
+
+Items retain the legacy `error` field and append `currentError`,
+`supersessionReason`, and processor-computed `allowedActions`.
+`allowedActions.canRetryNow` is true only for an eligible `error` in the
+currently fenced run with an accepted receipt to resume or authoring attempts
+remaining. `allowedActions.canSupersede` additionally requires no accepted receipt and is
+always false for a publication-reconciliation item. These capabilities are
+display hints: retry and supersede recheck the
+fence, receipt, state, and budget atomically and may still return `409`.
+
+For Preparer and Planner, create/retry/supersede conflicts preserve the stable
+`error` and optional `detail` fields and add authoritative coordinates:
+
+```jsonc
+{
+  "error": "active-run-capacity-reached",
+  "detail": "...",
+  "conflictingRunIds": [ "<runId>" ],
+  "runId": "<runId>"
+}
+```
+
+`runId` is present for legacy compatibility when there is one related run.
+Capacity, revision-collision, and revalidation conflicts populate
+`conflictingRunIds` when coordinates are available. Clients must not parse
+human-readable detail to find a run.
+
+An unresolved abandoned canonical epoch returns HTTP `409` with exact
+`error:"canonical-unpublished-restriction"`. `conflictingRunIds` contains the
+abandoned reconciliation and any linked canonical-epoch recovery run; `runId`
+is populated only when there is one coordinate. The same envelope is used
+whether admission rejected proactively or a last-ditch SQLite integrity
+trigger won a race.
+
+BallotNotes retains its existing conflict bodies with `error` and optional
+`detail`; clients must not require `conflictingRunIds` or `runId` from that
+processor.
+
+#### Preparer Discussion publication refresh
+
+Use the bodyless proxied mutation:
+
+```http
+POST /api/v1/processing-services/Preparer/authoring/runs/{sourceRunId}/publication-refresh
+```
+
+`sourceRunId` must name a completed, non-database-only Preparer run with a
+ready snapshot. The selected run is lineage, not a request to rewrite its
+snapshot or replay its item membership. The Preparer creates a new
+snapshot-producing maintenance run over the current accepted receipt-backed
+corpus, reuses every accepted receipt, and returns `202 Accepted`:
+
+```jsonc
+{
+  "run": {
+    "runId": "<refreshRunId>",
+    "processorKind": "jira-fhir",
+    "status": "running",
+    "databaseOnly": false,
+    "purpose": "publication-refresh",
+    "sourceRunId": "<sourceRunId>",
+    "state": {
+      "isTerminal": false,
+      "isRecoverable": false
+    }
+  },
+  "items": [
+    {
+      "runId": "<refreshRunId>",
+      "businessKey": "FHIR-123",
+      "status": "complete",
+      "acceptedReceiptId": "<retainedReceiptId>",
+      "attemptCount": 0
+    }
+  ]
+}
+```
+
+The response `Location` is
+`/api/v1/processing-services/Preparer/authoring/runs/{refreshRunId}`.
+The Orchestrator preserves the processor body, status, `Location`, and
+`Retry-After`; it sends no request body and does not perform the repair itself.
+The direct Preparer route is
+`POST /processing/authoring/runs/{sourceRunId}/publication-refresh`, whose
+direct `Location` is
+`/processing/authoring/runs/{refreshRunId}`. The Orchestrator rewrites that
+location to the proxied status route above.
+
+Immediate rejection uses the typed fields `error`, optional `detail`,
+`conflictingRunIds`, and the legacy-compatible single `runId` when one related
+run is known:
+
+| Status | Stable `error` | Meaning |
+|--------|----------------|---------|
+| `400` | `invalid-source-run` | The coordinate is not a completed snapshot-producing Preparer run or its ready descriptor is invalid |
+| `404` | `source-run-not-found` | No source run exists at that coordinate |
+| `409` | `authoring-not-activated`, `cutover-in-progress`, or `revalidation-required` | Run-backed authoring is not ready for maintenance |
+| `409` | `mutation-fence-unavailable` | Another fenced mutation is active; related run coordinates are returned when known |
+| `409` | `canonical-unpublished-restriction` | An abandoned canonical epoch has no verified replacement snapshot; related abandoned/recovery run coordinates are returned |
+| `409` | `run-not-active`, `source-revision-mismatch`, or `stage-fingerprint-mismatch` | Processor state no longer permits the requested maintenance start |
+| `409` | `invalid-source-snapshot` | The selected original snapshot fails identity, integrity, schema, size, or digest validation |
+| `409` | `original-output-changed` or `original-grouping-changed` | Original accepted output or grouping values/IDs/order/membership no longer match the source snapshot |
+| `409` | `invalid-accepted-graph`, `invalid-protection-catalog`, or `unclassified-protection-column` | The current graph cannot be safely covered by the publication-preservation contract |
+
+After acceptance, poll the returned run through the ordinary status route.
+Admission preserves the original snapshot's protected output and freezes the
+entire current accepted corpus with the `publication-enrichment` v1 recipe,
+items, and mutation fence in one transaction. Optional public
+`run.corpusComparison` discloses its `sourceSnapshotId`,
+`sourceExportedTicketCount`, `currentAcceptedTicketCount`, and
+`additionalTicketCount`; the source run's item count is not a substitute.
+Finalization performs allowlisted Jira and accepted-Zulip metadata updates,
+existing grouping certification, and snapshot materialization; it launches no
+authoring or grouping worker. Source people preview/apply is separate and is
+never invoked by this operation. Transient source and stage failures can appear
+as recoverable run `error` with `state.isTerminal:false`. A durable metadata apply receipt
+makes recovery after the metadata commit idempotent without refetching Jira or
+Zulip, and snapshot reconciliation preserves the same proof-bearing snapshot
+after interrupted promotion.
+
+A missing ticket, per-ticket revision mismatch, or mixed Jira content
+generation, as well as frozen protected-state drift, terminally changes the
+refresh run to `superseded`, releases its mutation fence, and prevents a usable
+new snapshot. A rejected metadata batch has no partial apply or apply receipt;
+a later refusal does not undo metadata that already committed. Retain the old
+pair/site and inspect the conflict. Deletion, reset, ordinary re-authoring,
+regrouping, and forced replacement of the old site are not repair fallbacks.
+Run error text contains stable stage failure codes such as
+`source-unavailable`, `ticket-not-found`, `invalid-source-response`,
+`missing-source-provenance`, `unstable-source`,
+`missing-project-provenance`, `people-policy-not-current`,
+`source-revision-mismatch`, `source-generation-conflict`,
+`frozen-protection-drift`, `invalid-publication-recipe`, and
+`unsupported-publication-recipe`.
+
+Only persisted null request metadata selects the legacy Jira-only
+`publication-metadata` recipe during recovery. New runs use
+`publication-enrichment-v1`; malformed or unknown non-null recipes are
+refused, and legacy receipts cannot satisfy the new stage. Quiesce/reconcile
+new-recipe runs before a binary downgrade. These contracts do not authorize
+live repair or establish recovery of a particular historical publication.
+
+Outer-control clients do not replay start, retry, supersede,
+publication-refresh, or publication-reconciliation start/retry/cancel/abandon
+mutations after transport loss because the processor may have committed the
+mutation. For an unknown
+refresh outcome, issue one bounded read-only
+`GET /api/v1/processing-services/Preparer/authoring/runs?limit=20` and inspect
+runs created since submission whose `purpose` is `publication-refresh` and
+whose `sourceRunId` matches. Zero, one, or multiple candidates require
+operator review, and `truncated:true` must be surfaced. Reads and snapshot
+downloads may use transient retry.
+
+#### Preparer changed-ticket publication reconciliation
+
+This is a separate lifecycle from the metadata-only publication refresh
+above. Refresh refuses changed accepted Jira revisions and never re-authors or
+regroups. Reconciliation discovers the complete changed baseline set,
+re-authors only that set into staging, recomputes the affected grouping
+closure with unchanged tickets as fixed input, and publishes a new immutable
+replacement.
+
+Start it with the bodyless proxied mutation:
+
+```http
+POST /api/v1/processing-services/Preparer/authoring/runs/{sourceRunId}/publication-reconciliation
+```
+
+The direct Preparer route is
+`POST /processing/authoring/runs/{sourceRunId}/publication-reconciliation`.
+`sourceRunId` must identify a completed, non-database-only Preparer run with a
+valid ready snapshot. Admission validates that immutable baseline, reads every
+accepted baseline ticket through the Orchestrator from one stable Jira content
+generation, and records every ticket as `carry-forward` or `re-author`.
+Revision differences are collected across the complete pass rather than
+stopping at the first mismatch. The observation is repeated under the
+mutation fence before the comparison, run, mixed items, and staging recipe are
+committed.
+
+Success returns `202 Accepted`. The proxied `Location` is the reconciliation
+status endpoint for the new run:
+
+```jsonc
+{
+  "run": {
+    "runId": "<reconciliationRunId>",
+    "processorKind": "jira-fhir",
+    "purpose": "publication-reconciliation",
+    "sourceRunId": "<sourceRunId>",
+    "databaseOnly": false
+  },
+  "items": [
+    {
+      "businessKey": "FHIR-123",
+      "status": "pending"
+    }
+  ],
+  "comparison": {
+    "contractVersion": 2,
+    "sourceRunId": "<sourceRunId>",
+    "sourceSnapshotId": "<sourceSnapshotId>",
+    "sourceSnapshotSha256": "<sha256>",
+    "stableJiraGeneration": "1234",
+    "capturedAt": "<UTC timestamp>",
+    "corpusFingerprint": "<sha256>",
+    "items": [
+      {
+        "ticketKey": "FHIR-123",
+        "disposition": "re-author",
+        "baselineSourceRevision": "<revision>",
+        "currentSourceRevision": "<revision>",
+        "baselineReceiptId": "<receiptId>",
+        "baselineRunItemId": "<itemId>",
+        "baselineContributingRunId": "<runId>",
+        "baselineAuthoredFingerprint": "<sha256>",
+        "baselineGroupingFingerprint": "<sha256>",
+        "itemKind": "fhir",
+        "expectedSourceRevision": "<revision>"
+      }
+    ]
+  },
+  "counts": {
+    "acceptedTicketCount": 20,
+    "carryForwardTicketCount": 18,
+    "reAuthorTicketCount": 2,
+    "invalidatedTicketCount": 0
+  }
+}
+```
+
+Carry-forward items are already complete at their frozen receipt coordinates.
+Changed items accept complete authored graph/hydration output into run-scoped
+staging only. The grouping impact includes every old/new partition and shared
+topic/group/container whose text, identity, membership, or ordering can
+change. Canonical rows are untouched until all changed items, complete
+grouping replacements, unaffected-row/receipt/grouping fingerprints, and the
+temporary candidate snapshot validate.
+
+Read the complete state with:
+
+```http
+GET /api/v1/processing-services/Preparer/authoring/runs/{runId}/publication-reconciliation
+```
+
+The direct route is
+`GET /processing/authoring/runs/{runId}/publication-reconciliation`. It
+returns `200 OK` with `run`, `items`, `comparison`, `counts`,
+`groupingImpacts`, `promotion`, `invalidatedTicketKeys`, nullable
+`publicationProof`, nullable `failureCode`/`failureDetail`, and nullable
+`canonicalEpochRecovery`. The recovery link includes its distinct `runId`,
+`sourceRunId`, `authoringEpoch`, and `state`; after successful resolution it
+also includes `snapshotId`, `snapshotSha256`, and `resolvedAt`.
+`promotion` contains `state`, nullable `journalState`, `mutationFenceHeld`,
+`lastRecoveryAttemptAt`, recovery failure fields, cancellation
+`cancelledAt`/`cancellationReason`, and abandonment audit fields. The proof is
+present only for the verified replacement and has exact purpose
+`publication-reconciliation`.
+
+Promotion uses database-first ordering. The temporary snapshot is
+materialized and verified while state is `staged`. One immediate SQLite
+transaction then applies revised canonical graphs, accepted receipt state,
+and complete affected grouping replacements; creates the snapshot row; and
+journals `snapshot-publish-pending` while retaining the fence. Filesystem
+publication and the snapshot/run/journal ready transitions occur afterward.
+This is a durable resumable protocol, not physical atomicity across SQLite and
+the filesystem.
+
+| Promotion/evidence state | Recovery behavior |
+|--------------------------|-------------------|
+| `staged` | Canonical output is unchanged. Every `re-author` item must be `complete` with matching graph, hydration, accepted receipt, run-item, operation, revision, and fingerprint coordinates. A `superseded` item never satisfies this check. Missing graph/group staging is `staging-mismatch`/`grouping-impact-mismatch`. Dedicated cancellation is available until trusted candidate persistence. |
+| Pending, final absent, temporary valid | Verify the journaled post-provenance bytes and move them once to the immutable final path; never add or rewrite provenance during recovery. |
+| Pending, final matching | Reuse and validate it; never reapply canonical replacement. This covers interruption immediately after the move. |
+| Pending, final conflicting/corrupt | Stop with `promotion-recovery-failure`, never overwrite the file, and keep the fence. |
+| Pending, temporary missing/corrupt with no valid final | Stop with `promotion-recovery-failure`; retain journal/fence for repair. A checksum or provenance mismatch is handled the same way. |
+| Snapshot row absent/conflicting | Stop with `promotion-recovery-failure`. A creating row advances after file validation, a promoted row advances to ready, and a ready row is reused. |
+| Snapshot ready, run incomplete | Complete the same run and continue the journal/fence transition. |
+| Run complete, journal still pending | Mark the reconciliation `ready`, release the fence, and clean staging. |
+| `ready` | Final snapshot, run, and journal agree; staging is no longer required. Recovery is idempotent. |
+| `canonical-unpublished` | Explicit terminal abandonment; it is not recoverable through the pending retry route and is not a successful publication. |
+| `cancelled` | Terminal pre-promotion cancellation. Canonical output and the prior publication are unchanged; both fences and disposable workspace are released. |
+
+Startup recovery automatically scans pending journals. The explicit equivalent
+is bodyless and returns `{ "status": { /* full reconciliation status */ },
+"recoveryStarted": true }` on success:
+
+```http
+POST /api/v1/processing-services/Preparer/authoring/runs/{runId}/publication-reconciliation/retry
+```
+
+The direct route has the same suffix under
+`/processing/authoring/runs`. While pending, all competing Preparer mutations
+return `409` with `error:"recovery-in-progress"`.
+
+Only while both reconciliation and journal remain `staged`, before trusted
+candidate evidence or canonical replacement exists, may an operator cancel:
+
+```http
+POST /api/v1/processing-services/Preparer/authoring/runs/{runId}/publication-reconciliation/cancel
+Content-Type: application/json
+
+{"reason":"<non-blank audited reason>"}
+```
+
+The direct route has the same suffix under
+`/processing/authoring/runs`. Success returns the full terminal `status`,
+`cancelledAt`, and persisted `reason`. One transaction records the audit,
+ends active attempts and incomplete stages, projects every run item and the
+generic run to terminal `superseded` while retaining accepted receipts,
+releases both fences, and deletes only
+unpromoted disposable workspace. The frozen comparison, item decisions,
+generic receipts, and cancellation journal remain. Repeating cancellation
+returns the original audit. Cancellation is not offered and returns
+`cancellation-not-allowed` after `snapshot-publish-pending`,
+`canonical-unpublished`, or `ready`.
+
+Only after the database transaction has committed may an operator explicitly
+release the fence without a replacement publication:
+
+```http
+POST /api/v1/processing-services/Preparer/authoring/runs/{runId}/publication-reconciliation/abandon
+Content-Type: application/json
+
+{"reason":"<non-blank audited reason>"}
+```
+
+The direct route again uses `/processing/authoring/runs`. Success returns the
+full `status`, `abandonedAt`, and exact `reason`. It records
+`canonical-unpublished`, transitions the generic run from `finalizing` or
+recoverable `error` to terminal, non-recoverable `abandoned`, leaves promoted
+canonical rows in place, retains the prior immutable publication, and does
+not treat abandonment as proof. The run releases capacity and both fences and
+does not participate in retry, scheduling, or finalization.
+
+Snapshot intent is durable: every run with `databaseOnly:false` is
+snapshot-producing regardless of purpose. While the restriction is
+unresolved, the Preparer checks that intent at admission, immediately before
+a queued run acquires the mutation fence, before snapshot candidate creation,
+and immediately before finalization/promotion. A snapshot run queued before
+abandonment is terminally refused before fence acquisition. SQLite guards on
+run/fence/snapshot/finalization writes remain the last line of defense.
+Ordinary `databaseOnly:true` work remains eligible, including when active-run
+capacity is one. Only the dedicated `canonical-epoch-recovery` purpose may
+bypass the restriction so a separately explicit recovery can create and
+verify the snapshot that resolves the epoch.
+
+Stable reconciliation failure codes are:
+
+| `error` / `failureCode` | Meaning |
+|-------------------------|---------|
+| `invalid-baseline` | Missing/ineligible source run, invalid snapshot, or baseline/current protected-output mismatch |
+| `unstable-jira-generation` | Any baseline ticket lacked stable source evidence, observations spanned generations, or Jira changed while admission was frozen |
+| `revision-invalidation` | A frozen changed ticket moved again before completion |
+| `staging-mismatch` | Changed-ticket graph/receipt staging is incomplete or divergent |
+| `grouping-impact-mismatch` | The affected closure or a complete partition replacement is missing/divergent |
+| `recovery-in-progress` | A pending promotion owns the mutation fence |
+| `promotion-recovery-failure` | Temporary/final file, snapshot row, checksum/provenance, or transition evidence conflicts |
+| `cancellation-not-allowed` | Cancellation was missing a reason or the reconciliation was no longer staged before trusted/canonical promotion |
+| `canonical-unpublished-restriction` | The live canonical epoch was explicitly abandoned without a verified replacement snapshot |
+
+Start returns `404` with `invalid-baseline` when the source coordinate is not
+found and `409` for typed admission/fence conflicts. Status returns `404`
+`invalid-baseline` for an unknown/non-reconciliation run. Retry, cancel, and abandon
+return `409` with a typed failure when their state/evidence preconditions are
+not met. The Orchestrator preserves processor status, body, `Location`, and
+`Retry-After`; clients must branch on the stable code, not prose. Never replay
+a lost start/retry/cancel/abandon response. Use the bounded run list filtered by
+`purpose` and `sourceRunId`, or status when `runId` is known.
+
+#### Recover an abandoned canonical epoch
+
+This is not pending reconciliation retry, metadata refresh, or changed-ticket
+authoring. The source must be a Preparer reconciliation with generic status
+`abandoned`, promotion state `canonical-unpublished`, and no successful
+recovery link for its current authoring epoch.
+
+```http
+POST /api/v1/processing-services/Preparer/authoring/runs/{sourceRunId}/canonical-epoch-recovery
+```
+
+The request has no body. `202 Accepted` returns
+`{ "status": { /* recovery status */ }, "existingRun": false }` and a
+`Location` for the dedicated status route. Admission freezes the **current**
+accepted receipt-backed corpus and complete grouping, including eligible
+database-only work performed since abandonment. All selected items are
+already complete; no authoring or grouping worker runs. A duplicate start
+returns that same active/retryable run with `existingRun:true`. A successfully
+resolved epoch returns `409 canonical-epoch-already-recovered`, with the
+source and successful recovery run coordinates.
+
+```http
+GET /api/v1/processing-services/Preparer/authoring/runs/{runId}/canonical-epoch-recovery
+POST /api/v1/processing-services/Preparer/authoring/runs/{runId}/canonical-epoch-recovery/retry
+```
+
+Status returns `200` with:
+
+- `run` and all-complete `items`, with purpose `canonical-epoch-recovery`;
+- `sourceAbandonment`: source `runId`, epoch, unchanged
+  `canonical-unpublished` state, abandonment time, and reason;
+- `frozen`: accepted ticket/partition counts, corpus and complete grouping
+  fingerprints, recipe fingerprint, and capture time;
+- `recovery`: `materialization-pending`, `snapshot-publish-pending`, or
+  `ready`, plus `mutationFenceHeld`, last attempt, and stable failure detail;
+- nullable dedicated `publicationProof` and `snapshot`, exposed only after
+  successful verification and resolution.
+
+The bodyless retry returns `200` with `{ "status": { /* same run */ },
+"recoveryStarted": true }`. Startup and retry resume the same recipe,
+snapshot ID, sequence, and journal. Before trust is persisted, an incomplete
+backup can be rebuilt at its reserved coordinates. Once journaled, only the
+exact post-provenance digest, size, counts, and coordinates may be reused.
+An existing conflicting final file is never overwritten.
+
+File publication occurs before one shared-SQLite resolution transaction.
+Even if the file exists after a crash, the restriction and fence remain
+until exact final-byte/current-state verification permits that transaction
+to append the resolution link, mark the snapshot ready, complete the new
+run, and release its fence. There is no cross-resource atomicity claim.
+Failures keep the unresolved restriction and retryable run/fence; they do
+not fall back to the prior publication or rewrite abandonment history.
+
+| Status | `error` | Meaning |
+|---|---|---|
+| `404` | `invalid-source-reconciliation` | Unknown source, or unknown recovery on status/retry |
+| `409` | `source-not-abandoned` | The source is not an eligible terminal canonical-unpublished reconciliation |
+| `409` | `canonical-epoch-already-recovered` | A successful linked recovery already resolves the source epoch |
+| `409` | `stale-canonical-epoch` | Authoring mode/epoch or the frozen abandonment coordinate changed |
+| `409` | `canonical-state-changed` | Receipt-backed corpus, canonical values, or grouping changed |
+| `409` | `recovery-in-progress` | Another mutation owns the fence |
+| `409` | `snapshot-recovery-failure` | File, checksum, provenance, integrity, or publication/CAS execution failed |
+| `409` | `recovery-evidence-conflict` | Recipe, selection, fence, journal, or snapshot record contradicts the frozen recovery |
+| `409` | `run-not-retryable` | The recovery is not at a resumable lifecycle boundary |
+
+Errors retain `detail`, `conflictingRunIds`, and `runId` through the
+Orchestrator. The direct Preparer routes have identical suffixes under
+`/processing/authoring/runs`. Use the recovery run's ordinary `/snapshot`
+and `/snapshot/bytes` routes after `ready`. Its schema-v3 descriptor has
+dedicated purpose `canonical-epoch-recovery` and complete corpus/grouping
+proof; this verifies canonical state, not a fresh Jira observation.
+
+Snapshot bytes are streamed through the Orchestrator rather than buffered as a
+complete SQLite file. Range and conditional request headers are forwarded, and
+the proxy preserves `206`, `304`, content range/length/disposition,
+`Accept-Ranges`, ETag, last-modified, and `Retry-After` semantics.
 
 > **Note.** There is no generic reverse proxy at
 > `/api/v1/source/{name}/...`; per-source operations are exposed through
@@ -360,6 +995,70 @@ against the newly updated peer. Tagged `ingestion-notifications`.
 
 ---
 
+## Jira Service HTTP API
+
+**Base URL:** `http://localhost:5160/api/v1`
+
+The direct Jira routes below are also available through the typed Orchestrator
+proxy under `http://localhost:5150/api/v1/jira`. The proxy preserves the
+additive response fields.
+
+### Jira item provenance and people
+
+#### `GET /api/v1/items/{key}`
+
+Returns the common `ItemResponse` plus the Jira `provenance` and `people`
+objects documented under [Orchestrator Items](#items). The issue row, optional
+comments, people, project watermark, and content-generation fence are read in
+one SQLite transaction. Legacy string metadata remains for compatibility;
+consumers needing public person data should use the structured `people` object.
+
+### Local-processing candidates
+
+#### `POST /api/v1/local-processing/tickets?type=fhir`
+
+Returns one filtered page and its unpaged total with a provenance envelope
+captured in the same read transaction:
+
+```jsonc
+{
+  "results": [
+    {
+      "key": "FHIR-43499",
+      "projectKey": "FHIR",
+      "title": "...",
+      "type": "Change Request",
+      "status": "Triaged",
+      "priority": "Medium",
+      "workGroup": "FHIR Infrastructure",
+      "specification": "FHIR Core (FHIR)",
+      "url": "https://jira.hl7.org/browse/FHIR-43499",
+      "updatedAt": "2026-09-07T12:00:00+00:00"
+    }
+  ],
+  "limit": 500,
+  "offset": 0,
+  "total": 1,
+  "provenance": {
+    "source": "jira",
+    "contentRevision": 1842,
+    "isStable": true,
+    "projectLastSuccessfulRefreshAt": {
+      "FHIR": "2026-09-08T05:00:00+00:00"
+    }
+  }
+}
+```
+
+`type` selects `fhir`, `pss`, `baldef`, or `ballot`; omitted means `fhir`.
+The request body is `JiraLocalProcessingListRequest` (filters plus `limit` and
+`offset`). A client consuming multiple pages must require stable matching
+content revisions and project watermark values across the complete sequence.
+The shipped Jira processor client retries the whole sequence up to three
+passes and suppresses provenance if no stable generation can be proven.
+
+---
+
 ## Zulip Service HTTP API
 
 **Base URL:** `http://localhost:5170/api/v1`
@@ -463,6 +1162,114 @@ Returns `404` if the stream is not found.
 
 ---
 
+## Processor Service HTTP APIs
+
+Processors own their databases and expose HTTP control surfaces; clients must
+not open those databases directly. Full request and response schemas are
+available through [OpenAPI](openapi.md). Operational sequencing and failure
+recovery remain in the [processor runbook](../technical/processors.md), and
+service registration is described in
+[Processing Services configuration](../configuration.md#processing-services).
+
+### Jira processor lifecycle
+
+Preparer (`http://localhost:5171`), Planner (`http://localhost:5172`), and
+Applier (`http://localhost:5173`) expose the versioned
+Processing.Common surface:
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| `GET` | `/api/v1/health` | Processor and database health |
+| `GET` | `/api/v1/status` | Lifecycle state and processing counters |
+| `GET` | `/api/v1/processing/queue` | Queue statistics |
+| `POST` | `/api/v1/processing/start` | Admit and process queued work |
+| `POST` | `/api/v1/processing/stop` | Stop admitting queued work |
+
+### Preparer and Planner authoring runs
+
+Preparer and Planner expose the common direct control family under
+`/api/v1/processing/authoring/runs`. Preparer additionally exposes the
+unversioned publication-maintenance routes shown below:
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| `POST` | `/api/v1/processing/authoring/runs` | Create a frozen run |
+| `GET` | `/api/v1/processing/authoring/runs?limit=N` | List bounded operator-visible runs |
+| `GET` | `/api/v1/processing/authoring/runs/{runId}` | Get run and item status |
+| `POST` | `/processing/authoring/runs/{sourceRunId}/publication-refresh` | Start a linked Preparer metadata-only publication refresh (Preparer only) |
+| `POST` | `/processing/authoring/runs/{sourceRunId}/publication-reconciliation` | Start Preparer changed-ticket publication reconciliation |
+| `GET` | `/processing/authoring/runs/{runId}/publication-reconciliation` | Get complete reconciliation and recovery status |
+| `POST` | `/processing/authoring/runs/{runId}/publication-reconciliation/retry` | Retry pending snapshot publication |
+| `POST` | `/processing/authoring/runs/{runId}/publication-reconciliation/cancel` | Cancel staged reconciliation with an audited reason |
+| `POST` | `/processing/authoring/runs/{runId}/publication-reconciliation/abandon` | Audit abandonment after canonical promotion |
+| `POST` | `/processing/authoring/runs/{sourceRunId}/canonical-epoch-recovery` | Start or find a dedicated recovery for the source abandonment |
+| `GET` | `/processing/authoring/runs/{runId}/canonical-epoch-recovery` | Read dedicated canonical-epoch recovery status |
+| `POST` | `/processing/authoring/runs/{runId}/canonical-epoch-recovery/retry` | Resume the same recovery run and journal |
+| `POST` | `/api/v1/processing/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible current error item |
+| `POST` | `/api/v1/processing/authoring/runs/{runId}/items/{itemId}/supersede` | Supersede one current error with an explicit reason |
+| `GET` | `/api/v1/processing/authoring/runs/{runId}/operations/{operationId}/receipt` | Retrieve the durable operation receipt |
+| `GET` | `/api/v1/processing/authoring/runs/{runId}/snapshot` | Retrieve the trusted snapshot descriptor |
+| `GET` | `/api/v1/processing/authoring/runs/{runId}/snapshot/bytes` | Download immutable snapshot bytes |
+
+Processor-launched workers submit authenticated results directly to the
+unversioned callback
+`POST /processing/authoring/runs/{runId}/items/{itemId}/result`. This callback
+is not an outer operator endpoint and is not exposed through the Orchestrator.
+
+`retry` requests an immediate retry and may bypass the configured delay, but
+cannot expand the total attempt limit. `supersede` requires
+`{"reason":"..."}` and is accepted only for an `error` item without an
+accepted receipt in the currently fenced run. Missing or blank reasons return
+400, unknown or mismatched coordinates return 404, and invalid lifecycle,
+fence, attempt-limit, completed, or receipt-backed states return 409.
+Reconciliation items are excluded regardless of receipt state and return
+`reconciliation-cancel-required`; their only pre-promotion terminal operator
+action is the dedicated reason-bearing cancellation route.
+
+### BallotNotes APIs
+
+BallotNotes (`http://localhost:5174`) has a distinct surface: default
+`GET /health`, hydration under `/api/v1/ballot-notes/hydrate`, authoring runs
+under `/api/v1/ballot-notes/authoring/runs`, and maintenance under
+`/api/v1/ballot-notes/maintenance`. Do not assume the Jira processors'
+versioned status, queue, start, or stop routes apply to it.
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| `POST` | `/api/v1/ballot-notes/authoring/runs` | Create a run scoped to a hydration execution |
+| `GET` | `/api/v1/ballot-notes/authoring/runs/{runId}` | Get run and item status |
+| `POST` | `/api/v1/ballot-notes/authoring/runs/{runId}/items/{itemId}/retry` | Retry one eligible failed item |
+| `POST` | `/api/v1/ballot-notes/authoring/runs/{runId}/items/{itemId}/supersede` | Supersede one current error with an explicit reason |
+| `GET` | `/api/v1/ballot-notes/authoring/runs/{runId}/operations/{operationId}/receipt` | Retrieve the durable operation receipt |
+| `GET` | `/api/v1/ballot-notes/authoring/runs/{runId}/snapshot` | Retrieve the trusted snapshot descriptor |
+| `GET` | `/api/v1/ballot-notes/authoring/runs/{runId}/snapshot/bytes` | Download immutable snapshot bytes |
+| `POST` | `/api/v1/ballot-notes/authoring/runs/{runId}/items/{itemId}/{type}/{slug}/result` | Submit an authenticated worker result |
+
+BallotNotes does not expose a collection `GET` for bounded run listing, and its
+conflict responses do not guarantee the Preparer/Planner
+`conflictingRunIds`/`runId` extension.
+
+All three run-status envelopes use the same additive failure fields:
+`failedItems` is the aggregate of retryable errors plus terminal
+non-authored outcomes, `retryableErrorItems` counts the errors still governed
+by processor-owned automatic retry, and `supersededItems` counts terminal
+item-level outcomes. Error items include `attemptsRemaining` and
+`nextAutomaticRetryAt` where applicable. A run that finishes as `completed` or
+`completed-database-only` while containing superseded items is lifecycle
+success with an explicit partial-authoring result; consumers may continue
+snapshot publication from accepted results but must surface every superseded
+item and reason.
+
+### Applier API
+
+Applier consumes queued plan output through the common lifecycle/queue
+surface. It is intentionally outside the run-backed authoring route tables.
+After local application, push one ticket's configured repositories on demand:
+
+#### `POST /api/v1/applied-tickets/{ticketKey}/push`
+
+---
+
 ## Service Ports Reference
 
 | Service | Health Check URL | Purpose |
@@ -472,13 +1279,17 @@ Returns `404` if the stream is not found.
 | Zulip | `http://localhost:5170/health` | Zulip message indexing |
 | Confluence | `http://localhost:5180/health` | Confluence page indexing |
 | GitHub | `http://localhost:5190/health` | GitHub issue/PR indexing |
+| Preparer | `http://localhost:5171/health` | Prepared discussion-ticket authoring |
+| Planner | `http://localhost:5172/health` | Implementation-plan authoring |
+| Applier | `http://localhost:5173/health` | Queue-driven local application and on-demand push |
+| BallotNotes | `http://localhost:5174/health` | Hydration and ballot-note authoring |
 | MCP HTTP | `http://localhost:5200/health` | MCP HTTP/SSE server |
 
 ---
 
 ## Health Check Format
 
-All services return health checks in the same format:
+Core source services return health checks in this common format:
 
 ```json
 {
@@ -489,6 +1300,8 @@ All services return health checks in the same format:
 ```
 
 The `status` field will be `"healthy"` when the service is operating normally.
+Processor health payloads reflect their distinct lifecycle and database state;
+use each processor's [OpenAPI document](openapi.md) for its exact shape.
 
 ---
 
@@ -511,4 +1324,5 @@ Common HTTP status codes:
 | `202` | Accepted (ingestion triggered) |
 | `400` | Bad request (missing/invalid parameters) |
 | `404` | Item not found |
+| `409` | Processor-owned conflict or an action that lost eligibility |
 | `503` | Service unavailable |

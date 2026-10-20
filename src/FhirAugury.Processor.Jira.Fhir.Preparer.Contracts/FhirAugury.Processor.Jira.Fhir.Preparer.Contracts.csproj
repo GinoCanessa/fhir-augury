@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\common.props" />
+
+  <PropertyGroup>
+    <RootNamespace>FhirAugury.Processor.Jira.Fhir.Preparer.Contracts</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FhirAugury.Processing.Contracts\FhirAugury.Processing.Contracts.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="FhirAugury.Processor.Jira.Fhir.Preparer.Tests" />
+  </ItemGroup>
+</Project>

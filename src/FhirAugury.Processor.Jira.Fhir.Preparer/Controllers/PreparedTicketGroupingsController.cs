@@ -1,7 +1,13 @@
 using FhirAugury.Common.WorkGroups;
+using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Api;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
 using Microsoft.AspNetCore.Mvc;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Controllers;
@@ -9,16 +15,32 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Controllers;
 /// <summary>
 /// Reads and writes the reviewer-facing
 /// <c>(WorkGroup, Specification, Type) → Topic → Linked Ticket Group</c>
-/// decomposition documented in the <c>index-prepared</c> skill. Callers
-/// must percent-encode the <c>{specification}</c> and <c>{type}</c>
-/// path segments — they typically contain spaces (e.g. <c>"FHIR Core"</c>,
-/// <c>"Change Request"</c>).
+/// decomposition used by processor finalization, grouping maintenance, and
+/// snapshot-backed review sites. Callers must percent-encode the
+/// <c>{specification}</c> and <c>{type}</c> path segments — they typically
+/// contain spaces (e.g. <c>"FHIR Core"</c>, <c>"Change Request"</c>).
 /// </summary>
 [ApiController]
 [Route("api/v1/prepared-ticket-groupings")]
 [Produces("application/json")]
-public sealed class PreparedTicketGroupingsController(PreparerDatabase database) : ControllerBase
+public sealed class PreparedTicketGroupingsController : ControllerBase
 {
+    private readonly PreparerDatabase _database;
+    private readonly AuthoringRunStore _authoringStore;
+    private readonly PreparedTicketGroupingDeltaDispatcher
+        _groupingDeltaDispatcher;
+
+    public PreparedTicketGroupingsController(
+        PreparerDatabase database,
+        AuthoringRunStore? authoringStore = null,
+        PreparedTicketGroupingDeltaDispatcher? groupingDeltaDispatcher = null)
+    {
+        _database = database;
+        _authoringStore = authoringStore ?? new AuthoringRunStore(database);
+        _groupingDeltaDispatcher = groupingDeltaDispatcher ??
+            new PreparedTicketGroupingDeltaDispatcher(database);
+    }
+
     /// <summary>Gets every partition the work group can render.</summary>
     /// <remarks>
     /// <paramref name="workGroupClean"/> may arrive in any of <c>name</c>
@@ -33,7 +55,7 @@ public sealed class PreparedTicketGroupingsController(PreparerDatabase database)
     public async Task<ActionResult<PreparedTicketGroupingWorkGroupDto>> GetWorkGroup(string workGroupClean, CancellationToken ct)
     {
         string canonical = Canonicalise(workGroupClean);
-        PreparedTicketGroupingWorkGroupView? view = await database.GetWorkGroupGroupingsAsync(canonical, ct);
+        PreparedTicketGroupingWorkGroupView? view = await _database.GetWorkGroupGroupingsAsync(canonical, ct);
         if (view is null || view.Partitions.Count == 0)
         {
             return NotFound();
@@ -53,7 +75,7 @@ public sealed class PreparedTicketGroupingsController(PreparerDatabase database)
         CancellationToken ct)
     {
         string canonical = Canonicalise(workGroupClean);
-        PreparedTicketGroupingPartition? partition = await database.GetGroupingAsync(canonical, specification, type, ct);
+        PreparedTicketGroupingPartition? partition = await _database.GetGroupingAsync(canonical, specification, type, ct);
         if (partition is null)
         {
             return NotFound();
@@ -86,34 +108,130 @@ public sealed class PreparedTicketGroupingsController(PreparerDatabase database)
 
         try
         {
+            if (request.Authoring is null)
+            {
+                return Conflict(new { error = "authoring-stage-required" });
+            }
+            ActionResult? modeFailure = await GetWriteModeFailureAsync(ct);
+            if (modeFailure is not null)
+            {
+                return modeFailure;
+            }
+
             string canonical = Canonicalise(workGroupClean);
-            PreparedTicketGroupingSaveResult result = await database.SaveGroupingAsync(
-                PreparedTicketGroupingDtoMapper.ToPayload(canonical, specification, type, request),
+            PreparedTicketGroupingPayload payload =
+                PreparedTicketGroupingDtoMapper.ToPayload(canonical, specification, type, request);
+            var run = await _authoringStore.GetRunAsync(
+                request.Authoring.RunId,
                 ct);
-            return Ok(PreparedTicketGroupingDtoMapper.ToDto(result));
+            bool reconciliation = string.Equals(
+                run?.Purpose,
+                PreparedTicketPublicationReconciliationContract.Purpose,
+                StringComparison.Ordinal);
+            if (request.Authoring.ClaimsReconciliationContext() &&
+                !reconciliation)
+            {
+                return BadRequest(new ProblemDetails
+                {
+                    Title = "Invalid grouping stage context",
+                    Detail =
+                        "Reconciliation grouping coordinates cannot be used by an ordinary grouping run.",
+                });
+            }
+            if (reconciliation &&
+                !request.Authoring.HasCompleteReconciliationContext())
+            {
+                return BadRequest(new ProblemDetails
+                {
+                    Title = "Invalid grouping stage context",
+                    Detail =
+                        "Publication reconciliation requires complete grouping stage coordinates.",
+                });
+            }
+            if (reconciliation)
+            {
+                (
+                    PreparedTicketGroupingSaveResult stagedResult,
+                    AuthoringRunStageReceipt stagedReceipt) =
+                        await _groupingDeltaDispatcher
+                            .StageReplacementsAsync(
+                                payload,
+                                request.Authoring,
+                                ct);
+                return Ok(PreparedTicketGroupingDtoMapper
+                    .ToDto(stagedResult) with
+                {
+                    AuthoringReceipt = stagedReceipt,
+                });
+            }
+
+            PreparedTicketGroupingSaveResult result =
+                await _database.SaveGroupingForRunAsync(
+                    payload,
+                    request.Authoring.RunId,
+                    request.Authoring.StageId,
+                    request.Authoring.StageLeaseId,
+                    request.Authoring.InputFingerprint,
+                    ct);
+            AuthoringRunStageReceipt receipt =
+                await _database.GetGroupingReceiptAsync(
+                    request.Authoring.RunId,
+                    request.Authoring.StageId,
+                    PreparerDatabase.GetPartitionKey(
+                        canonical,
+                        specification,
+                        type),
+                    request.Authoring.InputFingerprint,
+                    ct)
+                ?? throw new InvalidOperationException(
+                    "Grouping persistence completed without a durable partition receipt.");
+            return Ok(PreparedTicketGroupingDtoMapper.ToDto(result) with
+            {
+                AuthoringReceipt = receipt,
+            });
         }
-        catch (ArgumentException ex)
+        catch (Exception ex) when (ex is ArgumentException or AuthoringConflictException)
         {
             return BadRequest(new ProblemDetails { Title = "Invalid grouping payload", Detail = ex.Message });
         }
-    }
-
-    /// <summary>
-    /// Deletes a partition's grouping rows. Idempotent — deleting an
-    /// already-empty partition returns <c>204</c>.
-    /// </summary>
-    [HttpDelete("{workGroupClean}/{specification}/{type}")]
-    [ProducesResponseType(StatusCodes.Status204NoContent)]
-    public async Task<IActionResult> DeletePartition(string workGroupClean, string specification, string type, CancellationToken ct)
-    {
-        string canonical = Canonicalise(workGroupClean);
-        await database.DeleteGroupingAsync(canonical, specification, type, ct);
-        return NoContent();
+        catch (PreparedTicketPublicationReconciliationException ex)
+        {
+            return BadRequest(new ProblemDetails
+            {
+                Title = "Invalid reconciliation grouping payload",
+                Detail = ex.Message,
+            });
+        }
     }
 
     private static string Canonicalise(string raw)
     {
         string cleaned = Hl7WorkGroupNameCleaner.Clean(raw);
         return string.IsNullOrEmpty(cleaned) ? raw : cleaned;
+    }
+
+    private async Task<ActionResult?> GetWriteModeFailureAsync(
+        CancellationToken ct)
+    {
+        string mode = (await _authoringStore.GetProcessorModeAsync(
+            "jira-fhir",
+            ct)).Mode;
+        if (string.Equals(
+            mode,
+            AuthoringStatusValues.ProcessorModes.CuttingOver,
+            StringComparison.Ordinal))
+        {
+            return StatusCode(
+                StatusCodes.Status503ServiceUnavailable,
+                new { error = "cutover-in-progress" });
+        }
+        if (string.Equals(
+                mode,
+                AuthoringStatusValues.ProcessorModes.Legacy,
+                StringComparison.Ordinal))
+        {
+            return Conflict(new { error = "authoring-not-activated" });
+        }
+        return null;
     }
 }

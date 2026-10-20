@@ -24,6 +24,12 @@ public partial record class PlannedJiraHydrationRecord
     public string? Specification { get; set; }
     public DateTimeOffset? UpdatedAt { get; set; }
     public string? Url { get; set; }
+    public string? DescriptionHtml { get; set; }
+    public string? ResolutionDescriptionHtml { get; set; }
+    public string? Reporter { get; set; }
+    public DateTimeOffset? CreatedAt { get; set; }
+    public string? RelatedArtifactsRaw { get; set; }
+    public string? RelatedPagesRaw { get; set; }
     public DateTimeOffset HydratedAt { get; set; }
     public required string HydrationStatus { get; set; }
     public string? HydrationReason { get; set; }

@@ -20,6 +20,7 @@ public class GitHubRestProvider(
     IHttpClientFactory httpClientFactory,
     GitHubDatabase database,
     IResponseCache cache,
+    GitHubBackfillCheckpointStore checkpointStore,
     ILogger<GitHubRestProvider> logger) : IGitHubDataProvider
 {
     private readonly GitHubServiceOptions _options = optionsAccessor.Value;
@@ -49,10 +50,36 @@ public class GitHubRestProvider(
     /// comment-provenance PR↔ticket edges are thinner. The active provider is
     /// gh-cli; REST backfill is a documented fallback, not parity.
     /// </summary>
-    public async Task<IngestionResult> DownloadBackfillAsync(string? repoFilter = null, CancellationToken ct = default)
+    /// <remarks>
+    /// This path is not resumable — <paramref name="resumeFrom"/> is accepted for interface
+    /// parity and ignored. It still owns its terminal state, writing the completion marker
+    /// per repo only when that repo was neither cancelled nor errored.
+    /// </remarks>
+    public async Task<IngestionResult> DownloadBackfillAsync(
+        string? repoFilter = null,
+        GitHubBackfillCursor? resumeFrom = null,
+        CancellationToken ct = default)
     {
         List<string> repos = repoFilter is not null ? [repoFilter] : GetEffectiveRepositories();
-        return await DownloadReposAsync(repos, since: null, ct);
+
+        if (resumeFrom is not null)
+        {
+            logger.LogDebug(
+                "REST backfill is not resumable; ignoring cursor and refetching {Count} repo(s) in full",
+                repos.Count);
+        }
+
+        IngestionResult result = await DownloadReposAsync(repos, since: null, ct);
+
+        if (!result.Canceled && result.Errors.Count == 0)
+        {
+            foreach (string repo in repos)
+            {
+                checkpointStore.MarkComplete(repo, result.ItemsProcessed);
+            }
+        }
+
+        return result;
     }
 
     /// <summary>Loads all issues from cached API responses (no network).</summary>
@@ -127,105 +154,139 @@ public class GitHubRestProvider(
 
         using SqliteConnection connection = database.OpenConnection();
 
+        bool canceled = false;
+
         foreach (string repoFullName in repos)
         {
-            if (ct.IsCancellationRequested) break;
+            if (ct.IsCancellationRequested) { canceled = true; break; }
 
-            logger.LogInformation("Fetching repository: {Repo}", repoFullName);
-
-            // Fetch and upsert repo metadata
             try
             {
-                string repoUrl = $"{GitHubApiBase}/repos/{repoFullName}";
-                using HttpResponseMessage repoResponse = await HttpRetryHelper.GetWithRetryAsync(
-                    httpClientFactory.CreateClient("github"), repoUrl, ct, _options.RateLimiting.MaxRetries, "github");
-                repoResponse.EnsureSuccessStatusCode();
-                string repoJson = await repoResponse.Content.ReadAsStringAsync(ct);
-                using JsonDocument repoDoc = JsonDocument.Parse(repoJson);
-                UpsertRepo(connection, repoDoc.RootElement);
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Failed to fetch repo metadata for {Repo}", repoFullName);
-            }
+                logger.LogInformation("Fetching repository: {Repo}", repoFullName);
 
-            // Paginate issues (includes PRs on GitHub API)
-            int page = 1;
-            bool hasMore = true;
-            string sinceParam = since.HasValue
-                ? $"&since={since.Value.UtcDateTime:yyyy-MM-ddTHH:mm:ssZ}"
-                : "";
-
-            while (hasMore && !ct.IsCancellationRequested)
-            {
-                string url = $"{GitHubApiBase}/repos/{repoFullName}/issues?state=all&per_page=100&page={page}&sort=updated&direction=asc{sinceParam}";
-
-                logger.LogInformation("Fetching issues: repo={Repo}, page={Page}", repoFullName, page);
-
-                JsonDocument doc;
+                // Fetch and upsert repo metadata
                 try
                 {
-                    using HttpResponseMessage response = await HttpRetryHelper.GetWithRetryAsync(
-                        httpClientFactory.CreateClient("github"), url, ct, _options.RateLimiting.MaxRetries, "github");
-                    response.EnsureSuccessStatusCode();
-                    string json = await response.Content.ReadAsStringAsync(ct);
-                    doc = JsonDocument.Parse(json);
+                    string repoUrl = $"{GitHubApiBase}/repos/{repoFullName}";
+                    using HttpResponseMessage repoResponse = await HttpRetryHelper.GetWithRetryAsync(
+                        httpClientFactory.CreateClient("github"), repoUrl, ct, _options.RateLimiting.MaxRetries, "github");
+                    repoResponse.EnsureSuccessStatusCode();
+                    string repoJson = await repoResponse.Content.ReadAsStringAsync(ct);
+                    using JsonDocument repoDoc = JsonDocument.Parse(repoJson);
+                    UpsertRepo(connection, repoDoc.RootElement);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
-                    logger.LogError(ex, "Failed to fetch issues for {Repo} at page={Page}", repoFullName, page);
-                    errors.Add($"repo:{repoFullName}:page:{page} - {ex.Message}");
-                    break;
+                    logger.LogWarning(ex, "Failed to fetch repo metadata for {Repo}", repoFullName);
                 }
 
-                using (doc)
+                // Paginate issues (includes PRs on GitHub API)
+                int page = 1;
+                bool hasMore = true;
+                string sinceParam = since.HasValue
+                    ? $"&since={since.Value.UtcDateTime:yyyy-MM-ddTHH:mm:ssZ}"
+                    : "";
+
+                while (hasMore)
                 {
-                    JsonElement issues = doc.RootElement;
-                    if (issues.GetArrayLength() == 0)
+                    ct.ThrowIfCancellationRequested();
+
+                    string url = $"{GitHubApiBase}/repos/{repoFullName}/issues?state=all&per_page=100&page={page}&sort=updated&direction=asc{sinceParam}";
+
+                    logger.LogInformation("Fetching issues: repo={Repo}, page={Page}", repoFullName, page);
+
+                    JsonDocument doc;
+                    try
                     {
-                        hasMore = false;
+                        using HttpResponseMessage response = await HttpRetryHelper.GetWithRetryAsync(
+                            httpClientFactory.CreateClient("github"), url, ct, _options.RateLimiting.MaxRetries, "github");
+                        response.EnsureSuccessStatusCode();
+                        string json = await response.Content.ReadAsStringAsync(ct);
+                        doc = JsonDocument.Parse(json);
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogError(ex, "Failed to fetch issues for {Repo} at page={Page}", repoFullName, page);
+                        errors.Add($"repo:{repoFullName}:page:{page} - {ex.Message}");
                         break;
                     }
 
-                    foreach (JsonElement issueJson in issues.EnumerateArray())
+                    using (doc)
                     {
-                        (ProcessOutcome outcome, string? error) = ProcessIssue(issueJson, repoFullName, connection);
-                        itemsProcessed++;
-
-                        switch (outcome)
+                        JsonElement issues = doc.RootElement;
+                        if (issues.GetArrayLength() == 0)
                         {
-                            case ProcessOutcome.New: itemsNew++; break;
-                            case ProcessOutcome.Updated: itemsUpdated++; break;
-                            case ProcessOutcome.Failed:
-                                itemsFailed++;
-                                if (error is not null) errors.Add(error);
-                                break;
+                            hasMore = false;
+                            break;
                         }
 
-                        // Fetch comments for this issue
-                        if (outcome != ProcessOutcome.Failed)
+                        foreach (JsonElement issueJson in issues.EnumerateArray())
                         {
-                            await FetchIssueCommentsAsync(
-                                connection, repoFullName,
-                                issueJson.GetProperty("number").GetInt32(),
-                                ct, errors);
+                            ct.ThrowIfCancellationRequested();
+
+                            (ProcessOutcome outcome, string? error) = ProcessIssue(issueJson, repoFullName, connection);
+                            itemsProcessed++;
+
+                            switch (outcome)
+                            {
+                                case ProcessOutcome.New: itemsNew++; break;
+                                case ProcessOutcome.Updated: itemsUpdated++; break;
+                                case ProcessOutcome.Failed:
+                                    itemsFailed++;
+                                    if (error is not null) errors.Add(error);
+                                    break;
+                            }
+
+                            // Fetch comments for this issue
+                            if (outcome != ProcessOutcome.Failed)
+                            {
+                                await FetchIssueCommentsAsync(
+                                    connection, repoFullName,
+                                    issueJson.GetProperty("number").GetInt32(),
+                                    ct, errors);
+                            }
+
+                            if (itemsProcessed % 1000 == 0)
+                                logger.LogInformation("Download progress: {Count} issues processed", itemsProcessed);
                         }
 
-                        if (itemsProcessed % 1000 == 0)
-                            logger.LogInformation("Download progress: {Count} issues processed", itemsProcessed);
+                        hasMore = issues.GetArrayLength() >= 100;
+                        page++;
                     }
-
-                    hasMore = issues.GetArrayLength() >= 100;
-                    page++;
                 }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                canceled = true;
+                break;
             }
         }
 
-        logger.LogInformation(
-            "Download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
-            itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
+        if (canceled)
+        {
+            logger.LogInformation(
+                "Download canceled after {Processed} item(s): {New} new, {Updated} updated, {Failed} failed",
+                itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
+        }
+        else
+        {
+            logger.LogInformation(
+                "Download complete: {Processed} processed, {New} new, {Updated} updated, {Failed} failed",
+                itemsProcessed, itemsNew, itemsUpdated, itemsFailed);
+        }
 
-        return new IngestionResult(itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, startedAt);
+        return new IngestionResult(itemsProcessed, itemsNew, itemsUpdated, itemsFailed, errors, startedAt)
+        {
+            Canceled = canceled,
+        };
     }
 
     private (ProcessOutcome Outcome, string? Error) ProcessIssue(
@@ -296,6 +357,10 @@ public class GitHubRestProvider(
                 GitHubCommentRecord.Insert(connection, comment, ignoreDuplicates: true);
             }
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Failed to fetch comments for {Repo}#{Number}", repoFullName, issueNumber);
@@ -321,4 +386,7 @@ public record IngestionResult(
     DateTimeOffset StartedAt)
 {
     public DateTimeOffset CompletedAt { get; init; } = DateTimeOffset.UtcNow;
+
+    /// <summary>True when the run ended early because the caller's token fired.</summary>
+    public bool Canceled { get; init; }
 }

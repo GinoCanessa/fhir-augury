@@ -21,25 +21,14 @@ public class ServicesController(
     [HttpGet("services")]
     public IActionResult GetServices()
     {
-        Dictionary<string, Health.ServiceHealthInfo> status = monitor.GetCurrentStatus();
-        DateTimeOffset? lastCheckedAt = monitor.LastCheckedAt;
+        return Ok(CreateServicesStatusResponse());
+    }
 
-        return Ok(new
-        {
-            lastCheckedAt,
-            services = status.Values.Select(s => new
-            {
-                s.Name, s.Status, s.HttpAddress, s.UptimeSeconds,
-                s.Version, s.ItemCount, s.DbSizeBytes, s.LastSyncAt, s.LastError,
-                s.CheckedAt,
-                indexes = s.Indexes.Select(i => new
-                {
-                    i.Name, i.Description, i.IsRebuilding,
-                    i.LastRebuildStartedAt, i.LastRebuildCompletedAt,
-                    i.RecordCount, i.LastError,
-                }),
-            }),
-        });
+    [HttpPost("services/refresh")]
+    public async Task<IActionResult> RefreshServices(CancellationToken ct)
+    {
+        await monitor.CheckAllAsync(ct);
+        return Ok(CreateServicesStatusResponse());
     }
 
     [HttpGet("endpoints")]
@@ -79,6 +68,7 @@ public class ServicesController(
                     totalComments = stats?.TotalComments ?? 0,
                     databaseSizeBytes = stats?.DatabaseSizeBytes ?? 0L,
                     cacheSizeBytes = stats?.CacheSizeBytes ?? 0L,
+                    additionalCounts = stats?.AdditionalCounts,
                     status = "ok",
                 });
             }
@@ -96,6 +86,7 @@ public class ServicesController(
                     totalComments = 0,
                     databaseSizeBytes = 0L,
                     cacheSizeBytes = 0L,
+                    additionalCounts = (Dictionary<string, int>?)null,
                     status = "unavailable",
                 });
             }
@@ -107,5 +98,26 @@ public class ServicesController(
             sources = sourceStats,
             warnings,
         });
+    }
+
+    private ServicesStatusResponse CreateServicesStatusResponse()
+    {
+        Dictionary<string, ServiceHealthInfo> status = monitor.GetCurrentStatus();
+        List<ServiceHealthInfo> services =
+        [
+            new ServiceHealthInfo
+            {
+                Name = "Orchestrator",
+                ServiceKind = "orchestrator",
+                Status = "healthy",
+                Enabled = true,
+                Configured = true,
+                CheckedAt = DateTimeOffset.UtcNow,
+                Indexes = [],
+            },
+            .. status.Values,
+        ];
+
+        return new ServicesStatusResponse(services, monitor.LastCheckedAt);
     }
 }

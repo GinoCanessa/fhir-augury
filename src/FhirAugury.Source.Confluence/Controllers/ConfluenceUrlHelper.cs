@@ -26,6 +26,7 @@ internal static class ConfluenceUrlHelper
         md.AppendLine($"# {page.Title}");
         md.AppendLine();
         md.AppendLine($"**Space:** {page.SpaceKey}  ");
+        md.AppendLine($"**Status:** {page.Status}  ");
         md.AppendLine($"**Version:** {page.VersionNumber}  ");
         if (page.LastModifiedBy is not null) md.AppendLine($"**Last Modified By:** {page.LastModifiedBy}  ");
         md.AppendLine($"**Last Modified:** {page.LastModifiedAt:yyyy-MM-dd}  ");

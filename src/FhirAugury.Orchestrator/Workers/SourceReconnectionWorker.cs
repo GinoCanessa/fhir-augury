@@ -1,3 +1,4 @@
+using FhirAugury.Common.Api;
 using FhirAugury.Orchestrator.Configuration;
 using FhirAugury.Orchestrator.Health;
 using Microsoft.Extensions.Hosting;
@@ -75,7 +76,12 @@ public class SourceReconnectionWorker(
         Dictionary<string, ServiceHealthInfo> currentStatus = monitor.GetCurrentStatus();
 
         List<string> offlineSources = currentStatus
-            .Where(kv => OfflineStatuses.Contains(kv.Value.Status))
+            .Where(kv =>
+                string.Equals(
+                    kv.Value.ServiceKind,
+                    "source",
+                    StringComparison.OrdinalIgnoreCase) &&
+                OfflineStatuses.Contains(kv.Value.Status))
             .Select(kv => kv.Key)
             .ToList();
 

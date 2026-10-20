@@ -11,11 +11,8 @@ public static class OrchestratorCatalog
         List<ApiEndpointDescriptor> list =
         [
             .. OrchestratorOwnEndpoints(),
-            .. ProjectSourceCatalog("jira", "Jira", JiraCatalog.Build()),
-            .. ProjectSourceCatalog("zulip", "Zulip", ZulipCatalog.Build()),
-            .. ProjectSourceCatalog("confluence", "Confluence", ConfluenceCatalog.Build()),
-            .. ProjectSourceCatalog("github", "GitHub", GitHubCatalog.Build()),
-            .. ProjectSourceCatalog("fhir", "FHIR", FhirCatalog.Build(), skipOrchestratorNative: false),
+            .. ProjectMatrixProxyRoutes(),
+            .. ProjectLegacyFhirLifecycleRoutes(),
         ];
         return list;
     }
@@ -147,6 +144,15 @@ public static class OrchestratorCatalog
             Parameters: []),
 
         new ApiEndpointDescriptor(
+            Id: "services.refresh",
+            DisplayName: "Refresh Services Status",
+            Group: "Services",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/services/refresh",
+            Parameters: [],
+            Description: "Runs a full Orchestrator health recheck without starting or stopping services."),
+
+        new ApiEndpointDescriptor(
             Id: "stats.aggregate",
             DisplayName: "Aggregate Stats",
             Group: "Services",
@@ -249,6 +255,250 @@ public static class OrchestratorCatalog
             PathTemplate: "api/v1/processing-services/{name}/health",
             Parameters: [ProcessingServiceName()]),
 
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.list",
+            DisplayName: "List Authoring Runs",
+            Group: "Processing",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("limit", ApiParameterKind.Query, Required: false, DefaultValue: "20",
+                    ValueType: ApiParameterValueType.Int),
+            ],
+            Description: "Lists active and recent processor-owned authoring runs."),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.start",
+            DisplayName: "Start Authoring Run",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter(
+                    "body",
+                    ApiParameterKind.Body,
+                    Required: true,
+                    DefaultValue: "{ \"ticketKeys\": [], \"databaseOnly\": false }",
+                    ValueType: ApiParameterValueType.Json),
+            ],
+            Destructive: true,
+            Description: "Starts a frozen processor-owned authoring run."),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.publication-refresh",
+            DisplayName: "Start Publication Refresh",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{sourceRunId}/publication-refresh",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("sourceRunId", ApiParameterKind.Path, Required: true),
+            ],
+            Destructive: true),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.publication-reconciliation.start",
+            DisplayName: "Start Publication Reconciliation",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{sourceRunId}/publication-reconciliation",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("sourceRunId", ApiParameterKind.Path, Required: true),
+            ],
+            Destructive: true),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.publication-reconciliation.status",
+            DisplayName: "Publication Reconciliation Status",
+            Group: "Processing",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("runId", ApiParameterKind.Path, Required: true),
+            ]),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.publication-reconciliation.retry",
+            DisplayName: "Retry Publication Reconciliation",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation/retry",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("runId", ApiParameterKind.Path, Required: true),
+            ],
+            Destructive: true),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.publication-reconciliation.cancel",
+            DisplayName: "Cancel Publication Reconciliation",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation/cancel",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("runId", ApiParameterKind.Path, Required: true),
+                new ApiParameter(
+                    "body",
+                    ApiParameterKind.Body,
+                    Required: true,
+                    DefaultValue: "{ \"reason\": \"frozen Jira revisions changed\" }",
+                    ValueType: ApiParameterValueType.Json),
+            ],
+            Destructive: true,
+            Description: "Terminates staged reconciliation before trusted or canonical promotion and retains its cancellation audit."),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.publication-reconciliation.abandon",
+            DisplayName: "Abandon Publication Reconciliation",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}/publication-reconciliation/abandon",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("runId", ApiParameterKind.Path, Required: true),
+                new ApiParameter(
+                    "body",
+                    ApiParameterKind.Body,
+                    Required: true,
+                    DefaultValue: "{ \"reason\": \"snapshot publication cannot be recovered\" }",
+                    ValueType: ApiParameterValueType.Json),
+            ],
+            Destructive: true,
+            Description: "Leaves promoted canonical data unpublished and restricts later snapshot-producing workflows."),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.canonical-epoch-recovery.start",
+            DisplayName: "Start Canonical-Epoch Recovery",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{sourceRunId}/canonical-epoch-recovery",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter(
+                    "sourceRunId",
+                    ApiParameterKind.Path,
+                    Required: true),
+            ],
+            Destructive: true,
+            Description: "Starts or returns the existing dedicated recovery run for an unresolved canonical-unpublished abandonment."),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.canonical-epoch-recovery.status",
+            DisplayName: "Canonical-Epoch Recovery Status",
+            Group: "Processing",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}/canonical-epoch-recovery",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter(
+                    "runId",
+                    ApiParameterKind.Path,
+                    Required: true),
+            ]),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.canonical-epoch-recovery.retry",
+            DisplayName: "Retry Canonical-Epoch Recovery",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}/canonical-epoch-recovery/retry",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter(
+                    "runId",
+                    ApiParameterKind.Path,
+                    Required: true),
+            ],
+            Destructive: true,
+            Description: "Resumes the same recovery run and immutable snapshot journal."),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.status",
+            DisplayName: "Authoring Run Status",
+            Group: "Processing",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("runId", ApiParameterKind.Path, Required: true),
+            ]),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.retry",
+            DisplayName: "Retry Authoring Item",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}/items/{itemId}/retry",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("runId", ApiParameterKind.Path, Required: true),
+                new ApiParameter("itemId", ApiParameterKind.Path, Required: true),
+            ],
+            Destructive: true),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.supersede",
+            DisplayName: "Supersede Authoring Item",
+            Group: "Processing",
+            Method: HttpMethod.Post,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}/items/{itemId}/supersede",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("runId", ApiParameterKind.Path, Required: true),
+                new ApiParameter("itemId", ApiParameterKind.Path, Required: true),
+                new ApiParameter(
+                    "body",
+                    ApiParameterKind.Body,
+                    Required: true,
+                    DefaultValue: "{ \"reason\": \"not actionable\" }",
+                    ValueType: ApiParameterValueType.Json),
+            ],
+            Destructive: true,
+            Description: "Supersedes one current non-receipt-backed authoring error."),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.snapshot",
+            DisplayName: "Authoring Snapshot Descriptor",
+            Group: "Processing",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}/snapshot",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("runId", ApiParameterKind.Path, Required: true),
+            ]),
+
+        new ApiEndpointDescriptor(
+            Id: "processing.authoring.snapshot-bytes",
+            DisplayName: "Authoring Snapshot Bytes",
+            Group: "Processing",
+            Method: HttpMethod.Get,
+            PathTemplate: "api/v1/processing-services/{name}/authoring/runs/{runId}/snapshot/bytes",
+            Parameters:
+            [
+                ProcessingServiceName(),
+                new ApiParameter("runId", ApiParameterKind.Path, Required: true),
+            ]),
+
         // ── Services ──────────────────────────────────────────────────────────
         new ApiEndpointDescriptor(
             Id: "services.endpoints",
@@ -335,69 +585,74 @@ public static class OrchestratorCatalog
     /// </summary>
     private static ApiParameter ProcessingServiceName() =>
         new("name", ApiParameterKind.Path, Required: true,
-            Placeholder: "processor-jira-fhir-preparer");
+            Placeholder: "Preparer");
 
-    /// <summary>
-    /// Projects every endpoint from a per-source catalog into its
-    /// orchestrator typed-proxy URL. The source catalog uses URLs of the
-    /// form <c>api/v1/items</c>; the typed proxy exposes them at
-    /// <c>api/v1/{sourceName}/items</c>. Endpoints that the orchestrator
-    /// already exposes natively (search, content fan-out, lifecycle health,
-    /// aggregate stats, services list) are filtered out so the orchestrator
-    /// catalog does not double-list them.
-    /// </summary>
-    /// <param name="skipOrchestratorNative">
-    /// When <c>true</c> (the default), the proxied <c>health</c>/<c>status</c>/
-    /// <c>stats</c> lifecycle routes are dropped because the orchestrator
-    /// surfaces its own copies. The FHIR proxy uniquely re-exposes
-    /// <c>api/v1/fhir/health|status|stats</c>, so it passes <c>false</c> to keep
-    /// those projected entries. The <c>content/*</c> fan-out subtree is always
-    /// dropped regardless of this flag.
-    /// </param>
-    private static IEnumerable<ApiEndpointDescriptor> ProjectSourceCatalog(
-        string sourceName, string displayPrefix, IReadOnlyList<ApiEndpointDescriptor> sourceEntries,
-        bool skipOrchestratorNative = true)
+    private static IEnumerable<ApiEndpointDescriptor> ProjectMatrixProxyRoutes()
+    {
+        foreach (OrchestratorProxyRoute route in OrchestratorProxyRouteMatrix.Routes)
+        {
+            if (route.Disposition != OrchestratorProxyRouteDisposition.TypedSourceProxy)
+                continue;
+
+            yield return ForOrchestratorCatalog(
+                route.SourceName,
+                PrefixSourceDescriptor(route.SourceName, route.SourceDescriptor));
+        }
+    }
+
+    private static IEnumerable<ApiEndpointDescriptor> ProjectLegacyFhirLifecycleRoutes()
+    {
+        foreach (OrchestratorProxyRoute route in OrchestratorProxyRouteMatrix.GetRoutes("fhir"))
+        {
+            if (route.Disposition !=
+                OrchestratorProxyRouteDisposition.OrchestratorReadinessOrMetaReplacement)
+            {
+                continue;
+            }
+
+            yield return ForOrchestratorCatalog(
+                route.SourceName,
+                PrefixSourceDescriptor(route.SourceName, route.SourceDescriptor));
+        }
+    }
+
+    private static ApiEndpointDescriptor PrefixSourceDescriptor(
+        string sourceName,
+        ApiEndpointDescriptor sourceDescriptor)
     {
         const string ApiV1 = "api/v1";
-        string typedPrefix = $"api/v1/{sourceName}";
+        string remainder = sourceDescriptor.PathTemplate.StartsWith(ApiV1, System.StringComparison.Ordinal)
+            ? sourceDescriptor.PathTemplate[ApiV1.Length..]
+            : "/" + sourceDescriptor.PathTemplate.TrimStart('/');
+        if (!remainder.StartsWith("/", System.StringComparison.Ordinal))
+            remainder = "/" + remainder;
 
-        foreach (ApiEndpointDescriptor entry in sourceEntries)
+        return sourceDescriptor with
         {
-            // The content fan-out subtree is always orchestrator-native and is
-            // never projected under a source tab.
-            if (entry.PathTemplate.StartsWith("api/v1/content/", System.StringComparison.Ordinal))
-            {
-                continue;
-            }
+            PathTemplate = $"api/v1/{sourceName}{remainder}",
+            Parameters = sourceDescriptor.Parameters.ToList(),
+        };
+    }
 
-            // The orchestrator's own lifecycle probes and aggregate stats are
-            // normally surfaced once (under the orchestrator's own groups), so
-            // the proxied copies are skipped — unless the proxy genuinely
-            // re-exposes them (FHIR), in which case skipOrchestratorNative is
-            // false. Each source still re-exports its own copies under its
-            // DevUI tab.
-            if (skipOrchestratorNative
-                && (string.Equals(entry.PathTemplate, "api/v1/health", System.StringComparison.Ordinal)
-                    || string.Equals(entry.PathTemplate, "api/v1/status", System.StringComparison.Ordinal)
-                    || string.Equals(entry.PathTemplate, "api/v1/stats", System.StringComparison.Ordinal)))
-            {
-                continue;
-            }
+    private static ApiEndpointDescriptor ForOrchestratorCatalog(
+        string sourceName,
+        ApiEndpointDescriptor descriptor)
+    {
+        string displayPrefix = sourceName switch
+        {
+            "jira" => "Jira",
+            "zulip" => "Zulip",
+            "confluence" => "Confluence",
+            "github" => "GitHub",
+            "fhir" => "FHIR",
+            _ => sourceName,
+        };
 
-            string remainder = entry.PathTemplate.StartsWith(ApiV1, System.StringComparison.Ordinal)
-                ? entry.PathTemplate.Substring(ApiV1.Length)
-                : entry.PathTemplate;
-            if (!remainder.StartsWith("/", System.StringComparison.Ordinal))
-                remainder = "/" + remainder;
-            string newPath = typedPrefix + remainder;
-
-            yield return entry with
-            {
-                Id = $"{sourceName}.{entry.Id}",
-                Group = $"{displayPrefix} / {entry.Group}",
-                PathTemplate = newPath,
-                Parameters = entry.Parameters.ToList(),
-            };
-        }
+        return descriptor with
+        {
+            Id = $"{sourceName}.{descriptor.Id}",
+            Group = $"{displayPrefix} / {descriptor.Group}",
+            Parameters = descriptor.Parameters.ToList(),
+        };
     }
 }

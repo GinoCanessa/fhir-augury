@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Text.Json;
 using FhirAugury.Cli.Dispatch.Handlers;
 using FhirAugury.Cli.Models;
+using FhirAugury.Processing.Client;
 
 namespace FhirAugury.Cli.Dispatch;
 
@@ -52,7 +53,9 @@ public static class CommandDispatcher
         ["jira-ballot"] = j => j.Deserialize<JiraBallotRequest>(DeserializeOptions)!,
         ["jira-pss"] = j => j.Deserialize<JiraPssRequest>(DeserializeOptions)!,
         ["jira-local-processing"] = j => j.Deserialize<JiraLocalProcessingRequest>(DeserializeOptions)!,
-        ["prepared-ticket-write"] = j => j.Deserialize<PreparedTicketWriteRequest>(DeserializeOptions)!,
+        ["prepared-ticket-authoring"] = j => j.Deserialize<PreparedTicketAuthoringRequest>(DeserializeOptions)!,
+        ["planned-ticket-authoring"] = j => j.Deserialize<PlannedTicketAuthoringRequest>(DeserializeOptions)!,
+        ["ballot-note-authoring"] = j => j.Deserialize<BallotNoteAuthoringRequest>(DeserializeOptions)!,
         ["zulip-items"] = j => j.Deserialize<ZulipItemsRequest>(DeserializeOptions)!,
         ["zulip-messages"] = j => j.Deserialize<ZulipMessagesRequest>(DeserializeOptions)!,
         ["zulip-streams"] = j => j.Deserialize<ZulipStreamsRequest>(DeserializeOptions)!,
@@ -154,6 +157,17 @@ public static class CommandDispatcher
             object responseData = data is IHasWarnings hw ? hw.GetData() : data;
             return OutputEnvelope.Ok(commandName, responseData, metadata, warnings);
         }
+        catch (AuthoringControlException ex)
+        {
+            return CreateAuthoringControlFailure(commandName, ex);
+        }
+        catch (AuthoringMutationOutcomeUnknownException ex)
+        {
+            return OutputEnvelope.Fail(
+                commandName,
+                "OUTCOME_UNKNOWN",
+                ex.Message);
+        }
         catch (HttpRequestException ex) when (ex.StatusCode is null)
         {
             return OutputEnvelope.Fail(commandName, "CONNECTION_FAILED",
@@ -174,6 +188,25 @@ public static class CommandDispatcher
         {
             return OutputEnvelope.Fail(commandName, "INTERNAL_ERROR", ex.Message, ex.ToString());
         }
+    }
+
+    internal static OutputEnvelope CreateAuthoringControlFailure(
+        string commandName,
+        AuthoringControlException error)
+    {
+        OutputEnvelope failure = OutputEnvelope.Fail(
+            commandName,
+            error.ErrorCode,
+            error.Detail ?? error.Message,
+            error.Message);
+        if (error.RelatedRunIds.Count != 0)
+        {
+            failure.Data = new
+            {
+                relatedRunIds = error.RelatedRunIds,
+            };
+        }
+        return failure;
     }
 
     private static Task<object> DispatchAsync(CliRequest request, string orchestratorAddr, CancellationToken ct) =>
@@ -208,7 +241,9 @@ public static class CommandDispatcher
             JiraBallotRequest r => JiraBallotHandler.HandleAsync(r, orchestratorAddr, ct),
             JiraPssRequest r => JiraPssHandler.HandleAsync(r, orchestratorAddr, ct),
             JiraLocalProcessingRequest r => JiraLocalProcessingHandler.HandleAsync(r, orchestratorAddr, ct),
-            PreparedTicketWriteRequest r => PreparedTicketWriteHandler.HandleAsync(r, ct),
+            PreparedTicketAuthoringRequest r => PreparedTicketAuthoringHandler.HandleAsync(r, orchestratorAddr, ct),
+            PlannedTicketAuthoringRequest r => PlannedTicketAuthoringHandler.HandleAsync(r, orchestratorAddr, ct),
+            BallotNoteAuthoringRequest r => BallotNoteAuthoringHandler.HandleAsync(r, orchestratorAddr, ct),
             ZulipItemsRequest r => ZulipItemsHandler.HandleAsync(r, orchestratorAddr, ct),
             ZulipMessagesRequest r => ZulipMessagesHandler.HandleAsync(r, orchestratorAddr, ct),
             ZulipStreamsRequest r => ZulipStreamsHandler.HandleAsync(r, orchestratorAddr, ct),
@@ -239,4 +274,3 @@ public interface IHasWarnings
     List<string>? TakeWarnings();
     object GetData();
 }
-

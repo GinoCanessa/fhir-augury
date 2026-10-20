@@ -5,7 +5,7 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Api;
 /// <summary>
 /// Per-ticket display projection over a <c>prepared_jira_hydration</c>
 /// self-row. Mirrors the columns the hydration sweeper already writes —
-/// no derived fields. Consumed by the <c>index-prepared-db</c> skill.
+/// no derived fields. Used by the reviewer-facing hydration API.
 /// </summary>
 public sealed record PreparedJiraHydrationDisplayDto(
     string TicketKey,

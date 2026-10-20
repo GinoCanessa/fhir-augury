@@ -1,0 +1,71 @@
+@if (Observation.CurrentValue is TicketWorkflowReadiness current)
+{
+    <ReadinessStrip Readiness="@current" />
+}
+else
+{
+    <section class="readiness-strip"
+             aria-labelledby="@HeadingId">
+        <div class="readiness-strip__header">
+            <h2 id="@HeadingId" class="h5 mb-1">
+                @Workflow.DisplayName readiness
+            </h2>
+            <StatusIndicator Status="@Observation.Phase.ToString()"
+                             Label="@($"Readiness {Observation.Phase.ToString().ToLowerInvariant()}")" />
+        </div>
+
+        @if (Observation.Failure is WorkspaceReadFailure failure)
+        {
+            <div class="alert @(failure.IsUnavailable ? "alert-warning" : "alert-danger")"
+                 role="alert">
+                <strong>
+                    @(failure.IsUnavailable
+                        ? "Readiness is unavailable."
+                        : "Readiness read failed.")
+                </strong>
+                <span class="d-block">@failure.Message</span>
+            </div>
+        }
+        else
+        {
+            <div class="loading-state loading-state--compact" role="status">
+                @if (Observation.IsLoading)
+                {
+                    <span class="spinner-border spinner-border-sm"
+                          aria-hidden="true"></span>
+                }
+                <span>
+                    @(Observation.IsLoading
+                        ? "Loading readiness observations…"
+                        : "Readiness has not been read yet.")
+                </span>
+            </div>
+        }
+
+        @if (Observation.LastSucceededAt is DateTimeOffset succeededAt)
+        {
+            <p class="text-body-secondary small">
+                Last successful readiness read
+                <time datetime="@succeededAt.ToString("O")">
+                    @succeededAt.LocalDateTime.ToString("g")
+                </time>.
+                Previous readiness is stale and does not permit starting.
+            </p>
+        }
+        <p class="readiness-strip__guidance">
+            Starting requires a current successful readiness read with no
+            required-service blockers. Existing runs can still be inspected.
+        </p>
+    </section>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public TicketWorkflowDefinition Workflow { get; set; } = null!;
+
+    [Parameter, EditorRequired]
+    public WorkspaceObservation<TicketWorkflowReadiness> Observation { get; set; } =
+        WorkspaceObservation<TicketWorkflowReadiness>.Pending;
+
+    private string HeadingId => $"readiness-{Workflow.RouteKey}";
+}

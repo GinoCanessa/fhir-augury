@@ -5,7 +5,9 @@ using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Grouping;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.Sources;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Models;
+using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts;
 using Microsoft.Data.Sqlite;
+using System.Net.Http.Json;
 
 namespace FhirAugury.Tools.BallotNotesReallocateWg;
 
@@ -20,11 +22,28 @@ internal static class ReallocateRunner
 {
     /// <summary>A single note whose resolved owning WG differs from what is stored.</summary>
     private readonly record struct WgChange(
-        string NoteId, string FromPrimary, string ToPrimary, string FromNames, string ToNames);
+        string NoteId,
+        string ExpectedEvidenceRevision,
+        string FromPrimary,
+        string ToPrimary,
+        string FromNames,
+        string ToNames,
+        string ToPrimaryCode,
+        string ToCodes);
 
-    public static async Task<int> RunAsync(ReallocateOptions options, CancellationToken ct = default)
+    public static async Task<int> RunAsync(
+        ReallocateOptions options,
+        CancellationToken ct = default,
+        HttpMessageHandler? processorHandler = null)
     {
         ArgumentNullException.ThrowIfNull(options);
+        if (!options.DryRun && options.ProcessorBaseUrl is null)
+        {
+            await Console.Error.WriteLineAsync(
+                "Non-dry-run reallocation requires --processor <url>.")
+                .ConfigureAwait(false);
+            return 2;
+        }
 
         string notesDb = Path.GetFullPath(options.DbPath);
         if (!File.Exists(notesDb))
@@ -65,17 +84,10 @@ internal static class ReallocateRunner
             FhirSpecDbPath = options.FhirSpecDbPath,
         };
 
-        using BallotNotesDatabase db = new(notesDb, ConsoleLogger.Instance, readOnly: options.DryRun);
-
-        // Migrate legacy notes DBs (additive columns added since the DB was first
-        // created) before reading: ReadNote selects every current column, so a
-        // pre-migration DB would otherwise fail with "no such column". EnsureSchema
-        // requires write access, so it is skipped for the read-only --dry-run path
-        // (a stale DB there must first be migrated by a real hydrate/reallocate run).
-        if (!options.DryRun)
-        {
-            db.Initialize();
-        }
+        using BallotNotesDatabase db = new(
+            notesDb,
+            ConsoleLogger.Instance,
+            readOnly: true);
 
         IReadOnlyList<string> noteIds = db.ListNoteIds(options.Repo);
         if (noteIds.Count == 0)
@@ -201,12 +213,27 @@ internal static class ReallocateRunner
 
             changes.Add(new WgChange(
                 detail.Note.NoteId,
+                detail.Note.CurrentEvidenceRevision,
                 Display(detail.Note.WorkGroup), Display(toPrimary),
-                Display(detail.Note.WorkGroupNames), Display(toNames)));
+                Display(detail.Note.WorkGroupNames), Display(toNames),
+                toPrimaryCode,
+                toCodes));
+        }
 
-            if (!options.DryRun)
+        if (!options.DryRun && changes.Count > 0)
+        {
+            BallotNotesWorkGroupReallocationRequest request =
+                CreateBatchRequest(changes);
+            int submitted = await SubmitProcessorBatchAsync(
+                options.ProcessorBaseUrl!,
+                request,
+                processorHandler,
+                ct);
+            if (submitted != changes.Count)
             {
-                db.UpdateNoteWorkGroups(detail.Note.NoteId, toPrimary, toPrimaryCode, toNames, toCodes);
+                await Console.Error.WriteLineAsync(
+                    $"Processor reported {submitted} updates for a {changes.Count}-change batch.");
+                return 1;
             }
         }
 
@@ -220,6 +247,48 @@ internal static class ReallocateRunner
         Console.WriteLine($"inspected: {details.Count}, changed: {changes.Count}{mode}");
         return 0;
     }
+
+    private static async Task<int> SubmitProcessorBatchAsync(
+        Uri processorBaseUrl,
+        BallotNotesWorkGroupReallocationRequest request,
+        HttpMessageHandler? handler,
+        CancellationToken ct)
+    {
+        using HttpClient client = handler is null
+            ? new HttpClient()
+            : new HttpClient(handler, disposeHandler: false);
+        client.BaseAddress = new Uri(
+            processorBaseUrl.AbsoluteUri.EndsWith("/", StringComparison.Ordinal)
+                ? processorBaseUrl.AbsoluteUri
+                : $"{processorBaseUrl.AbsoluteUri}/");
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            "api/v1/ballot-notes/maintenance/workgroups/reallocate",
+            request,
+            ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            string detail = await response.Content.ReadAsStringAsync(ct);
+            await Console.Error.WriteLineAsync(
+                $"Processor reallocation batch failed with {(int)response.StatusCode}: {detail}");
+            return -1;
+        }
+        BallotNotesWorkGroupReallocationResult? result =
+            await response.Content.ReadFromJsonAsync<
+                BallotNotesWorkGroupReallocationResult>(
+                cancellationToken: ct);
+        return result?.UpdatedCount ?? -1;
+    }
+
+    private static BallotNotesWorkGroupReallocationRequest CreateBatchRequest(
+        IReadOnlyList<WgChange> changes) =>
+        new(
+            changes.Select(change => new BallotNoteWorkGroupReallocation(
+                change.NoteId,
+                change.ExpectedEvidenceRevision,
+                change.ToPrimary == "(none)" ? string.Empty : change.ToPrimary,
+                change.ToPrimaryCode,
+                change.ToNames == "(none)" ? string.Empty : change.ToNames,
+                change.ToCodes)).ToArray());
 
     private static string Display(string value) => string.IsNullOrEmpty(value) ? "(none)" : value;
 

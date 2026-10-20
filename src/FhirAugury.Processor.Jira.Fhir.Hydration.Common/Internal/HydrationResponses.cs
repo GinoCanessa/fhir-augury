@@ -8,21 +8,29 @@ internal sealed record OrchestratorItemResponse
 {
     public string? Id { get; init; }
     public string? Title { get; init; }
+    public string? Content { get; init; }
     public string? Url { get; init; }
+    public DateTimeOffset? CreatedAt { get; init; }
     public DateTimeOffset? UpdatedAt { get; init; }
     public Dictionary<string, string>? Metadata { get; init; }
+    public OrchestratorSourceReadProvenance? Provenance { get; init; }
+    public OrchestratorItemPeopleResponse? People { get; init; }
 }
 
-internal sealed record OrchestratorZulipThreadResponse
+internal sealed record OrchestratorSourceReadProvenance
 {
-    public int? StreamId { get; init; }
-    public string? Stream { get; init; }
-    public string? Topic { get; init; }
-    public string? Url { get; init; }
-    public int? MessageCount { get; init; }
-    public DateTimeOffset? FirstMessageAt { get; init; }
-    public DateTimeOffset? LastMessageAt { get; init; }
-    public string? FirstMessageExcerpt { get; init; }
+    public string? Source { get; init; }
+    public long? ContentRevision { get; init; }
+    public bool? IsStable { get; init; }
+    public Dictionary<string, DateTimeOffset?>? ProjectLastSuccessfulRefreshAt { get; init; }
+}
+
+internal sealed record OrchestratorItemPeopleResponse
+{
+    public string? Reporter { get; init; }
+    public string? Assignee { get; init; }
+    public IReadOnlyList<string>? InPersonRequesters { get; init; }
+    public int? PublicDisplayNamePolicyVersion { get; init; }
 }
 
 internal sealed record OrchestratorGitHubRepoResponse

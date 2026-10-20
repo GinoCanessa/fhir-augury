@@ -1,0 +1,244 @@
+<section class="operation-panel"
+         aria-labelledby="@HeadingId">
+    <div class="operation-panel__heading">
+        <div>
+            <p class="operation-panel__eyebrow">Processor lifecycle</p>
+            <h2 id="@HeadingId" class="h4 mb-0">Run timeline</h2>
+        </div>
+        <StatusIndicator Status="@Run.Status" />
+    </div>
+
+    @if (!IsSuperseded)
+    {
+        <ol class="run-timeline"
+            aria-label="Authoring run lifecycle">
+            @foreach (TimelineStep step in Steps)
+            {
+                <li class="run-timeline__step run-timeline__step--@step.State"
+                    aria-current="@(step.State == "current" ? "step" : null)">
+                    <span class="run-timeline__marker">
+                        <i class="bi @step.Icon" aria-hidden="true"></i>
+                    </span>
+                    <span class="run-timeline__content">
+                        <strong>@step.Label</strong>
+                        <span>@step.Description</span>
+                        @if (step.Timestamp is DateTimeOffset timestamp)
+                        {
+                            <time datetime="@timestamp.ToString("O")"
+                                  title="@timestamp.LocalDateTime.ToString("F")">
+                                @timestamp.LocalDateTime.ToString("g")
+                            </time>
+                        }
+                    </span>
+                </li>
+            }
+        </ol>
+    }
+
+    @if (SupersededBranch is TimelineStep superseded)
+    {
+        <div class="run-terminal-branch run-terminal-branch--superseded"
+             aria-label="Superseded terminal lifecycle branch"
+             aria-current="step">
+            <span class="run-terminal-branch__marker">
+                <i class="bi @superseded.Icon" aria-hidden="true"></i>
+            </span>
+            <span class="run-terminal-branch__content">
+                <span class="run-terminal-branch__label">
+                    Terminal branch
+                </span>
+                <strong>@superseded.Label</strong>
+                <span>@superseded.Description</span>
+                @if (superseded.Timestamp is DateTimeOffset timestamp)
+                {
+                    <time datetime="@timestamp.ToString("O")"
+                          title="@timestamp.LocalDateTime.ToString("F")">
+                        @timestamp.LocalDateTime.ToString("g")
+                    </time>
+                }
+            </span>
+        </div>
+    }
+
+    @if (Run.State?.IsRecoverable == true)
+    {
+        <div class="recovery-guidance">
+            <i class="bi bi-arrow-repeat" aria-hidden="true"></i>
+            <div>
+                <strong>Automatic recovery remains active.</strong>
+                @if (Run.State.NextAutomaticRecoveryAt is DateTimeOffset recoveryAt)
+                {
+                    <span>
+                        The next automatic recovery is expected
+                        <time datetime="@recoveryAt.ToString("O")"
+                              title="@recoveryAt.LocalDateTime.ToString("F")">
+                            @FormatRelativeTime(recoveryAt)
+                        </time>.
+                    </span>
+                }
+                else
+                {
+                    <span>
+                        The processor has not advertised a next recovery
+                        time.
+                    </span>
+                }
+            </div>
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired]
+    public AuthoringRunStatus Run { get; set; } = null!;
+
+    private string HeadingId =>
+        $"run-{Run.RunId.GetHashCode(StringComparison.Ordinal):x}-timeline";
+
+    private bool IsSuperseded =>
+        string.Equals(
+            Run.Status,
+            "superseded",
+            StringComparison.OrdinalIgnoreCase);
+
+    private IReadOnlyList<TimelineStep> Steps
+    {
+        get
+        {
+            string status = Run.Status.ToLowerInvariant();
+            int current = status switch
+            {
+                "queued" => 0,
+                "running" or "error" => 1,
+                "finalizing" => 2,
+                "completed" or "completed-database-only" => 3,
+                _ => 1,
+            };
+            bool completed =
+                Run.State?.IsTerminal == true &&
+                status is
+                    "completed" or
+                    "completed-database-only";
+            List<TimelineStep> steps =
+            [
+                CreateStep(
+                    0,
+                    current,
+                    completed,
+                    "Queued",
+                    "The processor accepted the run.",
+                    Run.CreatedAt),
+                CreateStep(
+                    1,
+                    current,
+                    completed,
+                    status == "error"
+                        ? "Recovery needed"
+                        : "Processing",
+                    status == "error"
+                        ? "One or more items need processor recovery or an allowed operator action."
+                        : "Tickets are being authored and persisted.",
+                    Run.StartedAt),
+                CreateStep(
+                    2,
+                    current,
+                    completed,
+                    "Finalizing",
+                    Run.DatabaseOnly
+                        ? "The processor is finalizing database-only output."
+                        : "The processor is finalizing the immutable snapshot.",
+                    null),
+                CreateStep(
+                    3,
+                    current,
+                    completed,
+                    CompletionLabel(status),
+                    CompletionDescription(status),
+                    Run.CompletedAt),
+            ];
+            return steps;
+        }
+    }
+
+    private TimelineStep? SupersededBranch =>
+        IsSuperseded
+            ? new TimelineStep(
+                "Run superseded",
+                "The processor ended the run as superseded.",
+                "superseded",
+                "bi-slash-circle-fill",
+                Run.CompletedAt)
+            : null;
+
+    private static TimelineStep CreateStep(
+        int index,
+        int current,
+        bool completed,
+        string label,
+        string description,
+        DateTimeOffset? timestamp)
+    {
+        string state = index < current || completed && index <= current
+            ? "complete"
+            : index == current
+                ? "current"
+                : "upcoming";
+        string icon = state switch
+        {
+            "complete" => "bi-check-lg",
+            "current" => "bi-circle-fill",
+            _ => "bi-circle",
+        };
+        return new TimelineStep(
+            label,
+            description,
+            state,
+            icon,
+            timestamp);
+    }
+
+    private static string CompletionLabel(string status) =>
+        status switch
+        {
+            "completed" => "Snapshot complete",
+            "completed-database-only" => "Database-only complete",
+            _ => "Complete",
+        };
+
+    private static string CompletionDescription(string status) =>
+        status switch
+        {
+            "completed" =>
+                "Processor output is complete and eligible for site publication.",
+            "completed-database-only" =>
+                "Processor output completed without a review snapshot.",
+            _ =>
+                "The terminal processor outcome will appear here.",
+        };
+
+    private static string FormatRelativeTime(
+        DateTimeOffset timestamp)
+    {
+        TimeSpan remaining = timestamp - DateTimeOffset.UtcNow;
+        if (remaining <= TimeSpan.Zero)
+        {
+            return "now";
+        }
+        if (remaining.TotalMinutes < 1)
+        {
+            return "in less than a minute";
+        }
+        if (remaining.TotalHours < 1)
+        {
+            return $"in {(int)Math.Ceiling(remaining.TotalMinutes)} minutes";
+        }
+        return $"at {timestamp.LocalDateTime:g}";
+    }
+
+    private sealed record TimelineStep(
+        string Label,
+        string Description,
+        string State,
+        string Icon,
+        DateTimeOffset? Timestamp);
+}

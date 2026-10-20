@@ -1,5 +1,6 @@
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Tests;
 
@@ -14,8 +15,47 @@ public sealed class PreparerServiceOptionsTests
 
         Assert.Equal(5171, processing.Ports.Http);
         Assert.Equal(4, processing.MaxConcurrentProcessingThreads);
+        Assert.Equal(1, processing.MaxActiveAuthoringRuns);
         Assert.Equal(["Triaged"], jira.TicketStatusesToProcess);
         Assert.Equal(PreparerJiraProcessingDefaults.AgentCliCommand, jira.AgentCliCommand);
+        Assert.Equal(
+            PreparerJiraProcessingDefaults.AuthoringAgentCliCommand,
+            jira.AuthoringAgentCliCommand);
+        Assert.Equal("./data/snapshots/preparer", processing.SnapshotDirectory);
+        Assert.Equal(
+            PreparedTicketSnapshotSchemaV3.Version,
+            processing.SnapshotSchemaVersion);
+        Assert.Empty(
+            PreparerJiraProcessingDefaults.ValidateAuthoringCommand(
+                PreparerJiraProcessingDefaults.AuthoringAgentCliCommand));
+    }
+
+    [Fact]
+    public void ValidateAuthoringCommand_RejectsDatabaseAndSecretArgvTokens()
+    {
+        string command =
+            "agent {ticketKey} --db {DBPATH} --token {OPERATIONTOKEN}";
+
+        string[] errors =
+            PreparerJiraProcessingDefaults.ValidateAuthoringCommand(command).ToArray();
+
+        Assert.Contains(
+            errors,
+            error => error.Contains("worker environment", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Validate_RejectsMissingAuthoringCommand()
+    {
+        JiraProcessingOptions options = new()
+        {
+            AgentCliCommand = "agent {ticketKey} --db {dbPath}",
+            JiraSourceAddress = PreparerJiraProcessingDefaults.JiraSourceAddress,
+        };
+
+        Assert.Contains(
+            PreparerJiraProcessingDefaults.Validate(options),
+            error => error.Contains("staged authoring command", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -33,17 +73,24 @@ public sealed class PreparerServiceOptionsTests
     }
 
     [Fact]
-    public void Validate_RejectsAgentCommandMissingDbPathToken()
+    public void Validate_RejectsDatabaseTokenInCanonicalCommand()
     {
         JiraProcessingOptions options = new()
         {
-            AgentCliCommand = "copilot run ticket-prep --ticket {ticketKey}",
+            AgentCliCommand =
+                "copilot -p '/ticket-prep {ticketKey} --db {dbPath}' --allow-all",
+            AuthoringAgentCliCommand =
+                PreparerJiraProcessingDefaults.AuthoringAgentCliCommand,
             JiraSourceAddress = PreparerJiraProcessingDefaults.JiraSourceAddress,
         };
 
         List<string> errors = PreparerJiraProcessingDefaults.Validate(options).ToList();
 
-        Assert.Contains(errors, error => error.Contains("{dbPath}", StringComparison.Ordinal));
+        Assert.Contains(
+            errors,
+            error => error.Contains(
+                "worker environment",
+                StringComparison.Ordinal));
     }
 
     [Fact]
@@ -86,5 +133,24 @@ public sealed class PreparerServiceOptionsTests
         List<string> errors = processing.Validate().ToList();
 
         Assert.Contains(errors, error => error.Contains("MaxParallelism", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(4)]
+    public void Validate_RejectsAnySnapshotSchemaOtherThanV3(
+        int schemaVersion)
+    {
+        PreparerServiceOptions processing = new()
+        {
+            SnapshotSchemaVersion = schemaVersion,
+        };
+
+        Assert.Contains(
+            processing.Validate(),
+            error => error.Contains(
+                "SnapshotSchemaVersion must be 3",
+                StringComparison.Ordinal));
     }
 }

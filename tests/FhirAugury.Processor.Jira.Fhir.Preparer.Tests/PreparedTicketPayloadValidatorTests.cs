@@ -8,11 +8,44 @@ public sealed class PreparedTicketPayloadValidatorTests
     public void AcceptsValidRecommendationExisting()
     {
         PreparedTicketPayload payload = SamplePayload();
-        payload.Recommendation = "existing";
+        payload.Recommendation = PreparedTicketRecommendationValues.Existing;
 
         IReadOnlyList<string> errors = PreparedTicketPayloadValidator.Validate(payload);
 
         Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void AcceptsNotAssessedImpacts()
+    {
+        PreparedTicketPayload payload = SamplePayload();
+        payload.ProposalAImpact = PreparedTicketImpactValues.NotAssessed;
+        payload.ProposalBImpact = PreparedTicketImpactValues.NotAssessed;
+
+        IReadOnlyList<string> errors = PreparedTicketPayloadValidator.Validate(payload);
+
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void SharedVocabulariesExposeEveryValidatorValue()
+    {
+        Assert.Equal(
+            [
+                PreparedTicketImpactValues.CompatibleSubstantive,
+                PreparedTicketImpactValues.NonCompatible,
+                PreparedTicketImpactValues.NonSubstantive,
+                PreparedTicketImpactValues.NotAssessed,
+            ],
+            PreparedTicketImpactValues.Supported.Order(StringComparer.Ordinal));
+        Assert.Equal(
+            [
+                PreparedTicketRecommendationValues.ProposalA,
+                PreparedTicketRecommendationValues.ProposalB,
+                PreparedTicketRecommendationValues.ProposalC,
+                PreparedTicketRecommendationValues.Existing,
+            ],
+            PreparedTicketRecommendationValues.Supported.Order(StringComparer.Ordinal));
     }
 
     [Fact]
@@ -37,11 +70,11 @@ public sealed class PreparedTicketPayloadValidatorTests
         Key = "FHIR-123",
         RequestSummary = "request",
         ProposalA = "proposal a",
-        ProposalAImpact = "Non-substantive",
+        ProposalAImpact = PreparedTicketImpactValues.NonSubstantive,
         ProposalB = "proposal b",
-        ProposalBImpact = "Compatible, substantive",
+        ProposalBImpact = PreparedTicketImpactValues.CompatibleSubstantive,
         ProposalC = "proposal c",
-        Recommendation = "A",
+        Recommendation = PreparedTicketRecommendationValues.ProposalA,
         RecommendationJustification = "because",
         RelatedJiraTickets = [new PreparedTicketRelatedJiraPayload { AssociatedTicketKey = "FHIR-999", LinkType = "related" }],
     };

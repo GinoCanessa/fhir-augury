@@ -95,6 +95,31 @@ public static class JiraCatalog
             new ApiEndpointDescriptor("query.inpersons", "List in-person requesters", "Query",
                 HttpMethod.Get, "api/v1/inpersons", []),
 
+            // Explicit source maintenance, separate from ingestion and publication.
+            new ApiEndpointDescriptor("public-people.preview", "Preview public people population", "Public People Maintenance",
+                HttpMethod.Post, "api/v1/public-people/preview",
+                [
+                    new ApiParameter("body", ApiParameterKind.Body, Required: true,
+                        DefaultValue: "{ \"keys\": [\"FHIR-55001\"], \"evidenceMode\": \"cache-only\" }",
+                        HelpText: "At most 2,000 exact ticket keys. Cache-only never fetches upstream; unknown cache origin is a refusal.",
+                        ValueType: ApiParameterValueType.Json),
+                ],
+                Description: "Read-only preview prerequisite to public-person population. Trusted, same-revision identity/name evidence is required. " +
+                    "Legacy caches may lack source-written origin receipts; explicitly select evidenceMode upstream to use existing Jira authentication without ingestion. " +
+                    "Review every affected ticket and role count, including shared-user effects outside the selected keys."),
+            new ApiEndpointDescriptor("public-people.apply", "Apply public people population", "Public People Maintenance",
+                HttpMethod.Post, "api/v1/public-people/apply",
+                [
+                    new ApiParameter("body", ApiParameterKind.Body, Required: true,
+                        DefaultValue: "{ \"previewToken\": \"\", \"acknowledgeSharedUserImpact\": false }",
+                        HelpText: "Use the opaque preview token, and explicitly acknowledge disclosed nonselected-ticket effects when required. Never submit names or identities.",
+                        ValueType: ApiParameterValueType.Json),
+                ],
+                Destructive: true,
+                Description: "Conditionally populates only proven people metadata and missing bindings, preserving ticket revisions and non-people content. " +
+                    "Previews expire 15 minutes after completion or on service restart; at most eight are outstanding. " +
+                    "Impact above 10,000 ticket coordinates is refused, not truncated. A stale, consumed or lost apply response requires a fresh preview/inspection, not blind replay."),
+
             // Specifications
             new ApiEndpointDescriptor("specs.list", "List specifications", "Specifications",
                 HttpMethod.Get, "api/v1/specifications", []),

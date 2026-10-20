@@ -1,8 +1,10 @@
 using FhirAugury.Common.OpenApi;
+using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Jira.Common.Api;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Filtering;
@@ -17,6 +19,13 @@ using FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database;
 using FhirAugury.Processor.Jira.Fhir.Planner.Processing;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Options;
+
+int? retainedStateExitCode = await FhirAugury.Processor.Jira.Fhir.Planner.Maintenance.PlannerRetainedStateCommand.TryRunAsync(args);
+if (retainedStateExitCode is int exitCode)
+{
+    Environment.ExitCode = exitCode;
+    return;
+}
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
@@ -66,7 +75,12 @@ builder.Services.AddOptions<JiraProcessingOptions>()
     .ValidateOnStart();
 
 builder.Services.AddSingleton<IJiraAgentExtensionTokenProvider, PlannerAgentCommandTokenProvider>();
-builder.Services.AddSingleton<IProcessingWorkItemHandler<JiraProcessingSourceTicketRecord>, PlannerTicketHandler>();
+builder.Services.AddSingleton(sp =>
+    ActivatorUtilities.CreateInstance<PlannerTicketHandler>(sp));
+builder.Services.AddSingleton<IProcessingWorkItemHandler<JiraProcessingSourceTicketRecord>>(sp =>
+    sp.GetRequiredService<PlannerTicketHandler>());
+builder.Services.AddSingleton<IAuthoringWorkItemHandler<JiraAuthoringWorkItem>>(sp =>
+    sp.GetRequiredService<PlannerTicketHandler>());
 
 builder.Services.AddHttpClient<PlannedTicketHydrator>((sp, client) =>
 {
@@ -82,6 +96,15 @@ builder.Services.AddHttpClient<PlannedTicketHydrator>((sp, client) =>
         address = "http://localhost";
     }
 
+    client.BaseAddress = new Uri(address.EndsWith('/') ? address : address + "/");
+});
+builder.Services.AddHttpClient<OrchestratorWorkGroupCatalogFetcher>((sp, client) =>
+{
+    ProcessingServiceOptions processingOptions =
+        sp.GetRequiredService<IOptions<PlannerServiceOptions>>().Value;
+    string address = string.IsNullOrWhiteSpace(processingOptions.OrchestratorAddress)
+        ? "http://localhost:5150"
+        : processingOptions.OrchestratorAddress;
     client.BaseAddress = new Uri(address.EndsWith('/') ? address : address + "/");
 });
 
@@ -110,12 +133,57 @@ builder.Services.AddSingleton(sp =>
     string dbPath = Path.GetFullPath(options.DatabasePath);
     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
     PlannerDatabase database = new(dbPath, sp.GetRequiredService<ILogger<PlannerDatabase>>());
-    database.Initialize();
-    return database;
+    database.AcquireStartupOwnership();
+    try
+    {
+        database.Initialize();
+        return database;
+    }
+    catch
+    {
+        database.Dispose();
+        throw;
+    }
 });
 builder.Services.AddSingleton<ProcessingDatabase>(sp => sp.GetRequiredService<PlannerDatabase>());
+builder.Services.AddSingleton<SqliteReviewSnapshotReconciler>();
+builder.Services.AddSingleton<IPlannedTicketGroupingDispatcher, PreviewPlannedTicketGroupingDispatcher>();
+builder.Services.AddSingleton<PlannedTicketRunPostProcessor>();
+builder.Services.AddSingleton<PlannedTicketGroupingMaintenanceService>();
+builder.Services.AddSingleton<IAuthoringRunFinalizationStrategy>(sp =>
+    sp.GetRequiredService<PlannedTicketRunPostProcessor>());
+builder.Services.AddSingleton<AuthoringRunScheduler<JiraAuthoringWorkItem>>();
+builder.Services.AddHostedService(sp =>
+    sp.GetRequiredService<AuthoringRunScheduler<JiraAuthoringWorkItem>>());
 
 WebApplication app = builder.Build();
+
+PlannerDatabase plannerDatabase =
+    app.Services.GetRequiredService<PlannerDatabase>();
+PlannerServiceOptions plannerServiceOptions =
+    app.Services.GetRequiredService<IOptions<PlannerServiceOptions>>().Value;
+AuthoringRunStore plannerAuthoringStore =
+    app.Services.GetRequiredService<AuthoringRunStore>();
+JiraAuthoringRunCoordinator plannerRunCoordinator =
+    app.Services.GetRequiredService<JiraAuthoringRunCoordinator>();
+plannerDatabase.AcquireStartupOwnership();
+await plannerDatabase.RecoverInterruptedMaintenanceLeasesAsync();
+if (plannerServiceOptions.ActivateRunBackedAuthoring)
+{
+    AuthoringCutoverCoordinator cutover =
+        new(plannerDatabase.OpenConnection);
+    await cutover.ActivateAsync(
+        new AuthoringCutoverRequest(
+            plannerRunCoordinator.ProcessorKind,
+            Path.GetFullPath(plannerServiceOptions.DatabasePath),
+            Path.GetFullPath(plannerServiceOptions.PreCutoverBackupPath!)),
+        plannerDatabase);
+}
+else
+{
+    await plannerAuthoringStore.EnsureProcessorModeAsync(
+        plannerRunCoordinator.ProcessorKind);
+}
 
 app.MapDefaultEndpoints();
 app.MapProcessingEndpoints<JiraProcessingSourceTicketRecord>();

@@ -123,4 +123,74 @@ public class JiraXmlParserDispatchTests
         Assert.Single(items);
         Assert.IsType<JiraParsedFhirIssue>(items[0]);
     }
+
+    [Fact]
+    public void ParseExport_UsernameAttributesAreNotUsedAsDisplayNames()
+    {
+        string xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <rss>
+          <channel>
+            <item>
+              <title>[FHIR-1] FHIR change</title>
+              <summary>FHIR change</summary>
+              <project key="FHIR">FHIR</project>
+              <key id="1">FHIR-1</key>
+              <type>Bug</type>
+              <priority>Major</priority>
+              <status>Open</status>
+              <assignee username="private-assignee"></assignee>
+              <reporter username="private-reporter"></reporter>
+              <created>Mon, 1 Jul 2024 10:00:00 +0000</created>
+              <updated>Tue, 2 Jul 2024 10:00:00 +0000</updated>
+            </item>
+          </channel>
+        </rss>
+        """;
+
+        using MemoryStream stream = new(Encoding.UTF8.GetBytes(xml));
+        JiraParsedFhirIssue parsed = Assert.IsType<JiraParsedFhirIssue>(
+            Assert.Single(JiraXmlParser.ParseExport(stream)));
+
+        Assert.Null(parsed.Record.Assignee);
+        Assert.Null(parsed.Record.Reporter);
+        Assert.Equal("private-assignee", parsed.UserInfo.AssigneeUsername);
+        Assert.Equal("private-reporter", parsed.UserInfo.ReporterUsername);
+        Assert.Null(parsed.UserInfo.AssigneeDisplayName);
+        Assert.Null(parsed.UserInfo.ReporterDisplayName);
+    }
+
+    [Fact]
+    public void ParseExport_PersonTextRemainsAnExplicitDisplayName()
+    {
+        string xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <rss>
+          <channel>
+            <item>
+              <title>[FHIR-1] FHIR change</title>
+              <summary>FHIR change</summary>
+              <project key="FHIR">FHIR</project>
+              <key id="1">FHIR-1</key>
+              <type>Bug</type>
+              <priority>Major</priority>
+              <status>Open</status>
+              <assignee username="private-assignee">Assignee Name</assignee>
+              <reporter username="private-reporter">Reporter Name</reporter>
+              <created>Mon, 1 Jul 2024 10:00:00 +0000</created>
+              <updated>Tue, 2 Jul 2024 10:00:00 +0000</updated>
+            </item>
+          </channel>
+        </rss>
+        """;
+
+        using MemoryStream stream = new(Encoding.UTF8.GetBytes(xml));
+        JiraParsedFhirIssue parsed = Assert.IsType<JiraParsedFhirIssue>(
+            Assert.Single(JiraXmlParser.ParseExport(stream)));
+
+        Assert.Equal("Assignee Name", parsed.Record.Assignee);
+        Assert.Equal("Reporter Name", parsed.Record.Reporter);
+        Assert.Equal("Assignee Name", parsed.UserInfo.AssigneeDisplayName);
+        Assert.Equal("Reporter Name", parsed.UserInfo.ReporterDisplayName);
+    }
 }

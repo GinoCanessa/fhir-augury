@@ -1,14 +1,64 @@
 @inherits LayoutComponentBase
 
-<nav class="navbar navbar-expand-md bg-body-tertiary border-bottom mb-3">
-    <div class="container-fluid">
-        <a class="navbar-brand fw-bold" href="/">
-            <i class="bi bi-lightning-charge-fill text-warning"></i> FHIR Augury Dev UI
-        </a>
-        <NavMenu />
-    </div>
-</nav>
+<a class="skip-link" href="#main-content">
+    Skip to main content
+</a>
 
-<main class="container-fluid px-4">
-    @Body
-</main>
+<div class="app-shell">
+    <header class="app-header">
+        <nav class="navbar navbar-expand-lg"
+             aria-label="Primary navigation">
+            <div class="container-fluid app-header__inner">
+                <a class="navbar-brand" href="/">
+                    <span class="brand-mark" aria-hidden="true">
+                        <i class="bi bi-lightning-charge-fill"></i>
+                    </span>
+                    <span>
+                        <strong>FHIR Augury</strong>
+                        <small>Dev UI</small>
+                    </span>
+                </a>
+
+                <button class="navbar-toggler"
+                        type="button"
+                        aria-controls="primary-navigation"
+                        aria-expanded="@_navigationOpen"
+                        aria-label="@(_navigationOpen ? "Close navigation" : "Open navigation")"
+                        @onclick="ToggleNavigation">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+
+                <div id="primary-navigation"
+                     class="navbar-collapse collapse @(_navigationOpen ? "show" : null)">
+                    <NavMenu OnNavigate="CloseNavigation" />
+                </div>
+            </div>
+        </nav>
+    </header>
+
+    <main id="main-content"
+          class="app-main"
+          tabindex="-1">
+        @Body
+    </main>
+
+    <footer class="app-footer">
+        <span>Trusted local operator workspace</span>
+        <span aria-hidden="true">·</span>
+        <span>Processor state remains authoritative</span>
+    </footer>
+</div>
+
+@code {
+    private bool _navigationOpen;
+
+    private void ToggleNavigation()
+    {
+        _navigationOpen = !_navigationOpen;
+    }
+
+    private void CloseNavigation()
+    {
+        _navigationOpen = false;
+    }
+}

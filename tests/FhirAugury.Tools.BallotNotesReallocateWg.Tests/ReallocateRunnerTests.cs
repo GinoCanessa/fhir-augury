@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Net;
+using System.Text.Json;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Database.Records;
 using FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.Models;
@@ -59,48 +61,6 @@ public sealed class ReallocateRunnerTests : IDisposable
     }
 
     [Fact]
-    public async Task Write_RestampsPrimaryAndSets()
-    {
-        string head = await BuildCloneAsync();
-        SeedGitHubDb();
-        SeedSpecDb();
-        SeedNoteWithProse(_notesDb, "hl7-fhir-page-security", "HL7", "fhir", head);
-        NoteRecord before = ReadNote(_notesDb, "hl7-fhir-page-security");
-
-        (int exit, _) = await RunAsync(Options(dryRun: false));
-        Assert.Equal(0, exit);
-
-        NoteRecord after = ReadNote(_notesDb, "hl7-fhir-page-security");
-        Assert.Equal(ResolvedName, after.WorkGroup);
-        Assert.Equal(ResolvedCode, after.WorkGroupCode);
-        Assert.Equal(ResolvedName, after.WorkGroupNames);
-        Assert.Equal(ResolvedCode, after.WorkGroupCodes);
-
-        // Prose + timestamps preserved.
-        Assert.Equal(before.ProposedBallotNoteHtml, after.ProposedBallotNoteHtml);
-        Assert.Equal("yes", after.NeedsNote);
-        Assert.Equal(before.AuthoredAt, after.AuthoredAt);
-        Assert.Equal(before.SavedAt, after.SavedAt);
-        Assert.Equal(before.GeneratedAt, after.GeneratedAt);
-    }
-
-    [Fact]
-    public async Task Rerun_IsIdempotent()
-    {
-        string head = await BuildCloneAsync();
-        SeedGitHubDb();
-        SeedSpecDb();
-        SeedNote(_notesDb, "hl7-fhir-page-security", "HL7", "fhir", head);
-
-        (int first, _) = await RunAsync(Options(dryRun: false));
-        Assert.Equal(0, first);
-
-        (int second, string stdout) = await RunAsync(Options(dryRun: false));
-        Assert.Equal(0, second);
-        Assert.Contains("changed: 0", stdout);
-    }
-
-    [Fact]
     public async Task MultiRepo_WithoutRepoFilter_FailsLoudly()
     {
         string head = await BuildCloneAsync();
@@ -147,15 +107,92 @@ public sealed class ReallocateRunnerTests : IDisposable
         Assert.Contains("does not match", stderr);
         Assert.Equal(StalePrimary, ReadNote(_notesDb, "hl7-fhir-page-security").WorkGroup);
 
-        (int overridden, _) = await RunAsync(Options(dryRun: false, allowStaleClone: true));
+        RecordingProcessorHandler handler = new(HttpStatusCode.OK);
+        (int overridden, _) = await RunAsync(
+            Options(dryRun: false, allowStaleClone: true),
+            handler: handler);
         Assert.Equal(0, overridden);
-        Assert.Equal(ResolvedName, ReadNote(_notesDb, "hl7-fhir-page-security").WorkGroup);
+        Assert.Equal(1, handler.CallCount);
+        Assert.Equal(StalePrimary, ReadNote(_notesDb, "hl7-fhir-page-security").WorkGroup);
+    }
+
+    [Fact]
+    public async Task ProcessorModeSubmitsOneExpectedRevisionBatchWithoutLocalWrites()
+    {
+        string head = await BuildCloneAsync();
+        SeedGitHubDb();
+        SeedSpecDb();
+        SeedNote(_notesDb, "hl7-fhir-page-security", "HL7", "fhir", head);
+        RecordingProcessorHandler handler = new(HttpStatusCode.OK);
+
+        (int exit, string stdout) = await RunAsync(
+            Options(
+                dryRun: false,
+                processorBaseUrl: new Uri("http://processor")),
+            handler: handler);
+
+        Assert.Equal(0, exit);
+        Assert.Contains("changed: 1", stdout);
+        Assert.Equal(1, handler.CallCount);
+        Assert.Contains(
+            "api/v1/ballot-notes/maintenance/workgroups/reallocate",
+            handler.Path);
+        using JsonDocument document = JsonDocument.Parse(handler.Body);
+        JsonElement change = document.RootElement
+            .GetProperty("changes")[0];
+        Assert.False(string.IsNullOrWhiteSpace(
+            change.GetProperty("expectedEvidenceRevision").GetString()));
+        Assert.Equal(
+            StalePrimary,
+            ReadNote(_notesDb, "hl7-fhir-page-security").WorkGroup);
+    }
+
+    [Fact]
+    public async Task ProcessorStaleRevisionFailureLeavesLocalDatabaseUntouched()
+    {
+        string head = await BuildCloneAsync();
+        SeedGitHubDb();
+        SeedSpecDb();
+        SeedNote(_notesDb, "hl7-fhir-page-security", "HL7", "fhir", head);
+        RecordingProcessorHandler handler = new(HttpStatusCode.Conflict);
+
+        (int exit, string stderr) = await RunAsync(
+            Options(
+                dryRun: false,
+                processorBaseUrl: new Uri("http://processor")),
+            captureErr: true,
+            handler: handler);
+
+        Assert.NotEqual(0, exit);
+        Assert.Contains("failed with 409", stderr);
+        Assert.Equal(
+            StalePrimary,
+            ReadNote(_notesDb, "hl7-fhir-page-security").WorkGroup);
+    }
+
+    [Fact]
+    public void CliRequiresProcessorForNonDryRun()
+    {
+        Assert.False(CliOptions.TryParseReallocate(
+            ["--clone", _clone],
+            out _,
+            out string? error));
+        Assert.Contains("--processor", error);
+
+        Assert.True(CliOptions.TryParseReallocate(
+            ["--clone", _clone, "--dry-run"],
+            out _,
+            out error));
+        Assert.Null(error);
     }
 
     // ── fixture helpers ──────────────────────────────────────────────
 
     private ReallocateOptions Options(
-        bool dryRun, string? repo = "HL7/fhir", bool allowStaleClone = false)
+        bool dryRun,
+        string? repo = "HL7/fhir",
+        bool allowStaleClone = false,
+        Uri? processorBaseUrl = null)
         => new(
             DbPath: _notesDb,
             ClonePath: _clone,
@@ -166,9 +203,14 @@ public sealed class ReallocateRunnerTests : IDisposable
             FhirSpecDbPath: Path.Combine(_root, "missing-fhir-spec.db"),
             WorkGroupHint: string.Empty,
             AllowStaleClone: allowStaleClone,
-            AllowMixedHeads: false);
+            AllowMixedHeads: false,
+            ProcessorBaseUrl: processorBaseUrl ??
+                (dryRun ? null : new Uri("http://processor")));
 
-    private static async Task<(int Exit, string Output)> RunAsync(ReallocateOptions options, bool captureErr = false)
+    private static async Task<(int Exit, string Output)> RunAsync(
+        ReallocateOptions options,
+        bool captureErr = false,
+        HttpMessageHandler? handler = null)
     {
         TextWriter originalOut = Console.Out;
         TextWriter originalErr = Console.Error;
@@ -178,7 +220,9 @@ public sealed class ReallocateRunnerTests : IDisposable
         Console.SetError(errWriter);
         try
         {
-            int exit = await ReallocateRunner.RunAsync(options);
+            int exit = await ReallocateRunner.RunAsync(
+                options,
+                processorHandler: handler);
             return (exit, captureErr ? errWriter.ToString() : outWriter.ToString());
         }
         finally
@@ -310,5 +354,31 @@ public sealed class ReallocateRunnerTests : IDisposable
         using BallotNotesDatabase db = new(dbPath, NullLogger<BallotNotesDatabase>.Instance, readOnly: true);
         NoteDetail detail = db.GetNote(noteId)!;
         return detail.Note;
+    }
+
+    private sealed class RecordingProcessorHandler(
+        HttpStatusCode statusCode) : HttpMessageHandler
+    {
+        public int CallCount { get; private set; }
+        public string Path { get; private set; } = string.Empty;
+        public string Body { get; private set; } = string.Empty;
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            CallCount++;
+            Path = request.RequestUri?.AbsolutePath ?? string.Empty;
+            Body = await request.Content!.ReadAsStringAsync(
+                cancellationToken);
+            return new HttpResponseMessage(statusCode)
+            {
+                Content = statusCode == HttpStatusCode.OK
+                    ? System.Net.Http.Json.JsonContent.Create(
+                        new { updatedCount = 1 })
+                    : System.Net.Http.Json.JsonContent.Create(
+                        new { error = "StaleSourceRevision" }),
+            };
+        }
     }
 }

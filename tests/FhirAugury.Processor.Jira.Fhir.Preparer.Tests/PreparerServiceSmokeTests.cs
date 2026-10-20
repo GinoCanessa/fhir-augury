@@ -1,15 +1,22 @@
 using System.Net;
 using System.Net.Http.Json;
 using FhirAugury.Common.Api;
+using FhirAugury.Processing.Common.Hosting;
+using FhirAugury.Processing.Common.Queue;
+using FhirAugury.Processing.Jira.Common.Authoring;
+using FhirAugury.Processing.Jira.Common.Api;
 using FhirAugury.Processing.Jira.Common.Discovery;
 using FhirAugury.Processing.Jira.Common.Filtering;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Contracts;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Tests;
 
@@ -27,6 +34,11 @@ public sealed class PreparerServiceSmokeTests
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/processing/start", null)).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/processing/stop", null)).StatusCode);
         Assert.Equal(HttpStatusCode.Accepted, (await client.PostAsync("/processing/tickets/FHIR-123", null)).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.Conflict,
+            (await client.PostAsJsonAsync(
+                "/processing/authoring/runs",
+                new JiraAuthoringRunRequest())).StatusCode);
     }
 
     [Fact]
@@ -42,6 +54,57 @@ public sealed class PreparerServiceSmokeTests
         HttpResponseMessage response = await client.PostAsync("/api/v1/admin/hydration/backfill", null);
 
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+    }
+
+    [Fact]
+    public void Host_UsesSharedAuthoringRunScheduler()
+    {
+        using TestApp app = new();
+        _ = app.Factory.CreateClient();
+
+        AuthoringRunScheduler<JiraAuthoringWorkItem> scheduler =
+            app.Factory.Services.GetRequiredService<
+                AuthoringRunScheduler<JiraAuthoringWorkItem>>();
+        Assert.Contains(
+            app.Factory.Services.GetServices<IHostedService>(),
+            service => ReferenceEquals(service, scheduler));
+    }
+
+    [Fact]
+    public async Task PublicationRefreshEndpointAndServicesAreRegistered()
+    {
+        using TestApp app = new();
+        HttpClient client = app.Factory.CreateClient();
+
+        HttpResponseMessage response = await client.PostAsync(
+            "/processing/authoring/runs/missing/publication-refresh",
+            null);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        PreparedTicketPublicationRefreshFailure? failure =
+            await response.Content.ReadFromJsonAsync<
+                PreparedTicketPublicationRefreshFailure>();
+        Assert.NotNull(failure);
+        Assert.Equal(
+            PreparedTicketPublicationRefreshFailureCodes
+                .SourceRunNotFound,
+            failure.Error);
+        Assert.NotNull(
+            app.Factory.Services.GetRequiredService<
+                PreparedTicketPublicationRefreshService>());
+        Assert.NotNull(
+            app.Factory.Services.GetRequiredService<
+                PreparedTicketSnapshotMaterializer>());
+        Assert.NotNull(
+            app.Factory.Services.GetRequiredService<
+                AuthoringRunSchedulerWakeSignal>());
+        PreparedTicketRunPostProcessor postProcessor =
+            app.Factory.Services.GetRequiredService<
+                PreparedTicketRunPostProcessor>();
+        Assert.Same(
+            postProcessor,
+            app.Factory.Services.GetRequiredService<
+                IAuthoringRunFinalizationStrategy>());
     }
 
     [Fact]
@@ -87,11 +150,14 @@ public sealed class PreparerServiceSmokeTests
         Dictionary<string, string?> config = new()
         {
             ["Processing:DatabasePath"] = dbPath,
+            ["Processing:SnapshotSchemaVersion"] = "3",
             ["Processing:StartProcessingOnStartup"] = "false",
+            ["Processing:ActivateRunBackedAuthoring"] = "false",
             ["Processing:Hydration:BackfillOnStartup"] = "true",
             ["Processing:OrchestratorAddress"] = $"http://127.0.0.1:{FindFreePort()}",
             ["Processing:Jira:JiraSourceAddress"] = $"http://127.0.0.1:{FindFreePort()}",
-            ["Processing:Jira:AgentCliCommand"] = "fake --ticket {ticketKey} --db {dbPath}",
+            ["Processing:Jira:AgentCliCommand"] = "fake {ticketKey}",
+            ["Processing:Jira:AuthoringAgentCliCommand"] = "fake {ticketKey}",
         };
 
         using WebApplicationFactory<Program> factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
@@ -101,6 +167,8 @@ public sealed class PreparerServiceSmokeTests
             {
                 services.RemoveAll<IJiraTicketDiscoveryClient>();
                 services.AddSingleton<IJiraTicketDiscoveryClient, FakeDiscoveryClient>();
+                services.RemoveAll<IJiraTicketLabelMatcher>();
+                services.AddSingleton<IJiraTicketLabelMatcher, TestJiraTicketLabelMatcher>();
             });
         });
 
@@ -157,10 +225,13 @@ public sealed class PreparerServiceSmokeTests
             Dictionary<string, string?> config = new()
             {
                 ["Processing:DatabasePath"] = DatabasePath,
+                ["Processing:SnapshotSchemaVersion"] = "3",
                 ["Processing:StartProcessingOnStartup"] = "false",
+                ["Processing:ActivateRunBackedAuthoring"] = "false",
                 ["Processing:Hydration:BackfillOnStartup"] = "false",
                 ["Processing:Jira:JiraSourceAddress"] = "http://localhost:5160",
-                ["Processing:Jira:AgentCliCommand"] = "fake --ticket {ticketKey} --db {dbPath}",
+                ["Processing:Jira:AgentCliCommand"] = "fake {ticketKey}",
+                ["Processing:Jira:AuthoringAgentCliCommand"] = "fake {ticketKey}",
             };
             Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
             {
@@ -169,6 +240,8 @@ public sealed class PreparerServiceSmokeTests
                 {
                     services.RemoveAll<IJiraTicketDiscoveryClient>();
                     services.AddSingleton<IJiraTicketDiscoveryClient, FakeDiscoveryClient>();
+                    services.RemoveAll<IJiraTicketLabelMatcher>();
+                    services.AddSingleton<IJiraTicketLabelMatcher, TestJiraTicketLabelMatcher>();
                 });
             });
         }

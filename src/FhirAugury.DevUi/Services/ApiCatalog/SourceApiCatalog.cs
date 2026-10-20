@@ -5,8 +5,8 @@ using System.Linq;
 namespace FhirAugury.DevUi.Services.ApiCatalog;
 
 /// <summary>
-/// Resolves the per-source <see cref="ApiEndpointDescriptor"/> catalog used by the
-/// API tester page.
+/// Resolves the source-oriented gateway <see cref="ApiEndpointDescriptor"/>
+/// catalogs used by the API tester page.
 /// </summary>
 public static class SourceApiCatalog
 {
@@ -21,11 +21,11 @@ public static class SourceApiCatalog
         new(StringComparer.OrdinalIgnoreCase)
         {
             [Orchestrator] = Catalogs.OrchestratorCatalog.Build(),
-            [Jira] = Catalogs.JiraCatalog.Build(),
-            [Zulip] = Catalogs.ZulipCatalog.Build(),
-            [GitHub] = Catalogs.GitHubCatalog.Build(),
-            [Confluence] = Catalogs.ConfluenceCatalog.Build(),
-            [Fhir] = Catalogs.FhirCatalog.Build(),
+            [Jira] = OrchestratorProxyRouteMatrix.GetGatewayCatalog(Jira),
+            [Zulip] = OrchestratorProxyRouteMatrix.GetGatewayCatalog(Zulip),
+            [GitHub] = OrchestratorProxyRouteMatrix.GetGatewayCatalog(GitHub),
+            [Confluence] = OrchestratorProxyRouteMatrix.GetGatewayCatalog(Confluence),
+            [Fhir] = OrchestratorProxyRouteMatrix.GetGatewayCatalog(Fhir),
         };
 
     public static IReadOnlyList<ApiEndpointDescriptor> GetCatalog(string sourceName)
@@ -35,4 +35,7 @@ public static class SourceApiCatalog
     }
 
     public static IEnumerable<string> KnownSources => _byName.Keys;
+
+    public static IEnumerable<string> KnownSourceServices =>
+        _byName.Keys.Where(name => !string.Equals(name, Orchestrator, StringComparison.OrdinalIgnoreCase));
 }

@@ -6,8 +6,8 @@ namespace FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 /// <see cref="IHydrationTargetDatabase.SaveHydrationAsync"/> boundary.
 /// Each concrete database implementation maps these into its own
 /// table-bound record shape before issuing INSERTs. The field shapes
-/// are intentionally identical to the existing preparer
-/// <c>Prepared*Row</c> records so the 1:1 mapping is mechanical.
+/// preserve legacy metadata channels for existing consumers while exposing
+/// separate structured fields where authenticated source data is required.
 /// </summary>
 public sealed record HydrationTicketRow(
     string TicketKey,
@@ -24,7 +24,21 @@ public sealed record HydrationTicketRow(
     string? DescriptionPlain,
     DateTimeOffset HydratedAt,
     string HydrationStatus,
-    string? HydrationReason);
+    string? HydrationReason,
+    string? DescriptionHtml = null,
+    string? ResolutionDescriptionHtml = null,
+    string? Reporter = null,
+    DateTimeOffset? CreatedAt = null,
+    string? RelatedArtifactsRaw = null,
+    string? RelatedPagesRaw = null,
+    string? Assignee = null,
+    IReadOnlyList<string>? InPersonRequesters = null,
+    string? SourceProject = null,
+    DateTimeOffset? SourceLastSuccessfulRefreshAt = null,
+    long? SourceContentRevision = null,
+    bool? SourceIsStable = null,
+    string? StructuredReporter = null,
+    int? PublicDisplayNamePolicyVersion = null);
 
 public sealed record HydrationJiraRow(
     string TicketKey,
@@ -41,7 +55,16 @@ public sealed record HydrationJiraRow(
     string? Url,
     DateTimeOffset HydratedAt,
     string HydrationStatus,
-    string? HydrationReason);
+    string? HydrationReason,
+    string? DescriptionHtml = null,
+    string? ResolutionDescriptionHtml = null,
+    string? Reporter = null,
+    DateTimeOffset? CreatedAt = null,
+    string? RelatedArtifactsRaw = null,
+    string? RelatedPagesRaw = null,
+    string? Assignee = null,
+    string? StructuredReporter = null,
+    int? PublicDisplayNamePolicyVersion = null);
 
 public sealed record HydrationZulipRow(
     string TicketKey,
@@ -91,6 +114,49 @@ public sealed record HydrationJiraXrefRow(
     string TicketKey,
     string JiraKey,
     string Source);
+
+public sealed record HydrationWorkGroupRow(
+    string Code,
+    string Name,
+    string NameClean,
+    DateTimeOffset UpdatedAt);
+
+public enum PublicationMetadataFetchFailureReason
+{
+    SourceUnavailable,
+    TicketNotFound,
+    InvalidResponse,
+    MissingSourceProvenance,
+    UnstableSource,
+    MissingProjectProvenance,
+    PeoplePolicyNotCurrent,
+}
+
+public sealed record PublicationMetadataFetchFailure(
+    PublicationMetadataFetchFailureReason Reason,
+    string Detail);
+
+/// <summary>
+/// Publication-safe subset of one Jira item response. A successful result
+/// carries no authored or structural hydration fields.
+/// </summary>
+public sealed record PublicationMetadataFetchResult(
+    string TicketKey,
+    DateTimeOffset HydratedAt,
+    string? ObservedSourceRevision,
+    string? Reporter,
+    string? Assignee,
+    IReadOnlyList<string> InPersonRequesters,
+    string? SourceProject,
+    DateTimeOffset? SourceLastSuccessfulRefreshAt,
+    long? SourceContentRevision,
+    bool? SourceIsStable,
+    int? PublicDisplayNamePolicyVersion,
+    PublicationMetadataFetchFailure? Failure,
+    DateTimeOffset? UpdatedAt = null)
+{
+    public bool IsSuccess => Failure is null;
+}
 
 public sealed record HydrationBatch(
     string TicketKey,

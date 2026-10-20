@@ -126,8 +126,10 @@ services:
     environment:
       - FHIR_AUGURY_PREPARER__Processing__DatabasePath=/app/data/processor.jira.fhir.preparer.db
       - FHIR_AUGURY_PREPARER__Processing__StartProcessingOnStartup=false
+      - FHIR_AUGURY_PREPARER__Processing__OrchestratorAddress=http://orchestrator:5150
       - FHIR_AUGURY_PREPARER__Processing__Jira__JiraSourceAddress=http://source-jira:5160
-      - FHIR_AUGURY_PREPARER__Processing__Jira__AgentCliCommand=copilot run ticket-prep --ticket {ticketKey} --db {dbPath}
+      - FHIR_AUGURY_PREPARER__Processing__Jira__OrchestratorAddress=http://orchestrator:5150
+      - FHIR_AUGURY_PREPARER__Processing__Jira__AgentCliCommand=copilot -p '/ticket-prep {ticketKey}' --allow-all
       # v1 containers host the API/queue only by default. Actual processing
       # requires an explicitly supplied Copilot-compatible agent runtime on PATH.
     healthcheck:
@@ -142,7 +144,7 @@ services:
     build:
       context: .
       dockerfile: src/FhirAugury.Orchestrator/Dockerfile
-    profiles: ["full", "jira-zulip"]
+    profiles: ["full", "jira-zulip", "processing"]
     depends_on:
       source-jira:
         condition: service_healthy
@@ -166,12 +168,38 @@ services:
       - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Zulip__HttpAddress=http://source-zulip:5170
       - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__Confluence__HttpAddress=http://source-confluence:5180
       - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__Services__GitHub__HttpAddress=http://source-github:5190
+      - FHIR_AUGURY_ORCHESTRATOR__Orchestrator__ProcessingServices__Preparer__HttpAddress=http://processor-jira-fhir-preparer:5171
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:5150/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 15s
+    restart: unless-stopped
+
+  server-terminology:
+    build:
+      context: .
+      dockerfile: src/FhirAugury.Server.Terminology/Dockerfile
+    profiles: ["full", "terminology"]
+    volumes:
+      - server-terminology-cache:/app/cache
+      - server-terminology-data:/app/data
+    ports:
+      - "5300:5300"
+    environment:
+      - FHIR_AUGURY_SERVER_TERMINOLOGY__Terminology__CachePath=/app/cache/fhir-packages
+      - FHIR_AUGURY_SERVER_TERMINOLOGY__Terminology__DatabasePath=/app/data/server.terminology.db
+      # Embeddings are disabled by default; only NullEmbeddingProvider ships in v1.
+      - FHIR_AUGURY_SERVER_TERMINOLOGY__Terminology__Embeddings__Provider=none
+      # - FHIR_AUGURY_SERVER_TERMINOLOGY__Terminology__Embeddings__Enabled=false
+      # - FHIR_AUGURY_SERVER_TERMINOLOGY__Terminology__Embeddings__ProviderEndpoint=
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5300/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
 
 volumes:
@@ -185,3 +213,5 @@ volumes:
   github-data:
   preparer-data:
   orchestrator-data:
+  server-terminology-cache:
+  server-terminology-data:

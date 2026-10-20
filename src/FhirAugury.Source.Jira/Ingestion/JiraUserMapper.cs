@@ -1,3 +1,4 @@
+using FhirAugury.Common.Text;
 using FhirAugury.Source.Jira.Database.Records;
 using Microsoft.Data.Sqlite;
 
@@ -25,35 +26,39 @@ public class JiraUserMapper
         if (username is null && displayName is null)
             return null;
 
+        bool hasAccountUsername = username is not null;
+
         // Use username as primary key; fall back to displayName as synthetic username
         string effectiveUsername = username ?? displayName!;
 
         // Check in-memory cache first
         if (_usernameToId.TryGetValue(effectiveUsername, out int cachedId))
         {
-            // Even on cache hit, update display name if we now have a better one
-            if (displayName is not null && !_displayNameToId.ContainsKey(displayName))
+            JiraUserRecord? cached = JiraUserRecord.SelectSingle(conn, Id: cachedId);
+            if (cached is not null)
             {
-                _displayNameToId[displayName] = cachedId;
+                ApplyObservation(
+                    conn,
+                    cached,
+                    hasAccountUsername,
+                    displayName);
+                return cachedId;
             }
 
-            return cachedId;
+            _usernameToId.Remove(effectiveUsername);
         }
 
         // Check database
         JiraUserRecord? existing = JiraUserRecord.SelectSingle(conn, Username: effectiveUsername);
         if (existing is not null)
         {
-            // Update display name if changed and we have a real one
-            if (displayName is not null && existing.DisplayName != displayName)
-            {
-                existing.DisplayName = displayName;
-                JiraUserRecord.Update(conn, existing);
-            }
+            ApplyObservation(
+                conn,
+                existing,
+                hasAccountUsername,
+                displayName);
 
             _usernameToId[effectiveUsername] = existing.Id;
-            if (displayName is not null)
-                _displayNameToId[displayName] = existing.Id;
             return existing.Id;
         }
 
@@ -63,6 +68,11 @@ public class JiraUserMapper
             Id = JiraUserRecord.GetIndex(),
             Username = effectiveUsername,
             DisplayName = displayName ?? effectiveUsername,
+            HasAccountUsername = hasAccountUsername,
+            HasExplicitDisplayName = displayName is not null
+                && PublicDisplayNamePolicy.Normalize(
+                    displayName,
+                    hasAccountUsername ? effectiveUsername : null) is not null,
         };
         JiraUserRecord.Insert(conn, newUser, ignoreDuplicates: true);
 
@@ -85,7 +95,20 @@ public class JiraUserMapper
         displayName = displayName.Trim();
 
         if (_displayNameToId.TryGetValue(displayName, out int cachedId))
-            return cachedId;
+        {
+            JiraUserRecord? cached = JiraUserRecord.SelectSingle(conn, Id: cachedId);
+            if (cached is not null)
+            {
+                ApplyObservation(
+                    conn,
+                    cached,
+                    hasAccountUsername: false,
+                    displayName);
+                return cachedId;
+            }
+
+            _displayNameToId.Remove(displayName);
+        }
 
         // Reuse an existing jira_users row with this DisplayName if present, to
         // avoid inserting a synthetic (Username=displayName) duplicate when a
@@ -94,6 +117,11 @@ public class JiraUserMapper
         if (matches.Count > 0)
         {
             JiraUserRecord chosen = matches.OrderBy(u => u.Id).First();
+            ApplyObservation(
+                conn,
+                chosen,
+                hasAccountUsername: false,
+                displayName);
             _displayNameToId[displayName] = chosen.Id;
             _usernameToId[chosen.Username] = chosen.Id;
             return chosen.Id;
@@ -107,5 +135,65 @@ public class JiraUserMapper
     {
         _usernameToId.Clear();
         _displayNameToId.Clear();
+    }
+
+    private void ApplyObservation(
+        SqliteConnection conn,
+        JiraUserRecord user,
+        bool hasAccountUsername,
+        string? displayName)
+    {
+        bool changed = false;
+        bool accountOriginUpgraded =
+            hasAccountUsername && !user.HasAccountUsername;
+        if (accountOriginUpgraded)
+        {
+            user.HasAccountUsername = true;
+            changed = true;
+        }
+
+        if (displayName is not null)
+        {
+            if (!string.Equals(
+                    user.DisplayName,
+                    displayName,
+                    StringComparison.Ordinal))
+            {
+                if (_displayNameToId.TryGetValue(
+                        user.DisplayName,
+                        out int mappedId)
+                    && mappedId == user.Id)
+                {
+                    _displayNameToId.Remove(user.DisplayName);
+                }
+
+                user.DisplayName = displayName;
+                changed = true;
+            }
+
+            bool isEligible = PublicDisplayNamePolicy.Normalize(
+                displayName,
+                user.HasAccountUsername ? user.Username : null) is not null;
+            if (user.HasExplicitDisplayName != isEligible)
+            {
+                user.HasExplicitDisplayName = isEligible;
+                changed = true;
+            }
+
+            _displayNameToId[displayName] = user.Id;
+        }
+        else if (accountOriginUpgraded && user.HasExplicitDisplayName
+                 && PublicDisplayNamePolicy.Normalize(
+                     user.DisplayName,
+                     user.Username) is null)
+        {
+            user.HasExplicitDisplayName = false;
+            changed = true;
+        }
+
+        if (changed)
+        {
+            JiraUserRecord.Update(conn, user);
+        }
     }
 }

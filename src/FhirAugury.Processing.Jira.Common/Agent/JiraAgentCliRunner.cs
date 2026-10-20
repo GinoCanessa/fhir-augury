@@ -20,10 +20,28 @@ public sealed class JiraAgentCliRunner : IJiraAgentCliRunner
             startInfo.ArgumentList.Add(argument);
         }
 
-        startInfo.Environment["FHIR_AUGURY_PROCESSING_DB"] = context.DatabasePath;
+        if (context.IsAuthoringWorker)
+        {
+            startInfo.Environment.Remove("FHIR_AUGURY_PROCESSING_DB");
+        }
+        else
+        {
+            startInfo.Environment["FHIR_AUGURY_PROCESSING_DB"] = context.DatabasePath;
+        }
         startInfo.Environment["FHIR_AUGURY_TICKET_KEY"] = context.TicketKey;
         startInfo.Environment["FHIR_AUGURY_SOURCE_TICKET_ID"] = context.SourceTicketId;
         startInfo.Environment["FHIR_AUGURY_SOURCE_TICKET_SHAPE"] = context.SourceTicketShape;
+        if (context.IsAuthoringWorker)
+        {
+            context.Validate();
+            startInfo.Environment["FHIR_AUGURY_AUTHORING_WORKER"] = "1";
+            startInfo.Environment["FHIR_AUGURY_AUTHORING_RUN_ID"] = context.RunId;
+            startInfo.Environment["FHIR_AUGURY_AUTHORING_ITEM_ID"] = context.RunItemId;
+            startInfo.Environment["FHIR_AUGURY_AUTHORING_CALLBACK_URL"] = context.CallbackUrl;
+            startInfo.Environment["FHIR_AUGURY_AUTHORING_OPERATION_ID"] = context.OperationId;
+            startInfo.Environment["FHIR_AUGURY_AUTHORING_OPERATION_TOKEN"] = context.OperationToken;
+            startInfo.Environment["FHIR_AUGURY_AUTHORING_SOURCE_REVISION"] = context.ExpectedSourceRevision;
+        }
 
         using Process process = new() { StartInfo = startInfo };
         process.Start();
@@ -47,7 +65,12 @@ public sealed class JiraAgentCliRunner : IJiraAgentCliRunner
         string stderr = await SafeReadAsync(stderrTask);
         stopwatch.Stop();
         int exitCode = canceled ? -1 : process.ExitCode;
-        return new JiraAgentResult(exitCode, Tail(stdout), Tail(stderr), stopwatch.Elapsed, canceled);
+        return new JiraAgentResult(
+            exitCode,
+            Tail(Redact(stdout, context.OperationToken)),
+            Tail(Redact(stderr, context.OperationToken)),
+            stopwatch.Elapsed,
+            canceled);
     }
 
     private static async Task<string> SafeReadAsync(Task<string> task)
@@ -63,4 +86,9 @@ public sealed class JiraAgentCliRunner : IJiraAgentCliRunner
     }
 
     private static string Tail(string value) => value.Length <= TailLength ? value : value[^TailLength..];
+
+    private static string Redact(string value, string? secret)
+        => string.IsNullOrEmpty(secret)
+            ? value
+            : value.Replace(secret, "[REDACTED]", StringComparison.Ordinal);
 }

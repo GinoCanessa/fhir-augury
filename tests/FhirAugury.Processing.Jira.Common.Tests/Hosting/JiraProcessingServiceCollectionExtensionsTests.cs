@@ -1,5 +1,9 @@
+using FhirAugury.Processing.Common.Database;
+using FhirAugury.Processing.Common.Authoring;
+using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Jira.Common.Agent;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database;
 using FhirAugury.Processing.Jira.Common.Database.Records;
@@ -22,6 +26,8 @@ public class JiraProcessingServiceCollectionExtensionsTests
 
         Assert.NotNull(provider.GetRequiredService<IOptions<JiraProcessingOptions>>().Value);
         Assert.NotNull(provider.GetRequiredService<JiraProcessingSourceTicketStore>());
+        Assert.NotNull(provider.GetRequiredService<JiraProcessingDatabase>());
+        Assert.NotNull(provider.GetRequiredService<AuthoringRunStore>());
         Assert.Same(
             provider.GetRequiredService<JiraProcessingSourceTicketStore>(),
             provider.GetRequiredService<IProcessingWorkItemStore<JiraProcessingSourceTicketRecord>>());
@@ -29,6 +35,17 @@ public class JiraProcessingServiceCollectionExtensionsTests
         Assert.NotNull(provider.GetRequiredService<JiraAgentCommandRenderer>());
         Assert.NotNull(provider.GetRequiredService<IJiraAgentCliRunner>());
         Assert.NotNull(provider.GetRequiredService<IJiraTicketDiscoveryClient>());
+        Assert.NotNull(provider.GetRequiredService<JiraAuthoringRunCoordinator>());
+        Assert.NotNull(provider.GetRequiredService<JiraAuthoringWorkItemStore>());
+        Assert.NotNull(provider.GetRequiredService<IAuthoringQueueStore<JiraAuthoringWorkItem>>());
+        Assert.NotNull(provider.GetRequiredService<IAuthoringWorkItemHandler<JiraAuthoringWorkItem>>());
+        Assert.NotNull(provider.GetRequiredService<AuthoringQueueRunner<JiraAuthoringWorkItem>>());
+        Assert.NotNull(provider.GetRequiredService<AuthoringRetryPolicy>());
+        Assert.NotNull(provider.GetRequiredService<AuthoringRunControlService>());
+        Assert.NotNull(provider.GetRequiredService<AuthoringRunFinalizer>());
+        Assert.Same(
+            provider.GetRequiredService<JiraAuthoringRunCoordinator>(),
+            provider.GetRequiredService<IAuthoringRunLifecycleAdapter>());
     }
 
     [Fact]
@@ -40,6 +57,51 @@ public class JiraProcessingServiceCollectionExtensionsTests
         Assert.NotNull(worker);
         Assert.Same(worker, provider.GetRequiredService<JiraTicketSyncWorker>());
         Assert.Contains(provider.GetServices<IHostedService>(), s => ReferenceEquals(s, worker));
+        Assert.DoesNotContain(
+            provider.GetServices<IHostedService>(),
+            service => service.GetType().Name == "JiraModeAwareProcessingHostedService");
+    }
+
+    [Theory]
+    [InlineData(JiraTicketDiscoverySource.DirectJiraSource)]
+    [InlineData(JiraTicketDiscoverySource.Orchestrator)]
+    public void AddJiraProcessing_ResolvesSelectorAndMatcherFromSelectedDiscoveryClient(
+        JiraTicketDiscoverySource discoverySource)
+    {
+        Dictionary<string, string?> values = BaseValues();
+        values["Processing:Jira:DiscoverySource"] = discoverySource.ToString();
+        values["Processing:Jira:OrchestratorAddress"] = "http://orchestrator";
+        values["Processing:Jira:LabelsToInclude:0"] = "cohort";
+        ServiceCollection services = new();
+        services.AddJiraProcessing(new ConfigurationBuilder().AddInMemoryCollection(values).Build());
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        IJiraTicketLabelMatcher matcher = provider.GetRequiredService<IJiraTicketLabelMatcher>();
+        IJiraTicketDiscoveryClient discovery = provider.GetRequiredService<IJiraTicketDiscoveryClient>();
+        JiraConfiguredTicketSelector selector = provider.GetRequiredService<JiraConfiguredTicketSelector>();
+
+        Assert.Same(discovery, matcher);
+        Assert.Same(discovery, provider.GetRequiredService<IJiraTicketDiscoveryClient>());
+        Assert.Same(matcher, provider.GetRequiredService<IJiraTicketLabelMatcher>());
+        Assert.Same(selector, provider.GetRequiredService<JiraConfiguredTicketSelector>());
+        if (discoverySource == JiraTicketDiscoverySource.Orchestrator)
+        {
+            Assert.IsType<OrchestratorJiraTicketDiscoveryClient>(discovery);
+        }
+        else
+        {
+            Assert.IsType<DirectJiraTicketDiscoveryClient>(discovery);
+        }
+        Assert.NotNull(provider.GetRequiredService<JiraAuthoringRunCoordinator>());
+        Assert.Equal(
+            ServiceLifetime.Singleton,
+            Assert.Single(services, service => service.ServiceType == typeof(IJiraTicketDiscoveryClient)).Lifetime);
+        Assert.Equal(
+            ServiceLifetime.Singleton,
+            Assert.Single(services, service => service.ServiceType == typeof(IJiraTicketLabelMatcher)).Lifetime);
+        Assert.Equal(
+            ServiceLifetime.Singleton,
+            Assert.Single(services, service => service.ServiceType == typeof(JiraConfiguredTicketSelector)).Lifetime);
     }
 
     [Fact]

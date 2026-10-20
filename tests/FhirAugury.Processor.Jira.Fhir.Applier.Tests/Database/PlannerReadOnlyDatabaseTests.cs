@@ -157,7 +157,10 @@ public class PlannerReadOnlyDatabaseTests : IDisposable
 
         IReadOnlyList<PlannerCompletedTicketView> all = planner.ListCompletedPlannedTickets(null);
         Assert.Equal(2, all.Count);
-        Assert.Contains(all, v => v.Key == "FHIR-1" && v.CompletionId == "cid-1");
+        Assert.Contains(all, v =>
+            v.Key == "FHIR-1" &&
+            v.CompletionId == "cid-1" &&
+            v.CompletedAt == now);
         Assert.Contains(all, v => v.Key == "FHIR-4");
 
         IReadOnlyList<PlannerCompletedTicketView> filtered = planner.ListCompletedPlannedTickets(new[] { "Change Request" });

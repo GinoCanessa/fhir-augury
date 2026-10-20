@@ -16,5 +16,6 @@ public static class JiraProcessingTicketEndpointExtensions
     {
         endpoints.MapPost($"{prefix}/processing/tickets/{{key}}", JiraProcessingTicketEndpointHandler.EnqueueTicketAsync)
             .WithName(prefix.Length == 0 ? JiraProcessingEndpointRouteNames.EnqueueTicket : $"{JiraProcessingEndpointRouteNames.EnqueueTicket}ApiV1");
+        JiraAuthoringRunEndpointExtensions.MapAuthoringCore(endpoints, prefix);
     }
 }

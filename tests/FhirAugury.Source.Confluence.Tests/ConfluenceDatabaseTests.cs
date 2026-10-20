@@ -131,12 +131,14 @@ public class ConfluenceDatabaseTests : IDisposable
 
     private static ConfluencePageRecord CreateSamplePage(
         string confluenceId, string spaceKey, string title,
-        string bodyPlain = "Sample page content") => new()
+        string bodyPlain = "Sample page content",
+        string status = "current") => new()
     {
         Id = ConfluencePageRecord.GetIndex(),
         ConfluenceId = confluenceId,
         SpaceKey = spaceKey,
         Title = title,
+        Status = status,
         ParentId = null,
         BodyStorage = $"<p>{bodyPlain}</p>",
         BodyPlain = bodyPlain,

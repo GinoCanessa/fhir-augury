@@ -6,19 +6,23 @@ tables, indexes, and the source-generated CRUD layer.
 
 ## Overview
 
-In the v2 microservices architecture, each service maintains its **own SQLite
-database file**. There is no single shared database — data is distributed
-across services:
+In the v2 microservices architecture, each stateful service maintains its
+**own SQLite database file**. There is no single shared database — data is
+distributed across services, and publication creates a separate generated
+browser database:
 
 | Service | Database File | Contents |
 |---------|---------------|----------|
 | **Source.Jira** | `jira.db` | Issues, comments, FTS5, BM25 index, sync state |
 | **Source.Zulip** | `zulip.db` | Streams, messages, FTS5, BM25 index, sync state |
-| **Source.Confluence** | `confluence.db` | Spaces, pages, comments, FTS5, BM25 index, sync state |
+| **Source.Confluence** | `confluence.db` | Spaces, pages, comments, attachments, FTS5, BM25 index, sync state |
 | **Source.GitHub** | `github.db` | Repos, issues/PRs, comments, FTS5, BM25 index, sync state |
 | **Orchestrator** | `orchestrator.db` | Cross-reference links, cross-ref scan state |
+| **Preparer** | `processor.jira.fhir.preparer.db` | Private preparation runs, receipts, hydration, grouping, and snapshot source state |
+| **Planner** | `processor.jira.fhir.planner.db` | Private planning runs, receipts, grouping, and Applier compatibility state |
+| **Discussion publication** | Embedded generated SQLite | Discussion renderer schema-v2 projection; not durable service state |
 
-Each database uses:
+Source databases use:
 
 - **WAL mode** — Concurrent readers alongside a single writer
 - **Source-generated CRUD** — All database operations generated at compile time
@@ -51,8 +55,10 @@ PRAGMA temp_store = MEMORY;
 | `GetDatabaseSizeBytes()` | Returns database file size |
 | `CheckIntegrity()` | Runs SQLite integrity check |
 
-All tables use `CREATE TABLE IF NOT EXISTS` — the schema is forward-only
-additive with no migration system.
+Base table creation uses `CREATE TABLE IF NOT EXISTS`. Services also run
+targeted forward-only startup migrations, such as additive `ALTER TABLE`
+columns and conservative backfills, when an existing database predates a
+required field.
 
 ---
 
@@ -62,12 +68,16 @@ additive with no migration system.
 
 #### `sync_state` — Per-source sync tracking
 
+The core shape is shared. `LastSuccessfulSyncAt` is an additive Jira-only
+column used by the provenance contract.
+
 | Column | Type | Description |
 |--------|------|-------------|
 | `Id` | INTEGER PK | Auto-increment |
 | `SourceName` | TEXT | Source identifier (jira, zulip, confluence, github) |
 | `SubSource` | TEXT? | Sub-source (e.g., Zulip stream name) |
-| `LastSyncAt` | TEXT | Timestamp of last successful sync |
+| `LastSyncAt` | TEXT | Timestamp of the latest recorded sync activity; for Jira this is not the canonical upstream-success watermark |
+| `LastSuccessfulSyncAt` | TEXT? | Jira-specific latest proven error-free upstream full/incremental refresh; null when unavailable |
 | `LastCursor` | TEXT? | Cursor for position-based sync (e.g., Zulip message ID) |
 | `ItemsIngested` | INTEGER | Total items ingested |
 | `SyncSchedule` | TEXT? | Configured sync interval (TimeSpan) |
@@ -76,6 +86,12 @@ additive with no migration system.
 | `LastError` | TEXT? | Last error message |
 
 Index: `(SourceName, SubSource)`
+
+Jira keys `SubSource` as `<project>:<run-type>`. Its
+`LastSuccessfulSyncAt` advances only for an error-free upstream `full` or
+`incremental` run. Partial/error results and cache rebuilds retain the prior
+value. Known project values are preserved across a database reset; no value is
+inferred from cache timestamps or local replay completion.
 
 #### `ingestion_log` — Ingestion run history
 
@@ -229,8 +245,10 @@ other sources (not itself):
 | `Resolution` | TEXT? | Resolution type |
 | `ResolutionDescription` | TEXT? | Resolution details (custom field) |
 | `ResolutionDescriptionPlain` | TEXT? | Plain-text version of ResolutionDescription (HTML stripped) |
-| `Assignee` | TEXT? | Assigned user |
-| `Reporter` | TEXT? | Reporter user |
+| `Assignee` | TEXT? | Legacy assigned-user display field |
+| `AssigneeUserId` | INTEGER? | Exact `jira_users.Id` used for safe public display-name resolution |
+| `Reporter` | TEXT? | Legacy reporter display field |
+| `ReporterUserId` | INTEGER? | Exact `jira_users.Id` used for safe public display-name resolution |
 | `CreatedAt` | TEXT | Creation timestamp |
 | `UpdatedAt` | TEXT | Last update timestamp |
 | `ResolvedAt` | TEXT? | Resolution timestamp |
@@ -286,6 +304,48 @@ Indexes: `(IssueKey)`, `(CreatedAt)`
 | `Id` | INTEGER | PRIMARY KEY |
 | `IssueId` | INTEGER | NOT NULL, indexed |
 | `LabelId` | INTEGER | NOT NULL, indexed |
+
+#### `jira_projects` — Project catalog and successful watermark projection
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Row identifier |
+| `Key` | TEXT UNIQUE | Jira project key |
+| `Enabled` | INTEGER | Whether ingestion configuration enables the project |
+| `BaselineValue` | INTEGER | Project search-ranking baseline |
+| `IssueCount` | INTEGER | Last observed local issue count |
+| `LastSyncAt` | TEXT? | Canonical latest successful upstream refresh for the project |
+
+Issue counts may change after local rebuild work, but `LastSyncAt` advances only
+with the project watermark described above.
+
+#### `jira_source_state` — Local content-generation fence
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Singleton ID (`1`) |
+| `ContentRevision` | INTEGER | Monotonic local database generation |
+| `MutationInProgress` | INTEGER | Boolean fence set while a source mutation is active |
+| `UpdatedAt` | TEXT | Time the generation state last changed |
+
+Mutations advance the revision before and after their writes. Readers capture
+this row, result data, and project watermarks in one transaction. A stable
+content revision is a consistency coordinate; it is deliberately independent
+of the upstream-success date.
+
+#### `jira_users` and `jira_issue_inpersons` — Public people source
+
+`jira_users` stores `Id`, unique `Username`, `DisplayName`,
+`HasAccountUsername`, and `HasExplicitDisplayName`. `HasAccountUsername`
+distinguishes a true account identifier from the synthetic key used by a
+display-name-only row; existing rows of unknown origin migrate conservatively
+to true, and later account observations upgrade the flag monotonically. Only
+rows whose explicit-display flag remains eligible under the shared
+account-equality and email-token policy can enter the structured public people
+contract. `jira_issue_inpersons` joins `IssueKey` to `UserId`. Reporter and
+Assignee use the exact IDs on `jira_issues`, while requester results are
+trimmed, case-insensitively deduplicated, and deterministically sorted. The
+public projection never includes usernames, email addresses, or user IDs.
 
 #### Index/Lookup Tables
 
@@ -394,6 +454,7 @@ Indexes: `(StreamId, Topic)`, `(SenderId)`, `(SenderName)`, `(Timestamp)`,
 | `ConfluenceId` | TEXT UNIQUE | Confluence page ID |
 | `SpaceKey` | TEXT | Parent space key |
 | `Title` | TEXT | Page title |
+| `Status` | TEXT | `current` or `archived`, projected from the sweep manifest |
 | `ParentId` | TEXT? | Parent page ID (hierarchy) |
 | `BodyStorage` | TEXT? | Body in Confluence storage format |
 | `BodyPlain` | TEXT? | Body as plain text |
@@ -403,7 +464,13 @@ Indexes: `(StreamId, Topic)`, `(SenderId)`, `(SenderName)`, `(Timestamp)`,
 | `LastModifiedAt` | TEXT | Last modification timestamp |
 | `Url` | TEXT? | Page URL |
 
-Indexes: `(SpaceKey)`, `(ParentId)`, `(LastModifiedAt)`
+Indexes: `(SpaceKey)`, `(ParentId)`, `(LastModifiedAt)`, `(Status)`
+
+`Status` is added to a pre-existing database by an `ALTER TABLE` in
+`ConfluenceDatabase.InitializeSchema`, because the generated `CreateTable` is
+create-if-not-exists and would otherwise leave the column missing while its
+generated index failed at startup. Adding it does **not** require rebuilding
+`confluence_pages_fts`, which indexes only `BodyPlain`, `Title` and `Labels`.
 
 #### `confluence_comments`
 
@@ -417,6 +484,27 @@ Indexes: `(SpaceKey)`, `(ParentId)`, `(LastModifiedAt)`
 | `Body` | TEXT | Comment body (plain text) |
 
 Index: `(PageId)`
+
+#### `confluence_attachments`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `Id` | INTEGER PK | Auto-increment |
+| `PageId` | INTEGER FK | → `confluence_pages.Id` |
+| `ConfluencePageId` | TEXT | Owning Confluence page ID |
+| `ConfluenceAttachmentId` | TEXT UNIQUE | Confluence attachment ID |
+| `FileName` | TEXT | Attachment file name |
+| `MediaType` | TEXT? | Reported media type |
+| `FileSizeBytes` | INTEGER? | Reported byte length; null when Confluence reports none |
+| `VersionNumber` | INTEGER | Attachment version |
+| `CreatedAt` | TEXT | Version timestamp |
+| `DownloadUrl` | TEXT? | Absolute download URL |
+| `CacheKey` | TEXT? | Cache key of the downloaded bytes; **null when the blob was skipped by `AttachmentMaxBytes` or not yet fetched** |
+
+Indexes: `(PageId)`, `(ConfluencePageId)`
+
+The row exists whether or not the bytes were downloaded, so an attachment
+excluded by policy stays discoverable, searchable, and fetchable by hand.
 
 #### `confluence_jira_refs` — Jira references found in Confluence pages
 
@@ -698,6 +786,570 @@ work-group inputs.
 
 ---
 
+## Processor snapshots and ticket publication databases
+
+Processor databases are private service state. Clients receive only sanitized,
+immutable snapshot pairs, and ticket publication creates a separate embedded
+database for browser use.
+
+### Jira processor input provenance
+
+`jira_processing_source_tickets` caches two nullable source coordinates with
+each candidate:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `SourceProjectLastSuccessfulRefreshAt` | TEXT? | Successful upstream watermark for that ticket's own Jira project |
+| `SourceContentRevision` | INTEGER? | Stable Jira local-content revision represented by discovery |
+
+A later unproven read overwrites these values with null rather than retaining
+stale provenance.
+
+#### `authoring_run_input_provenance` — Frozen run input
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `RowId` | INTEGER PK | Auto-increment |
+| `RunId` | TEXT | Owning authoring run |
+| `Source` | TEXT | Source name (`jira` for Jira processors) |
+| `LatestSuccessfulRefreshAt` | TEXT? | Complete-corpus upstream refresh coordinate, or null |
+| `ContentRevision` | INTEGER? | Common stable source generation, or null |
+| `CapturedAt` | TEXT | Run creation time |
+
+The authoring store writes the logical one-row-per-run/source provenance set in
+the same immediate transaction as `authoring_runs` and
+`authoring_run_items`. For Jira, the refresh is the maximum project-specific
+candidate value only when every selected ticket has one, and the content
+revision is retained only when every selected ticket shares it. `CapturedAt`
+is run provenance, not a source-freshness fallback. Legacy Jira runs are seeded
+with null source coordinates.
+
+### Live run lineage and snapshot publication proof
+
+Run purpose and repair lineage are additive live-state fields:
+
+| Table | Column | Type | Description |
+|-------|--------|------|-------------|
+| `authoring_runs` | `Purpose` | TEXT NOT NULL | `authoring` by default; also `initial-revalidation`, `grouping-maintenance`, `publication-refresh`, `publication-reconciliation`, or `canonical-epoch-recovery` |
+| `authoring_runs` | `SourceRunId` | TEXT? | Earlier run selected as maintenance lineage; required for publication refresh, reconciliation, and canonical-epoch recovery |
+| `authoring_review_snapshots` | `PublicationProofJson` | TEXT? | Canonical serialized publication proof retained with snapshot lifecycle state and recovery |
+
+Startup adds the missing columns without replacing the live table or any
+immutable snapshot. Existing rows initially receive the `authoring` default;
+the migration then conservatively marks only recognizable database-only
+maintenance rows as `grouping-maintenance` and known revalidation lineage as
+`initial-revalidation`. Ambiguous historical rows remain `authoring`. New
+`publication-refresh` and `publication-reconciliation` rows are
+snapshot-producing, have a distinct run ID, and point `SourceRunId` at a
+completed Preparer run whose snapshot record is ready.
+
+New protected enrichment uses the existing `authoring_runs.RequestJson` column
+for a versioned maintenance envelope: recipe `publication-enrichment`, version
+1, a safe corpus comparison, and private frozen input fingerprints. The
+request, maintenance items, run, and fence are persisted atomically before
+scheduling. Only database null means the legacy Jira-only recipe; malformed
+or unknown non-null metadata is never interpreted as legacy. This adds no
+public Preparer snapshot column and does not change publication-proof v1.
+
+The immutable JSON snapshot descriptor exposes the optional
+`publicationProof` object:
+
+| Field | Meaning |
+|-------|---------|
+| `contractVersion` | Purpose-specific proof version: reconciliation `3`; refresh and canonical-epoch recovery `1` |
+| `purpose` | Exact value `publication-refresh`, `publication-reconciliation`, or `canonical-epoch-recovery` |
+| `sourceRunId` | Refresh/reconciliation: operator-selected completed source run; recovery: terminal abandoned reconciliation |
+| `sourceName` | Exact source value `jira` |
+| `sourceLastSuccessfulRefreshAt` | Refresh: frozen canonical UTC upstream-success watermark; reconciliation: proof capture coordinate; recovery: source abandonment time |
+| `sourceContentRevision` | Refresh/reconciliation: stable Jira content generation; recovery: authoring epoch, not a Jira freshness claim |
+| `publicDisplayNamePolicyVersion` | Refresh: current public people-policy version; reconciliation/recovery: `0` for the dedicated purpose-specific proof |
+| `corpusFingerprint` | Refresh/recovery: complete accepted receipt/item/source-revision membership; reconciliation: carried-plus-staged overlay corpus |
+| `groupingFingerprint` | Complete canonical grouping output for every current purpose, including the verified reconciliation candidate's full grouping in v3; never an impact digest |
+| `capturedAt` | Canonical UTC time after all proof-bearing stages completed |
+
+`PublicationProofJson` lets snapshot promotion/reconciliation restore the same
+descriptor proof after interruption. It is deliberately not added to the
+public snapshot's `authoring_snapshot_provenance` table. Likewise, the live
+`Purpose` and `SourceRunId` columns are not added to the schema-v3
+`authoring_runs` snapshot projection. The descriptor is the publication-proof
+boundary, so schema v3 remains an additive people-policy revision of the v2
+snapshot catalog rather than a copy of every live maintenance table.
+
+Reconciliation comparison/proof JSON and its public descriptor now carry
+contract v3. The shared canonical corpus and grouping hash serialization
+(`PreparedTicketPublicationContract.CurrentVersion`) remains v1; it is not the
+reconciliation evidence-version gate. Refresh and dedicated canonical-epoch
+recovery still use v1 descriptors and unchanged hashing. Historical
+reconciliation v1/v2 evidence, including older v1 generic descriptors that
+stored an impact digest, is diagnostic only and cannot establish readiness.
+No snapshot-schema or table-column migration is required: the proof and
+candidate fields are persisted in their existing JSON columns.
+
+### Preparer public snapshot schemas v2 and v3
+
+Preparer schema v2 extends the unchanged v1 table catalog:
+
+| Table | v2 addition |
+|-------|-------------|
+| `authoring_run_input_provenance` | Provenance rows for every run contributing a retained receipt-backed ticket |
+| `prepared_ticket_hydration` | `Assignee`, `SourceProject`, `SourceLastSuccessfulRefreshAt`, and `SourceContentRevision` |
+| `prepared_jira_hydration` | `Assignee` for related Jira projections |
+| `prepared_ticket_in_person_requesters` | New normalized `(RowId, TicketKey, DisplayName)` rows |
+
+Schema v3 leaves that immutable v2 catalog unchanged and adds nullable
+`PublicDisplayNamePolicyVersion` columns:
+
+| Table | v3 addition |
+|-------|-------------|
+| `prepared_ticket_hydration` | Policy proof for the parent Reporter and Assignee values |
+| `prepared_jira_hydration` | Policy proof for each self/related Jira Reporter and Assignee pair |
+| `prepared_ticket_in_person_requesters` | Policy proof for each requester row |
+
+Migrated rows receive null markers, not the current policy version. The v3
+sanitizer retains people only when the row carries the exact current marker
+and the value passes the context-free email safety check; untrusted parent and
+Jira values become null and untrusted requester rows are removed.
+
+The sanitizer selects one catalog by configured schema version and derives
+descriptor counts from that same catalog. It removes requester rows outside
+the retained ticket set and provenance outside contributing runs. The
+checked-in Preparer writer emits v3; the discussion publisher accepts exact
+v1, v2, and v3 catalogs. The current Preparer host requires v3. V1 and v2
+remain usable for freshness and source data available in their catalogs, but
+their unversioned people values are always treated as unavailable. Planner and
+Tickets for Applying remain on the separate Planner snapshot v1 catalog.
+
+### Preparer publication-reconciliation live state
+
+Changed-ticket publication reconciliation is private Preparer state. None of
+the tables in this section is copied into the public schema-v3 snapshot. The
+public boundary is the sanitized snapshot plus its descriptor proof.
+
+#### Reconciliation identity and frozen comparison
+
+`prepared_ticket_publication_reconciliations` has one row per
+`purpose = 'publication-reconciliation'` run:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `RowId` | INTEGER PK | Generated row identifier |
+| `RunId` | TEXT UNIQUE | Owning reconciliation run |
+| `SourceRunId` | TEXT | Completed baseline run selected by the operator |
+| `SourceSnapshotId` | TEXT | Verified immutable baseline snapshot |
+| `SourceSnapshotSha256` | TEXT | Baseline database digest |
+| `StableJiraGeneration` | TEXT | One generation shared by the complete Jira observation |
+| `CorpusFingerprint` | TEXT | Frozen accepted baseline corpus |
+| `ComparisonJson` | TEXT | Contract-v3 complete per-ticket decisions and coordinates |
+| `PromotionState` | TEXT | `staged`, `snapshot-publish-pending`, `ready`, `cancelled`, or `canonical-unpublished` |
+| `CapturedAt` | TEXT | UTC comparison capture time |
+| `CancelledAt` | TEXT? | Immutable audited pre-promotion cancellation time |
+| `CancellationReason` | TEXT? | Required operator reason for `cancelled` |
+| `AbandonedAt` | TEXT? | Audited explicit abandonment time |
+| `AbandonmentReason` | TEXT? | Required operator reason for `canonical-unpublished` |
+
+`prepared_ticket_publication_reconciliation_items` is the relational index of
+that comparison. Its primary key is `(RunId, TicketKey)`; ticket keys use
+case-insensitive collation. Each row stores `Disposition` (`carry-forward` or
+`re-author`), baseline/current source revisions, baseline receipt ID, run-item
+ID, contributing run ID, authored fingerprint, grouping fingerprint, and the
+selected `ItemKind` and `ExpectedSourceRevision`. The latter two columns are
+nullable only so existing contract-v1 rows remain readable; every v2 row
+requires them. Carry-forward rows retain the accepted baseline item values,
+while re-authored rows retain the accepted reconciliation item values.
+Admission writes these rows, the reconciliation record, mixed
+`authoring_run_items`, both fences, and the initial journal through one
+caller-owned immediate transaction after repeating the Jira observation.
+
+#### Revised-ticket staging and overlay
+
+Only `re-author` decisions receive staging rows:
+
+| Table | Key | Durable contents |
+|-------|-----|------------------|
+| `prepared_ticket_publication_staged_graphs` | `(RunId, TicketKey)` | Run item/operation, frozen source revision, receipt content fingerprint, complete authored payload JSON, and `StagedAt` |
+| `prepared_ticket_publication_staged_hydration` | `(RunId, TicketKey)` | Complete hydration JSON, hydration fingerprint, and `StagedAt` |
+| `prepared_ticket_publication_staged_receipts` | `(RunId, TicketKey)` plus unique `ReceiptId` | Receipt/run-item/operation coordinates, authored receipt fingerprint, and `PersistedAt` |
+
+Receipt acceptance and all three staged representations commit with the
+authoring item transition on the same SQLite connection. Canonical ticket and
+hydration rows are not changed at acceptance. Overlay reads resolve
+carry-forward decisions from their frozen canonical receipts and changed
+decisions from matching complete staging tuples; duplicate, missing, or
+fingerprint-divergent children are rejected. The overlay fingerprint is the
+SHA-256 of canonical JSON produced by
+`PreparedTicketPublicationContract.ComputeCorpusFingerprint` over exactly
+`TicketKey`, `ReceiptId`, `RunItemId`, `ContributingRunId`, `ItemKind`, and
+`ExpectedSourceRevision`, sorted by the shared contract. The same value flows
+through grouping stages, the candidate descriptor, the private proof, and the
+promoted public proof.
+
+Promotion readiness is stricter than the generic run completion predicate.
+Every `re-author` decision must join to an `authoring_run_items` row in exact
+`complete` state and matching graph, hydration, staged receipt, immutable
+receipt, run-item, operation, source revision, and authored fingerprint.
+`superseded` never counts as reconciliation-complete, even though ordinary
+authoring finalization can treat it as terminal.
+
+#### Grouping impact and unaffected fingerprints
+
+| Table | Key | Durable contents |
+|-------|-----|------------------|
+| `prepared_ticket_publication_grouping_impacts` | `(RunId, PartitionKey)` | `ImpactJson`, completion bit, and update time for each old/new affected partition |
+| `prepared_ticket_publication_staged_grouping` | `(RunId, PartitionKey)` | Complete replacement JSON plus overlay corpus, semantic output, protected-row fingerprints, and staging time |
+| `prepared_ticket_publication_grouping_stage_receipts` | `(RunId, PartitionKey)` | Exact stage/lease/partition/input coordinates, semantic output fingerprint, topic/group/member counts, and persistence time |
+| `prepared_ticket_publication_unaffected_fingerprints` | `RunId` | JSON containing impacted partition keys and independent authored-row, receipt-coordinate, grouping-row, and combined fingerprints |
+
+The impacted key is the normalized
+`WorkGroupClean + U+001F + Specification + U+001F + Type` coordinate. A
+partition move therefore records both old and new partitions. Staged grouping
+is replacement data, not a merge; empty output is represented by a complete
+payload with no topics.
+
+Finalization also creates one `authoring_run_stages` row named
+`publication-reconciliation-grouping` for every impacted partition. Its
+`InputFingerprint` is the candidate overlay corpus fingerprint, not the
+baseline comparison fingerprint. A stage-context write must hold the exact
+in-progress lease and must carry the same partition, overlay fingerprint,
+revised keys, and complete overlay membership. The replacement, completed
+impact, and receipt commit together while canonical topic/group/member rows
+remain unchanged. A reclaimed lease may replay only identical staged content;
+the durable receipt moves to the new lease. Completed stages are skipped only
+when their matching receipt exists. Closure and unaffected-row validation run
+after all such stages complete.
+
+The unaffected authored-row component includes every protected canonical row
+outside the revised ticket set except the reconciliation run's own
+`authoring_runs` row. That row's expected lifecycle fields change from running
+through finalizing/completed and are workflow state, not authored output.
+Unchanged canonical ticket rows are not exempted. Receipt coordinates and
+unaffected topic/group/member values and ordering are separately fingerprinted
+and remain exact.
+
+#### Candidate, proof, fences, and promotion journal
+
+| Table | Key | Durable contents |
+|-------|-----|------------------|
+| `prepared_ticket_publication_snapshot_descriptors` | `RunId` | Immutable candidate descriptor JSON containing reserved snapshot/provenance coordinates plus the exact post-provenance SHA-256, size, table counts, and persistence time |
+| `prepared_ticket_publication_reconciliation_proofs` | `RunId` | Contract-v3 proof JSON with mandatory full `GroupingFingerprint`, separate audit-only `GroupingImpactFingerprint`, and capture time |
+| `prepared_ticket_publication_reconciliation_fences` | `RunId` | Reconciliation lease ID and acquisition time, paired with the processor-wide `authoring_mutation_fences` row |
+| `prepared_ticket_publication_reconciliation_journal` | `RunId` UNIQUE | State, typed staged reservation/candidate or pending promotion descriptor JSON, last recovery attempt, stable failure code/detail, and update time |
+
+The proof JSON binds source run/snapshot, stable Jira generation,
+accepted/carried/re-authored counts, overlay corpus fingerprint,
+complete grouping fingerprint, separate grouping-impact audit fingerprint,
+and capture time. Full grouping is the shared canonical hash of unaffected
+partition outputs plus the complete staged replacements; removed zero-member
+partitions remain represented only in the impact audit. The candidate descriptor binds
+snapshot ID, processor/run, temporary and final paths, schema, sequence,
+authoring epoch, item/receipt counts, creation time, checksum, size, public
+table counts, and the same overlay/grouping evidence. Before materialization,
+the Preparer writes those identity coordinates as a typed reservation in the
+staged journal while `PromotionState = 'staged'`. After sanitization it writes
+one matching
+`authoring_snapshot_provenance` row, checkpoints and validates SQLite, then
+hashes the resulting bytes. Candidate persistence writes the exact
+post-provenance descriptor and proof, replacing only its matching reservation
+in the staged journal. Its full grouping is read back from the sanitized
+candidate and compared with the proof before persistence.
+A restarted finalizer may reuse that already
+authenticated candidate but cannot replace it with different bytes.
+
+The journal starts at `staged`. The database-first promotion transaction
+revalidates the candidate's exact post-provenance digest and size, every
+descriptor coordinate, the durable reservation, workspace, and fingerprints.
+It applies every revised graph and complete impacted grouping replacement,
+creates the `authoring_review_snapshots` row from the already reserved
+identity, and stores a promotion descriptor while moving both state rows to
+`snapshot-publish-pending`. It does not generate a new snapshot ID or sequence
+after hashing, and it does not claim to atomically move a filesystem file.
+`authoring_review_snapshots.PublicationProofJson` receives the candidate's
+full grouping fingerprint, not its impact fingerprint. Pending and ready
+recovery require current private/public proof versions and matching full
+fingerprints; the impact digest remains in reconciliation-specific audit JSON.
+
+Pending recovery uses the journal plus the snapshot row:
+
+- absent final + valid temporary: validate the exact journaled
+  post-provenance bytes read-only, move without overwrite, then validate the
+  same digest at the final path;
+- matching final: validate its digest, size, provenance, coordinates, and
+  counts against both descriptors and the snapshot record, then reuse it;
+- conflicting/corrupt final, missing/corrupt temporary when no final is
+  usable, checksum/provenance/count divergence, contradictory candidate or
+  promotion descriptors, or a missing/inconsistent snapshot row: persist
+  `promotion-recovery-failure` and retain the fence;
+- creating/promoted/ready snapshot rows: advance only the missing transitions;
+- ready snapshot with incomplete run, or complete run with pending journal:
+  finish the same run/journal/fence transitions without replaying canonical
+  replacement;
+- missing staging after canonical commit: rely only on authenticated
+  journal/descriptor/record/file evidence; never reconstruct the overlay;
+- cancellation of pending recovery execution: retain pending state and fences with
+  `promotion-recovery-failure`;
+- competing attempts: serialize per run and accept a race winner only when
+  the immutable final bytes match the same journaled evidence.
+
+Successful recovery sets snapshot, run, reconciliation, and journal ready,
+then removes graph/hydration/receipt impact workspace and the candidate
+descriptor in the same transaction that releases the reconciliation fence.
+Proof, comparison, item decisions, unaffected fingerprint, and journal remain
+auditable. Recovery never opens candidate/final SQLite files for writing,
+never creates or replaces provenance, and marks the snapshot promoted with
+the previously journaled digest rather than a checksum discovered during
+recovery. Startup and the explicit retry endpoint use the same
+pending-journal protocol.
+
+Contract-v1/v2 comparison and proof rows remain deserializable for these audit
+views, including missing v2-only item coordinates and the absent v3 full
+grouping field. They are execution-inert:
+grouping dispatch, candidate materialization, pending recovery, and promotion
+require contract v3. Publisher readiness likewise requires v3 reconciliation
+evidence and recomputes the entire immutable grouping. Legacy digests are
+never reinterpreted, missing fields are never default-hashed, and changing a
+stored version number is not a migration. New supported evidence must be
+generated without altering historical publications.
+
+Dedicated operator cancellation is valid only while both state rows are
+`staged` and before a trusted row exists in
+`prepared_ticket_publication_snapshot_descriptors`, a snapshot row exists, or
+canonical authored state points at the reconciliation. A single immediate
+transaction writes `PromotionState = 'cancelled'`, `CancelledAt`, and
+`CancellationReason`; updates or recreates the journal as terminal
+`cancelled`; closes active attempts and incomplete stages; marks all run
+items superseded while retaining accepted receipts; releases
+`prepared_ticket_publication_reconciliation_fences` and the matching
+`authoring_mutation_fences` row; and finally marks `authoring_runs`
+`superseded`.
+
+That transaction deletes only disposable unpromoted rows from staged
+graph/hydration/receipt, grouping impact/replacement/stage receipt,
+unaffected-fingerprint, and reconciliation-proof tables. It retains the
+reconciliation row and `ComparisonJson`, relational item decisions, generic
+run/item/attempt/stage/receipt history, and cancellation journal. A repeated
+cancel returns the first timestamp and reason without rewriting them.
+Workspace writers and stage leases require the still-staged state and both
+fences, preventing a retry race from recreating rows after cancellation.
+
+Explicit abandonment is valid only from `snapshot-publish-pending`. It writes
+`canonical-unpublished`, `AbandonedAt`, and `AbandonmentReason`, records the
+canonical-unpublished detail and completion time on `authoring_runs`, changes
+that generic row from `finalizing` or `error` to terminal `abandoned`, and
+releases both fences without rolling back canonical rows or changing the prior
+ready snapshot. `abandoned` is non-recoverable, is excluded from active-run
+capacity and scheduler/finalization queries, and leaves the reconciliation
+row, journal, reason, and time as the canonical-unpublished audit.
+
+Snapshot production is defined by the durable row, not a purpose allowlist:
+every `authoring_runs.DatabaseOnly = 0` row is snapshot-producing. While any
+reconciliation remains `canonical-unpublished` without a resolution matching
+its source run ID and authoring epoch, the sole bypass is
+`Purpose = 'canonical-epoch-recovery'`; database-only rows remain allowed.
+`prevent_snapshot_after_unpublished_canonical` guards run insertion.
+Companion triggers guard mutation-fence insertion, snapshot-row insertion,
+snapshot promotion/readiness, run finalization/completion, and reconciliation
+promotion. Each raises the exact SQLite sentinel
+`canonical-unpublished-restriction`, which service code translates to the
+same typed HTTP `409`. These triggers are last-ditch integrity checks behind
+the shared guard at admission, queued fence acquisition, candidate creation,
+and finalization/promotion. A pre-existing `error` or `finalizing` row already
+audited as canonical-unpublished is migrated to `abandoned` at schema
+initialization. The restriction remains durable until a separately explicit
+operation verifies a snapshot for that canonical epoch.
+
+### Preparer canonical-epoch recovery live state
+
+These three additive private tables are created without changing any existing
+publication or the schema-v3 public snapshot catalog:
+
+| Table | Unique coordinates | Durable content |
+|---|---|---|
+| `prepared_ticket_canonical_epoch_recoveries` | `RunId`, `SourceRunId` | Append-only source abandonment/current epoch recipe; corpus, complete grouping, and recipe fingerprints; capture time |
+| `prepared_ticket_canonical_epoch_recovery_journal` | `RunId` | Mutable state, typed reservation or trusted candidate `SnapshotDescriptorJson`, last attempt, failure code/detail, update time |
+| `prepared_ticket_canonical_epoch_recovery_resolutions` | `RunId`, `SourceRunId`, `SnapshotId` | Append-only successful link, authoring epoch, snapshot SHA-256, corpus/grouping fingerprints, dedicated proof JSON, resolution time |
+
+Admission is one fenced immediate transaction on one connection. The new
+`authoring_runs` row has `DatabaseOnly = 0`, purpose
+`canonical-epoch-recovery`, and `SourceRunId` pointing at the abandoned
+reconciliation. Every selected item is `complete` with its existing
+`AcceptedReceiptId`; a run-specific `recovery:<runId>:<itemKind>` kind keeps
+maintenance selections distinct from authored revision coordinates. There
+are no new authoring operations, receipts, or grouping stages.
+
+`RecipeJson` (also retained as run `RequestJson`) freezes the full current
+receipt coordinate set, complete grouping partitions/fingerprints, source
+abandonment time/reason, epoch, and capture time. Its
+`CanonicalRowsFingerprint` additionally protects exact public canonical row
+values, including hydration and grouping IDs/order, against drift between
+admission and final CAS. The public corpus fingerprint remains the canonical
+six-field receipt-coordinate serialization. Grouping uses the shared full
+partition-output serialization shared with reconciliation v3, not the
+separate reconciliation impact-audit digest.
+
+The journal starts at `materialization-pending`. Its reservation freezes the
+snapshot ID, sequence, processor/run, epoch, schema, item/receipt counts,
+temporary/final paths, and creation time before provenance is written.
+After sanitization, provenance, checkpointing, integrity/count validation,
+and hashing, one transaction stores the trusted candidate descriptor and a
+`creating` snapshot row and changes the journal to `snapshot-publish-pending`.
+The descriptor's digest is of the exact post-provenance bytes.
+
+The final file can exist while the snapshot row is still `creating`.
+Only exact final-file verification plus one shared-SQLite compare-and-swap
+may insert a resolution, mark the snapshot/journal ready, complete the
+recovery run, and delete its processor fence. Transaction-aware
+`AuthoringRunStore.MarkSnapshotReadyAsync` and `CompleteRunAsync` use the
+caller's connection/transaction; no independently opened write connection
+or file move participates. A rollback leaves all these transitions pending.
+Startup/retry authenticate the same reserved/journaled coordinates, not a
+new snapshot or run.
+
+Eligibility queries and integrity triggers anti-join the resolution table
+on abandoned `RunId` and `AuthoringEpoch`. Thus resolution releases only
+that restriction without ever modifying the source's `abandoned` status,
+`canonical-unpublished` promotion/journal state, abandonment timestamp, or
+reason. The recovery recipe and resolution are never updated or deleted by
+recovery APIs. On conflict the journal retains failure detail and the
+unresolved run/fence; successful resolution is the sole release boundary.
+
+### Preparer publication-refresh live state
+
+Metadata-only refresh adds two Preparer-owned live tables and one nullable
+grouping-receipt field. They support recovery and proof construction; none is
+copied into the public schema-v3 snapshot.
+
+The existing `prepared_ticket_partition_receipts` table gains nullable
+`OutputFingerprint TEXT`. New grouping writes bind their semantic
+topics/groups/members output to that receipt. A null value identifies a legacy
+receipt whose output must instead be bound by the certification table below.
+
+#### `prepared_ticket_publication_refresh_receipts`
+
+One row is written atomically with a successful publication metadata update.
+The unique live key is `(RunId, StageId)`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `RowId` | INTEGER PK | Generated row identifier |
+| `RunId` | TEXT | Owning `publication-refresh` run |
+| `StageId` | TEXT | Owning `publication-enrichment-v1` stage, or a persisted legacy `publication-metadata` stage |
+| `InputFingerprint` | TEXT | New recipe binds original snapshot identity, original/current corpus, protected values/references, and retained grouping; legacy source-run/corpus hashing is unchanged |
+| `CorpusFingerprint` | TEXT | Canonical current accepted receipt-backed corpus |
+| `SourceLastSuccessfulRefreshAt` | TEXT | Maximum proven project watermark in the coherent read |
+| `SourceContentRevision` | INTEGER | One stable Jira content generation shared by every ticket |
+| `PublicDisplayNamePolicyVersion` | INTEGER | Policy version proved by every fetched ticket |
+| `AppliedAt` | TEXT | UTC metadata transaction time |
+
+The same transaction allowlists updates to parent
+`prepared_ticket_hydration` publication fields, the matching self row in
+`prepared_jira_hydration`, normalized
+`prepared_ticket_in_person_requesters`, and the refresh run's
+`authoring_run_input_provenance` row. The versioned enrichment recipe also
+updates the explicit self-ticket Jira `UpdatedAt` and context/outcome columns
+of hydration for already accepted Zulip associations. Missing Zulip hydration
+may be inserted only for an existing accepted reference. Authored payloads,
+accepted relationships/IDs/justifications, receipts, contributing runs' frozen
+input provenance, unrelated hydration, topics, groups, and members are
+protected. Every accepted association has a typed outcome; the existing
+`HydrationReason` stores the `zulip-reference-v1:` backing/latest-outcome
+envelope, without a new snapshot column. Failed lookups retain safe
+source-backed context as last-known or unbacked URLs as explicitly unverified.
+A retry validates frozen protection and reuses the matching committed receipt
+without another Jira or Zulip fetch.
+
+#### `prepared_ticket_partition_certifications`
+
+A refresh never reruns grouping. Each `grouping-certification` stage validates
+the current partition membership and output against its latest retained source
+receipt. New `prepared_ticket_partition_receipts` rows carry nullable
+`OutputFingerprint`; when it is present, it must match the current semantic
+grouping output. A legacy null fingerprint is bound by a certification row
+whose unique live key is `(RunId, PartitionKey)`:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `RowId` | INTEGER PK | Generated row identifier |
+| `RunId` | TEXT | Refresh run performing certification |
+| `StageId` | TEXT | Refresh `grouping-certification` stage |
+| `PartitionKey` | TEXT | Certified grouping partition |
+| `InputFingerprint` | TEXT | Current accepted partition membership |
+| `SourceRunId` | TEXT | Run owning the retained grouping receipt |
+| `SourceStageId` | TEXT | Stage owning the retained grouping receipt |
+| `SourceInputFingerprint` | TEXT | Input fingerprint on that source receipt |
+| `OutputFingerprint` | TEXT | Canonical fingerprint of current topics/groups/members |
+| `CertifiedAt` | TEXT | UTC certification time |
+
+The descriptor-level grouping fingerprint is calculated from every
+stage-verified partition/output pair, whether a current receipt proves it
+directly or a legacy receipt needs a certification row. The source receipts
+remain intact and attributable to their original runs.
+
+### Discussion renderer schema v3
+
+After it validates a Preparer v1, v2, or v3 pair, the publisher creates a new
+filtered SQLite database from scratch. Renderer version 3 is independent of
+the Preparer snapshot version and contains only these browser-facing tables:
+
+| Table | Key columns and purpose |
+|-------|-------------------------|
+| `site_metadata` | One row keyed by `RendererSchemaVersion = 3`; stores `BaseTitle`, `SiteName`, nullable upstream Jira refresh, canonical `ReadinessJson` and `CorpusSummaryJson`, and resolved filters |
+| `facet_dimensions` | Publication-owned catalog of `Dimension`, hash `Route`, label, order, and list visibility |
+| `tickets` | One row per case-insensitive ticket key with display metadata, nullable canonical UTC `JiraUpdatedAt` from its own self-Jira row, summaries, proposals, rationale, and request/resolution content |
+| `ticket_people` | `(TicketKey, Role, OrderInRole)` for `reporter`, `assignee`, and `in-person-requester`, with `Availability` and structured `UnavailableReason`; only exact-current-policy, context-free-safe v3 display names are non-null |
+| `ticket_facets` | `(TicketKey, Dimension, ValueKey)` plus display/sort values, normalized across `project`, `wg`, `type`, `artifact`, `page`, `impact`, and `spec`, including the `__unknown__` machine key |
+| `summary_sources` | `(TicketKey, SummaryKind, SourceKey)` for unique `linked-jira`, `related-jira`, and `related-zulip` adjacent links, including safe canonical URLs where available |
+| `related_items` | `(TicketKey, Kind, ItemKey, LinkTypeKey)` for broader related context, labels, safe URLs, detail, justification, and hydration state |
+| `topics` | Authored discussion topic metadata and stable render hints |
+| `topic_groups` | Ordered groups within a topic |
+| `topic_members` | Ordered grouped/ungrouped ticket membership and display columns |
+
+`site-manifest.json` reports these renderer table counts, renderer schema
+version, stable base `title`, `displayTitle`, optional upstream Jira refresh,
+structured `discussionReadiness`, and `discussionCorpus`. Readiness carries `isReady`, evidence
+(`ordinary-snapshot` or `publication-refresh`), optional Jira content revision
+and public people-policy version, and ordered reason objects. Reason codes are
+`legacy-snapshot-schema`, `missing-ordinary-provenance`,
+`invalid-refresh-proof`, and `missing-people-policy-proof`.
+
+Preparer v1 and v2 remain readable but always produce degraded readiness and
+cannot populate trusted people. An unavailable Reporter or Assignee row carries
+the readiness reason. `No public display name available` describes an
+exact-current-policy row without a publishable name; it does not establish
+that a role is absent or a ticket is unassigned. The publisher never migrates the
+input pair in place. The browser queries the renderer database only; processor
+ledger and persistence tables are not shipped as its contract. No live Jira,
+Orchestrator, or processor connection is needed after publication.
+
+For schema-v2 or schema-v3 input, renderer construction requires exactly one
+accepted authoring coordinate for every retained ticket. Zero or multiple
+matches are structural validation errors and abort publication before this
+database is created. Missing or incomplete source provenance degrades
+readiness, independently of the title date. A schema-v3 descriptor carrying
+`publicationProof` instead qualifies freshness only when its source lineage,
+current-policy evidence, corpus fingerprint, and grouping fingerprint all
+match the retained snapshot; a mismatch produces `invalid-refresh-proof`.
+Schema-v1 and schema-v2 people are never copied into
+`ticket_people`; schema-v3 values are independently checked for the current
+marker and public value safety during projection and renderer validation.
+
+`CorpusSummaryJson` matches the manifest's `discussionCorpus` and injected
+presentation. It records exported ticket/project counts, valid self-Jira date
+count and maximum, `dateCoverage` (`empty`, `none`, `partial`, `complete`),
+ticket counts with public Reporter/Assignee/requester names, and per-kind
+related-link counts (resolved safe, unresolved with retained safe URL, and no
+usable URL). The validator independently recomputes these facts from renderer
+rows and retains exact immutable-source projection validation.
+
+Only complete dates in a nonempty generation-filtered export supply the title
+suffix, for example `Tickets for Discussion - Sept 15, 2026`. The date is the
+maximum self-ticket `UpdatedAt`, normalized to UTC, never an upstream
+watermark, linked-ticket date, receipt timestamp, or publication clock.
+Partial coverage keeps its known maximum as a fact but has no title date;
+malformed non-null dates abort publication. Browser filters do not change the
+frozen title or corpus facts. Existing renderer-v2 sites retain their original
+assets/database and remain usable; there is no in-place migration.
+
+---
+
 ## Orchestrator Database (`orchestrator.db`)
 
 The Orchestrator maintains its own database for cross-service coordination.
@@ -805,7 +1457,7 @@ Source.Zulip (zulip.db)
 └── zulip_sync_state, ingestion_log     — Sync infrastructure
 
 Source.Confluence (confluence.db)
-├── confluence_spaces, confluence_pages, confluence_comments — Content tables
+├── confluence_spaces, confluence_pages, confluence_comments, confluence_attachments — Content tables
 ├── confluence_jira_refs                — Jira reference table
 ├── confluence_pages_fts                — FTS5 virtual table (content-synced)
 ├── index_keywords, index_corpus, index_doc_stats — BM25 index

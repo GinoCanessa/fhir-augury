@@ -1,186 +1,308 @@
-using Microsoft.Data.Sqlite;
+using FhirAugury.Publishing.Tickets;
+using FhirAugury.Publishing.Tickets.Tests;
 
 namespace FhirAugury.Tools.TicketSite.Tests;
 
+[Collection("ConsoleRedirect")]
 public sealed class ChooserAndCliTests
 {
-    private sealed class TempScope : IDisposable
+    [Fact]
+    public async Task CliRejectsMissingSnapshotInput()
     {
-        public string PreparerDbPath { get; } = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".db");
-        public string PlannerDbPath { get; } = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + "-pl.db");
-        public string OutDir { get; } = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        (int exit, _, string error) = await RunAsync("--out", "unused");
 
-        public void Dispose()
-        {
-            TestFileCleanup.SafeDeleteFile(PreparerDbPath);
-            TestFileCleanup.SafeDeleteFile(PlannerDbPath);
-            TestFileCleanup.SafeDeleteDirectory(OutDir);
-        }
+        Assert.Equal(2, exit);
+        Assert.Contains(
+            "Specify either --preparer-snapshot or --planner-snapshot",
+            error);
+    }
+
+    [Theory]
+    [InlineData("--preparer-db")]
+    [InlineData("--planner-db")]
+    [InlineData("--jira-source")]
+    [InlineData("--jira-source-db")]
+    public async Task CliRejectsRetiredLiveInputOptions(string option)
+    {
+        (int exit, _, string error) = await RunAsync(option, "retired");
+
+        Assert.Equal(2, exit);
+        Assert.Contains($"Unknown argument: {option}", error);
     }
 
     [Fact]
-    public async Task Cli_RejectsBothPreparerAndPlannerDbFlags_WithExit2()
+    public async Task CliSnapshotRequiresDescriptor()
     {
-        StringWriter err = new();
-        TextWriter originalErr = Console.Error;
-        Console.SetError(err);
-        try
-        {
-            int exit = await Program.Main(["--preparer-db", "a.db", "--planner-db", "b.db"]);
-            Assert.Equal(2, exit);
-            Assert.Contains("mutually exclusive", err.ToString(), StringComparison.Ordinal);
-        }
-        finally
-        {
-            Console.SetError(originalErr);
-        }
+        (int exit, _, string error) = await RunAsync(
+            "--preparer-snapshot",
+            "snapshot.db");
+
+        Assert.Equal(2, exit);
+        Assert.Contains("--snapshot-descriptor", error);
     }
 
     [Fact]
-    public async Task Cli_RejectsNeitherPreparerNorPlannerDbFlags_WithExit2()
+    public async Task HelpRetainsEverySupportedFlag()
     {
-        StringWriter err = new();
-        TextWriter originalErr = Console.Error;
-        Console.SetError(err);
-        try
-        {
-            int exit = await Program.Main(["--out", "tmp"]);
-            Assert.Equal(2, exit);
-            Assert.Contains("Specify either", err.ToString(), StringComparison.Ordinal);
-        }
-        finally
-        {
-            Console.SetError(originalErr);
-        }
-    }
+        (int exit, string output, string error) = await RunAsync("--help");
 
-    [Fact]
-    public async Task PreparerOnly_BuildsDiscussionAndChooserShowsApplyingGreyed()
-    {
-        using TempScope scope = new();
-        await PreparerTestDb.SeedAsync(scope.PreparerDbPath,
-            [new("FHIR-1001", Project: "FHIR")]);
-
-        int exit = await Program.Main(["--preparer-db", scope.PreparerDbPath, "--out", scope.OutDir]);
         Assert.Equal(0, exit);
-
-        // Discussion sub-site is emitted, chooser is at the root.
-        Assert.True(File.Exists(Path.Combine(scope.OutDir, "discussion", "index.html")));
-        Assert.True(File.Exists(Path.Combine(scope.OutDir, "index.html")));
-        Assert.False(Directory.Exists(Path.Combine(scope.OutDir, "applying")));
-
-        string chooserHtml = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
-        Assert.Contains("card-discussion live", chooserHtml, StringComparison.Ordinal);
-        Assert.Contains("card-applying missing", chooserHtml, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task PlannerOnly_BuildsApplyingAndChooserShowsDiscussionGreyed()
-    {
-        using TempScope scope = new();
-        SeedMinimalPlannerDb(scope.PlannerDbPath);
-
-        int exit = await Program.Main(["--planner-db", scope.PlannerDbPath, "--out", scope.OutDir]);
-        Assert.Equal(0, exit);
-
-        Assert.True(File.Exists(Path.Combine(scope.OutDir, "applying", "index.html")));
-        Assert.True(File.Exists(Path.Combine(scope.OutDir, "index.html")));
-        Assert.False(Directory.Exists(Path.Combine(scope.OutDir, "discussion")));
-
-        string chooserHtml = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
-        Assert.Contains("card-discussion missing", chooserHtml, StringComparison.Ordinal);
-        Assert.Contains("card-applying live", chooserHtml, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task TwoSubSites_SequentialIntoSameOutDir_PreservesBothAndShowsBothLive()
-    {
-        using TempScope scope = new();
-        await PreparerTestDb.SeedAsync(scope.PreparerDbPath,
-            [new("FHIR-2001", Project: "FHIR")]);
-        SeedMinimalPlannerDb(scope.PlannerDbPath);
-
-        int exit1 = await Program.Main(["--preparer-db", scope.PreparerDbPath, "--out", scope.OutDir]);
-        Assert.Equal(0, exit1);
-        int exit2 = await Program.Main(["--planner-db", scope.PlannerDbPath, "--out", scope.OutDir]);
-        Assert.Equal(0, exit2);
-
-        // Both sub-site dirs survive.
-        Assert.True(File.Exists(Path.Combine(scope.OutDir, "discussion", "index.html")));
-        Assert.True(File.Exists(Path.Combine(scope.OutDir, "applying", "index.html")));
-        Assert.True(File.Exists(Path.Combine(scope.OutDir, "discussion", OutputDirGuard.MarkerFileName)));
-        Assert.True(File.Exists(Path.Combine(scope.OutDir, "applying", OutputDirGuard.MarkerFileName)));
-
-        string chooserHtml = await File.ReadAllTextAsync(Path.Combine(scope.OutDir, "index.html"));
-        Assert.Contains("card-discussion live", chooserHtml, StringComparison.Ordinal);
-        Assert.Contains("card-applying live", chooserHtml, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task ChooserPage_IsRegeneratedUnconditionally_EvenWithoutForce()
-    {
-        using TempScope scope = new();
-        await PreparerTestDb.SeedAsync(scope.PreparerDbPath,
-            [new("FHIR-3001", Project: "FHIR")]);
-
-        int exit1 = await Program.Main(["--preparer-db", scope.PreparerDbPath, "--out", scope.OutDir]);
-        Assert.Equal(0, exit1);
-        DateTime first = File.GetLastWriteTimeUtc(Path.Combine(scope.OutDir, "index.html"));
-        await Task.Delay(50);
-
-        // Re-running without --force: should still overwrite the chooser unconditionally.
-        int exit2 = await Program.Main(["--preparer-db", scope.PreparerDbPath, "--out", scope.OutDir]);
-        Assert.Equal(0, exit2);
-        DateTime second = File.GetLastWriteTimeUtc(Path.Combine(scope.OutDir, "index.html"));
-        Assert.True(second >= first, "Chooser should be regenerated on every run.");
-    }
-
-    [Fact]
-    public void OutputDirGuard_KindMatches_DetectsMismatch()
-    {
-        MetaFilterSet existing = new()
+        Assert.Empty(error);
+        string[] flags =
+        [
+            "--preparer-snapshot",
+            "--planner-snapshot",
+            "--snapshot-descriptor",
+            "--out",
+            "--title",
+            "--spec",
+            "--project",
+            "--wg",
+            "--force",
+            "--help",
+        ];
+        foreach (string flag in flags)
         {
-            Kind = PreparerSubSiteEmitter.Kind,
-            Filters = new MetaFilters(),
-        };
-        Assert.True(OutputDirGuard.KindMatches(existing, PreparerSubSiteEmitter.Kind));
-        Assert.False(OutputDirGuard.KindMatches(existing, PlannerSubSiteEmitter.Kind));
+            Assert.Contains(flag, output, StringComparison.Ordinal);
+        }
     }
 
     [Fact]
-    public void OutputDirGuard_WriteAndReadMarker_RoundTripsKindAndFilters()
+    public async Task OmittedPreparerTitleUsesDiscussionBaseButPlannerKeepsTicketSite()
     {
-        string dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            $"ticket-site-default-titles-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
         try
         {
-            ResolvedFilters f = new("FHIR", "FHIR", "FHIRInfrastructure");
-            OutputDirGuard.WriteMarker(dir, "preparer", f, DateTimeOffset.UtcNow);
-            MetaFilterSet? read = OutputDirGuard.TryReadExistingMarker(dir);
-            Assert.NotNull(read);
-            Assert.Equal("preparer", read!.Kind);
-            Assert.Equal("FHIR", read.Filters?.Spec);
-            Assert.Equal("FHIRInfrastructure", read.Filters?.Wg);
-            Assert.True(OutputDirGuard.FilterSetsMatch(read, f));
+            TicketSnapshotFixture preparer =
+                await TicketSnapshotFixture.CreatePreparerAsync(root);
+            string preparerOutput = Path.Combine(root, "preparer-site");
+
+            (int preparerExit, _, string preparerError) = await RunAsync(
+                "--preparer-snapshot", preparer.DatabasePath,
+                "--snapshot-descriptor", preparer.DescriptorPath,
+                "--out", preparerOutput);
+
+            Assert.True(preparerExit == 0, preparerError);
+            TicketSiteManifest preparerManifest = TicketSiteManifest.Read(
+                Path.Combine(
+                    preparerOutput,
+                    "discussion",
+                    TicketSiteManifest.FileName));
+            Assert.Equal("Tickets for Discussion", preparerManifest.Title);
+            Assert.Equal(
+                "Tickets for Discussion - Sept 5, 2026",
+                preparerManifest.DisplayTitle);
+            Assert.Null(
+                preparerManifest.JiraSourceLastSuccessfulRefreshAt);
+            Assert.Equal(1, preparerManifest.SnapshotSchemaVersion);
+            Assert.Equal(3, preparerManifest.RendererSchemaVersion);
+            Assert.Equal(DiscussionDateCoverage.Complete, preparerManifest.DiscussionCorpus?.DateCoverage);
+            Assert.Equal(1, preparerManifest.DiscussionCorpus?.TicketCount);
+            Assert.Equal(0, preparerManifest.DiscussionCorpus?.TicketsWithPublicReporter);
+            string chooser = await File.ReadAllTextAsync(
+                Path.Combine(preparerOutput, "index.html"));
+            Assert.Contains(
+                "Tickets for Discussion - Sept 5, 2026",
+                chooser,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "Built",
+                chooser,
+                StringComparison.Ordinal);
+
+            TicketSnapshotFixture planner =
+                await TicketSnapshotFixture.CreatePlannerAsync(root);
+            string plannerOutput = Path.Combine(root, "planner-site");
+
+            (int plannerExit, _, string plannerError) = await RunAsync(
+                "--planner-snapshot", planner.DatabasePath,
+                "--snapshot-descriptor", planner.DescriptorPath,
+                "--out", plannerOutput);
+
+            Assert.True(plannerExit == 0, plannerError);
+            TicketSiteManifest plannerManifest = TicketSiteManifest.Read(
+                Path.Combine(
+                    plannerOutput,
+                    "applying",
+                    TicketSiteManifest.FileName));
+            Assert.Equal("Ticket Site", plannerManifest.Title);
+            Assert.Null(plannerManifest.DisplayTitle);
+            Assert.Null(
+                plannerManifest.JiraSourceLastSuccessfulRefreshAt);
+            Assert.Null(plannerManifest.RendererSchemaVersion);
+            Assert.Null(plannerManifest.DiscussionReadiness);
+            Assert.Null(plannerManifest.DiscussionCorpus);
         }
         finally
         {
-            TestFileCleanup.SafeDeleteDirectory(dir);
+            TestFileCleanup.SafeDeleteDirectory(root);
         }
     }
 
-    private static void SeedMinimalPlannerDb(string dbPath)
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public async Task ExplicitPreparerTitleRemainsBaseTitle(int schemaVersion)
     {
-        using SqliteConnection conn = new($"Data Source={dbPath};Pooling=False");
-        conn.Open();
-        FhirAugury.Processor.Jira.Fhir.Planner.Persistence.Database.PlannerDatabase.EnsureSchema(conn);
-        using SqliteCommand cmd = conn.CreateCommand();
-        cmd.CommandText = """
-            INSERT INTO planned_tickets (Id, Key, Resolution, ResolutionSummary, FeatureProposal, DesignRationale, SavedAt)
-            VALUES (@id, @key, '', 'sum', 'prop', 'rat', @savedAt)
-            """;
-        cmd.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
-        cmd.Parameters.AddWithValue("@key", "FHIR-9000");
-        cmd.Parameters.AddWithValue("@savedAt", DateTimeOffset.UtcNow.ToString("O"));
-        cmd.ExecuteNonQuery();
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            $"ticket-site-explicit-title-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            TicketSnapshotFixture snapshot =
+                await TicketSnapshotFixture.CreatePreparerAsync(
+                    root,
+                    schemaVersion: schemaVersion,
+                    firstJiraUpdatedAt: "2026-09-15T01:00:00+00:00");
+            string output = Path.Combine(root, "site");
+
+            (int exit, string stdout, string error) = await RunAsync(
+                "--preparer-snapshot", snapshot.DatabasePath,
+                "--snapshot-descriptor", snapshot.DescriptorPath,
+                "--out", output,
+                "--title", "FHIR review");
+
+            Assert.True(exit == 0, error);
+            TicketSiteManifest manifest = TicketSiteManifest.Read(
+                Path.Combine(
+                    output,
+                    "discussion",
+                    TicketSiteManifest.FileName));
+            Assert.Equal("FHIR review", manifest.Title);
+            Assert.Equal(
+                "FHIR review - Sept 15, 2026",
+                manifest.DisplayTitle);
+            Assert.Equal(schemaVersion, manifest.SnapshotSchemaVersion);
+            Assert.Equal(3, manifest.RendererSchemaVersion);
+            Assert.Equal(DiscussionDateCoverage.Complete, manifest.DiscussionCorpus?.DateCoverage);
+            Assert.Equal(1, manifest.DiscussionCorpus?.ValidJiraUpdatedAtCount);
+            Assert.Equal(1, manifest.DiscussionCorpus?.ExportedProjectCount);
+            Assert.Contains(TicketSiteManifest.ToSummaryJson(manifest), stdout, StringComparison.Ordinal);
+            string chooser = await File.ReadAllTextAsync(Path.Combine(output, "index.html"));
+            Assert.Contains(
+                "<div class=\"card-title\">FHIR review - Sept 15, 2026</div>",
+                chooser, StringComparison.Ordinal);
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteDirectory(root);
+        }
+    }
+
+    [Fact]
+    public async Task CliRejectsAmbiguousSelfDateWithoutReplacingPublication()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"ticket-site-date-refusal-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            TicketSnapshotFixture snapshot = await TicketSnapshotFixture.CreatePreparerAsync(root);
+            string output = Path.Combine(root, "site");
+            string[] args =
+            [
+                "--preparer-snapshot", snapshot.DatabasePath,
+                "--snapshot-descriptor", snapshot.DescriptorPath,
+                "--out", output,
+            ];
+            (int firstExit, _, string firstError) = await RunAsync(args);
+            Assert.True(firstExit == 0, firstError);
+            string index = Path.Combine(output, "discussion", "index.html");
+            string manifest = Path.Combine(output, "discussion", TicketSiteManifest.FileName);
+            byte[] originalHtml = await File.ReadAllBytesAsync(index);
+            byte[] originalManifest = await File.ReadAllBytesAsync(manifest);
+            await snapshot.SetTicketJiraUpdatedAtAsync("FHIR-1001", "2026-09-15T01:00:00");
+            byte[] sourceBytes = await File.ReadAllBytesAsync(snapshot.DatabasePath);
+            byte[] descriptorBytes = await File.ReadAllBytesAsync(snapshot.DescriptorPath);
+
+            (int exit, _, string error) = await RunAsync(args);
+
+            Assert.Equal(1, exit);
+            Assert.Contains("UpdatedAt", error, StringComparison.Ordinal);
+            Assert.Equal(originalHtml, await File.ReadAllBytesAsync(index));
+            Assert.Equal(originalManifest, await File.ReadAllBytesAsync(manifest));
+            Assert.Equal(sourceBytes, await File.ReadAllBytesAsync(snapshot.DatabasePath));
+            Assert.Equal(descriptorBytes, await File.ReadAllBytesAsync(snapshot.DescriptorPath));
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteDirectory(root);
+        }
+    }
+
+    [Fact]
+    public async Task LooseSnapshotRejectsSidecarCreatedAfterInitialCheck()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            $"ticket-site-late-sidecar-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            TicketSnapshotFixture snapshot =
+                await TicketSnapshotFixture.CreatePreparerAsync(root);
+            string output = Path.Combine(root, "site");
+            bool captureStarted = false;
+            TicketSiteCliTestHooks hooks = new(
+                BeforeLegacySnapshotCaptureAsync: (databasePath, _) =>
+                {
+                    captureStarted = true;
+                    File.WriteAllText(databasePath + "-wal", "late sidecar");
+                    return Task.CompletedTask;
+                });
+
+            (int exit, _, string error) = await RunWithHooksAsync(
+                hooks,
+                "--preparer-snapshot", snapshot.DatabasePath,
+                "--snapshot-descriptor", snapshot.DescriptorPath,
+                "--out", output);
+
+            Assert.True(captureStarted);
+            Assert.Equal(1, exit);
+            Assert.Contains("sidecar", error, StringComparison.OrdinalIgnoreCase);
+            Assert.False(Directory.Exists(Path.Combine(output, "discussion")));
+        }
+        finally
+        {
+            TestFileCleanup.SafeDeleteDirectory(root);
+        }
+    }
+
+    internal static async Task<(int Exit, string Output, string Error)> RunAsync(
+        params string[] args)
+        => await RunCoreAsync(args, testHooks: null).ConfigureAwait(false);
+
+    private static async Task<(int Exit, string Output, string Error)>
+        RunWithHooksAsync(
+            TicketSiteCliTestHooks testHooks,
+            params string[] args)
+        => await RunCoreAsync(args, testHooks).ConfigureAwait(false);
+
+    private static async Task<(int Exit, string Output, string Error)> RunCoreAsync(
+        string[] args,
+        TicketSiteCliTestHooks? testHooks)
+    {
+        TextWriter originalOut = Console.Out;
+        TextWriter originalError = Console.Error;
+        StringWriter output = new();
+        StringWriter error = new();
+        Console.SetOut(output);
+        Console.SetError(error);
+        try
+        {
+            return (
+                await Program.RunAsync(args, testHooks: testHooks),
+                output.ToString(),
+                error.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            Console.SetError(originalError);
+        }
     }
 }

@@ -1,18 +1,316 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using FhirAugury.Common.Api;
+using FhirAugury.Common.Text;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processor.Jira.Fhir.Hydration.Common;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Hydration;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Processing;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FhirAugury.Processor.Jira.Fhir.Preparer.Tests;
 
 public sealed class PreparedTicketHydratorTests
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    [Fact]
+    public async Task FetchPublicationMetadata_ReadsOnlyStableTrustedJiraFields()
+    {
+        FakeHandler handler = new();
+        DateTimeOffset hydratedAt =
+            new(2026, 9, 14, 14, 0, 0, TimeSpan.Zero);
+        DateTimeOffset updatedAt =
+            new(2026, 9, 13, 9, 30, 0, TimeSpan.FromHours(-5));
+        DateTimeOffset refreshAt =
+            new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-901",
+            JsonMetadata(
+                new Dictionary<string, string>
+                {
+                    ["status"] = "Triaged",
+                    ["type"] = "Change Request",
+                    ["work_group"] = "FHIR-I",
+                    ["specification"] = "FHIR",
+                    ["description_plain"] = "must not escape",
+                },
+                title: "Publication ticket",
+                url: "https://jira/browse/FHIR-901",
+                people: new
+                {
+                    reporter = "  Ada Example ",
+                    assignee = "private@example.org",
+                    inPersonRequesters = new[]
+                    {
+                        " Zoë Example ",
+                        "zoë example",
+                        "unsafe@example.org",
+                    },
+                    publicDisplayNamePolicyVersion =
+                        PublicDisplayNamePolicy.CurrentVersion,
+                },
+                provenance: new
+                {
+                    source = "jira",
+                    contentRevision = 91,
+                    isStable = true,
+                    projectLastSuccessfulRefreshAt =
+                        new Dictionary<string, DateTimeOffset?>
+                        {
+                            ["FHIR"] = refreshAt,
+                        },
+                },
+                updatedAt: updatedAt,
+                id: "FHIR-901"));
+        OrchestratorHydrationFetcher fetcher = new(
+            new HttpClient(handler)
+            {
+                BaseAddress = new Uri("http://localhost/"),
+            },
+            NullLogger.Instance);
+
+        PublicationMetadataFetchResult result =
+            await fetcher.FetchPublicationMetadataAsync(
+                "FHIR-901",
+                hydratedAt,
+                CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Null(result.Failure);
+        Assert.Equal(
+            "2026-09-13T09:30:00.0000000-05:00",
+            result.ObservedSourceRevision);
+        Assert.Equal(updatedAt, result.UpdatedAt);
+        Assert.NotEqual(hydratedAt, result.UpdatedAt);
+        Assert.NotEqual(refreshAt, result.UpdatedAt);
+        Assert.Equal("Ada Example", result.Reporter);
+        Assert.Null(result.Assignee);
+        Assert.Equal(["Zoë Example"], result.InPersonRequesters);
+        Assert.Equal("FHIR", result.SourceProject);
+        Assert.Equal(refreshAt, result.SourceLastSuccessfulRefreshAt);
+        Assert.Equal(91, result.SourceContentRevision);
+        Assert.True(result.SourceIsStable);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            result.PublicDisplayNamePolicyVersion);
+        Assert.Equal(
+            ["/api/v1/jira/items/FHIR-901"],
+            handler.RequestedPathsAndQueries);
+    }
+
+    [Fact]
+    public async Task FetchPublicationMetadata_MissingDateReturnsHashWithoutInventingTimestamp()
+    {
+        FakeHandler handler = new();
+        DateTimeOffset hydratedAt = new(2026, 9, 15, 12, 0, 0, TimeSpan.Zero);
+        handler.AddJsonResponse("/api/v1/jira/items/FHIR-905", JsonSerializer.Serialize(new
+        {
+            id = "FHIR-905",
+            title = "Undated source ticket",
+            updatedAt = (DateTimeOffset?)null,
+            metadata = new Dictionary<string, string>
+            {
+                ["status"] = "Triaged", ["type"] = "Change Request",
+                ["work_group"] = "FHIR-I", ["specification"] = "FHIR",
+            },
+            people = PeoplePayload("present", PublicDisplayNamePolicy.CurrentVersion),
+            provenance = new
+            {
+                source = "jira", contentRevision = 92, isStable = true,
+                projectLastSuccessfulRefreshAt = new Dictionary<string, DateTimeOffset?> { ["FHIR"] = hydratedAt.AddDays(-1) },
+            },
+        }, JsonOptions));
+        OrchestratorHydrationFetcher fetcher = new(
+            new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") }, NullLogger.Instance);
+
+        PublicationMetadataFetchResult result =
+            await fetcher.FetchPublicationMetadataAsync("FHIR-905", hydratedAt, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Null(result.UpdatedAt);
+        Assert.Equal(hydratedAt, result.HydratedAt);
+        Assert.Equal(
+            JiraSourceRevision.Compute(null, "FHIR-905", "Undated source ticket", "Triaged", "FHIR-I", "Change Request", "FHIR"),
+            result.ObservedSourceRevision);
+        Assert.Equal(64, result.ObservedSourceRevision!.Length);
+    }
+
+    [Fact]
+    public async Task FetchPublicationMetadata_RejectsUnstableOrUntrustedResponses()
+    {
+        FakeHandler handler = new();
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-902",
+            JsonMetadata(
+                [],
+                title: "Unstable",
+                url: "https://jira/browse/FHIR-902",
+                people: PeoplePayload(
+                    "present",
+                    PublicDisplayNamePolicy.CurrentVersion),
+                provenance: new
+                {
+                    source = "jira",
+                    contentRevision = 92,
+                    isStable = false,
+                    projectLastSuccessfulRefreshAt =
+                        new Dictionary<string, DateTimeOffset?>
+                        {
+                            ["FHIR"] = DateTimeOffset.UtcNow,
+                        },
+                },
+                id: "FHIR-902"));
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-903",
+            JsonMetadata(
+                [],
+                title: "Untrusted",
+                url: "https://jira/browse/FHIR-903",
+                people: PeoplePayload("missing", null),
+                provenance: new
+                {
+                    source = "jira",
+                    contentRevision = 92,
+                    isStable = true,
+                    projectLastSuccessfulRefreshAt =
+                        new Dictionary<string, DateTimeOffset?>
+                        {
+                            ["FHIR"] = DateTimeOffset.UtcNow,
+                        },
+                },
+                id: "FHIR-903"));
+        handler.AddStatusResponse(
+            "/api/v1/jira/items/FHIR-904",
+            HttpStatusCode.NotFound);
+        OrchestratorHydrationFetcher fetcher = new(
+            new HttpClient(handler)
+            {
+                BaseAddress = new Uri("http://localhost/"),
+            },
+            NullLogger.Instance);
+
+        PublicationMetadataFetchResult unstable =
+            await fetcher.FetchPublicationMetadataAsync(
+                "FHIR-902",
+                DateTimeOffset.UtcNow,
+                CancellationToken.None);
+        PublicationMetadataFetchResult untrusted =
+            await fetcher.FetchPublicationMetadataAsync(
+                "FHIR-903",
+                DateTimeOffset.UtcNow,
+                CancellationToken.None);
+        PublicationMetadataFetchResult missing =
+            await fetcher.FetchPublicationMetadataAsync(
+                "FHIR-904",
+                DateTimeOffset.UtcNow,
+                CancellationToken.None);
+
+        Assert.False(unstable.IsSuccess);
+        Assert.Equal(
+            PublicationMetadataFetchFailureReason.UnstableSource,
+            unstable.Failure!.Reason);
+        Assert.False(untrusted.IsSuccess);
+        Assert.Equal(
+            PublicationMetadataFetchFailureReason.PeoplePolicyNotCurrent,
+            untrusted.Failure!.Reason);
+        Assert.False(missing.IsSuccess);
+        Assert.Equal(
+            PublicationMetadataFetchFailureReason.TicketNotFound,
+            missing.Failure!.Reason);
+    }
+
+    [Fact]
+    public async Task HydrateWithResult_HappyPath_ReturnsPersistedBatch()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(database, "FHIR-90");
+
+        FakeHandler handler = new();
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-90",
+            JsonMetadata(
+                new Dictionary<string, string>
+                {
+                    ["status"] = "Triaged",
+                    ["type"] = "Change Request",
+                    ["work_group"] = "FHIR-I",
+                    ["specification"] = "FHIR",
+                },
+                title: "ticket",
+                url: "https://jira/browse/FHIR-90"));
+
+        PreparedTicketHydrator hydrator = CreateHydrator(database, handler);
+        HydrationAttemptResult result = await hydrator.HydrateWithResultAsync("FHIR-90", CancellationToken.None);
+
+        HydrationAttemptSuccess success = Assert.IsType<HydrationAttemptSuccess>(result);
+        Assert.Equal("FHIR-90", success.Batch.TicketKey);
+        Assert.Equal("resolved", success.Batch.Parent.HydrationStatus);
+        Assert.Single(success.Batch.JiraRows);
+
+        PreparedTicketHydrationReadModel? persisted = await database.Database.GetHydrationAsync("FHIR-90");
+        Assert.NotNull(persisted);
+        Assert.Equal(success.Batch.Parent.HydrationStatus, persisted!.Parent!.HydrationStatus);
+        Assert.Equal(success.Batch.JiraRows[0].Title, Assert.Single(persisted.JiraRows).Title);
+    }
+
+    [Fact]
+    public async Task HydrateWithResult_UnexpectedFailure_ReturnsTypedFailure()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(database, "FHIR-91");
+
+        FakeHandler handler = new();
+        handler.AddExceptionResponse("/api/v1/jira/items/FHIR-91", new InvalidOperationException("script failed"));
+
+        PreparedTicketHydrator hydrator = CreateHydrator(database, handler);
+        HydrationAttemptResult result = await hydrator.HydrateWithResultAsync("FHIR-91", CancellationToken.None);
+
+        HydrationAttemptFailure failure = Assert.IsType<HydrationAttemptFailure>(result);
+        Assert.Equal("FHIR-91", failure.TicketKey);
+        Assert.Equal(HydrationAttemptResult.UnexpectedErrorCode, failure.FailureCode);
+        Assert.Equal(nameof(InvalidOperationException), failure.ExceptionType);
+        Assert.Equal("script failed", failure.Reason);
+        Assert.Null(await database.Database.GetHydrationAsync("FHIR-91"));
+    }
+
+    [Fact]
+    public async Task Hydrate_Transient503_RetriesThenResolves()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(database, "FHIR-92");
+
+        FakeHandler handler = new();
+        handler.AddStatusResponse("/api/v1/jira/items/FHIR-92", HttpStatusCode.ServiceUnavailable, TimeSpan.Zero);
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-92",
+            JsonMetadata(
+                new Dictionary<string, string>
+                {
+                    ["status"] = "Triaged",
+                    ["type"] = "Change Request",
+                    ["work_group"] = "FHIR-I",
+                    ["specification"] = "FHIR",
+                },
+                title: "retried",
+                url: "https://jira/browse/FHIR-92"));
+
+        PreparedTicketHydrator hydrator = CreateHydrator(database, handler);
+        await hydrator.HydrateAsync("FHIR-92", CancellationToken.None);
+
+        PreparedTicketHydrationReadModel? read = await database.Database.GetHydrationAsync("FHIR-92");
+        Assert.NotNull(read);
+        Assert.Equal("resolved", read!.Parent!.HydrationStatus);
+        Assert.Equal("resolved", Assert.Single(read.JiraRows).HydrationStatus);
+        Assert.True(handler.RequestedPaths.Count(path => path == "/api/v1/jira/items/FHIR-92") >= 3);
+    }
+
     [Fact]
     public async Task Hydrate_HappyPath_WritesResolvedRowsForEverySource()
     {
@@ -28,7 +326,22 @@ public sealed class PreparedTicketHydratorTests
                 ["specification"] = "FHIR",
                 ["comment_count"] = "5",
                 ["description_plain"] = "body",
-            }, title: "parent", url: "https://jira/browse/FHIR-100"));
+                ["resolution_description"] = "<p>resolution</p>",
+                ["reporter"] = "legacy-reporter",
+                ["related_artifacts"] = "Patient, Observation",
+                ["related_pages"] = "patient.html; observation.html",
+            },
+            title: "parent",
+            url: "https://jira/browse/FHIR-100",
+            content: "<p>body</p>",
+            people: new
+            {
+                reporter = "Ada",
+                assignee = "Grace",
+                inPersonRequesters = new[] { "Ada", "Lin" },
+                publicDisplayNamePolicyVersion =
+                    PublicDisplayNamePolicy.CurrentVersion,
+            }));
         handler.AddJsonResponse("/api/v1/jira/items/FHIR-200",
             JsonMetadata(new Dictionary<string, string>
             {
@@ -36,9 +349,19 @@ public sealed class PreparedTicketHydratorTests
                 ["type"] = "Change Request",
                 ["priority"] = "Major",
                 ["work_group"] = "FHIR-I",
-            }, title: "related jira", url: "https://jira/browse/FHIR-200"));
-        handler.AddJsonResponse("/api/v1/zulip/threads",
-            """{"streamId":42,"stream":"fhir/infrastructure-wg","topic":"ballot","url":"https://chat/x","messageCount":3,"firstMessageAt":"2026-05-01T00:00:00Z","lastMessageAt":"2026-05-02T00:00:00Z","firstMessageExcerpt":"hello"}""");
+            },
+            title: "related jira",
+            url: "https://jira/browse/FHIR-200",
+            people: new
+            {
+                reporter = "Related Reporter",
+                assignee = "Related Assignee",
+                inPersonRequesters = Array.Empty<string>(),
+                publicDisplayNamePolicyVersion =
+                    PublicDisplayNamePolicy.CurrentVersion,
+            }));
+        handler.AddJsonResponse("/api/v1/zulip/references/resolve",
+            JsonSerializer.Serialize(ZulipResolution("fhir/infrastructure-wg:ballot"), JsonOptions));
         handler.AddJsonResponse("/api/v1/github/items/HL7/fhir%2342",
             JsonMetadata(new Dictionary<string, string>
             {
@@ -60,18 +383,42 @@ public sealed class PreparedTicketHydratorTests
         Assert.Equal("FHIR", read.Parent.Specification);
         Assert.Equal(5, read.Parent.CommentCount);
         Assert.Equal("body", read.Parent.DescriptionPlain);
+        Assert.Equal("<p>body</p>", read.Parent.DescriptionHtml);
+        Assert.Equal("<p>resolution</p>", read.Parent.ResolutionDescriptionHtml);
+        Assert.Equal("Ada", read.Parent.Reporter);
+        Assert.Equal("Grace", read.Parent.Assignee);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            read.Parent.PublicDisplayNamePolicyVersion);
+        Assert.Equal(
+            ["Ada", "Lin"],
+            read.InPersonRequesters.Select(row => row.DisplayName).ToArray());
+        Assert.All(
+            read.InPersonRequesters,
+            row => Assert.Equal(
+                PublicDisplayNamePolicy.CurrentVersion,
+                row.PublicDisplayNamePolicyVersion));
+        Assert.NotNull(read.Parent.CreatedAt);
+        Assert.Equal("Patient, Observation", read.Parent.RelatedArtifactsRaw);
+        Assert.Equal("patient.html; observation.html", read.Parent.RelatedPagesRaw);
         Assert.Equal(2, read.JiraRows.Count);
         PreparedJiraHydrationRow selfJira = Assert.Single(read.JiraRows, r => r.JiraKey == "FHIR-100");
         Assert.Equal("resolved", selfJira.HydrationStatus);
         PreparedJiraHydrationRow related = Assert.Single(read.JiraRows, r => r.JiraKey == "FHIR-200");
         Assert.Equal("resolved", related.HydrationStatus);
+        Assert.Equal("Related Reporter", related.Reporter);
+        Assert.Equal("Related Assignee", related.Assignee);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            related.PublicDisplayNamePolicyVersion);
         Assert.Single(read.ZulipRows);
         Assert.Equal(42, read.ZulipRows[0].StreamId);
         Assert.Equal(3, read.ZulipRows[0].MessageCount);
+        Assert.Equal("fhir/infrastructure-wg:ballot", read.ZulipRows[0].ZulipThreadId);
+        Assert.Equal("resolved", read.ZulipRows[0].HydrationStatus);
+        Assert.True(ZulipReferenceHydrationReason.Read(read.ZulipRows[0].HydrationReason).HasSourceBacking);
         Assert.Contains(handler.RequestedPathsAndQueries,
-            p => p.StartsWith("/api/v1/zulip/threads?", StringComparison.Ordinal)
-                && p.Contains("streamName=fhir%2Finfrastructure-wg", StringComparison.Ordinal)
-                && p.Contains("topic=ballot", StringComparison.Ordinal));
+            p => p == "/api/v1/zulip/references/resolve?reference=fhir%2Finfrastructure-wg%3Aballot");
         Assert.Single(read.GitHubRows);
         Assert.Equal("HL7", read.GitHubRows[0].Owner);
         Assert.Equal("fhir", read.GitHubRows[0].Repo);
@@ -80,6 +427,316 @@ public sealed class PreparedTicketHydratorTests
         Assert.Single(read.RepoRows);
         Assert.Equal("core", read.RepoRows[0].Description);
         Assert.Empty(read.JiraXrefRows);
+        using Microsoft.Data.Sqlite.SqliteConnection connection = database.Database.OpenConnection();
+        using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT DescriptionHtml, ResolutionDescriptionHtml FROM prepared_ticket_jira_content WHERE TicketKey = 'FHIR-100'";
+        using Microsoft.Data.Sqlite.SqliteDataReader content = command.ExecuteReader();
+        Assert.True(content.Read());
+        Assert.Equal("<p>body</p>", content.GetString(0));
+        Assert.Equal("<p>resolution</p>", content.GetString(1));
+        content.Close();
+        command.CommandText =
+            "SELECT GROUP_CONCAT(Value, ',') FROM (SELECT Value FROM prepared_ticket_artifacts WHERE TicketKey = 'FHIR-100' ORDER BY Value)";
+        Assert.Equal("Observation,Patient", command.ExecuteScalar());
+        command.CommandText =
+            "SELECT GROUP_CONCAT(Value, ',') FROM (SELECT Value FROM prepared_ticket_pages WHERE TicketKey = 'FHIR-100' ORDER BY Value)";
+        Assert.Equal("observation.html,patient.html", command.ExecuteScalar());
+    }
+
+    [Fact]
+    public async Task Hydrate_PersistsAssigneeAndDeduplicatedInPersonRequesters()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(database, "FHIR-109");
+        DateTimeOffset refreshAt =
+            new(2026, 9, 8, 12, 30, 0, TimeSpan.Zero);
+
+        FakeHandler handler = new();
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-109",
+            JsonMetadata(
+                new Dictionary<string, string>
+                {
+                    ["reporter"] = "private-reporter-id",
+                    ["assignee"] = "private-assignee-id",
+                },
+                title: "people",
+                url: "https://jira/browse/FHIR-109",
+                people: new
+                {
+                    reporter = "  Ada Lovelace ",
+                    assignee = " Grace Hopper  ",
+                    inPersonRequesters = new[]
+                    {
+                        "  Zoë Example ",
+                        "zoë example",
+                        "Alan Example",
+                        "alan example",
+                        " ",
+                    },
+                    publicDisplayNamePolicyVersion =
+                        PublicDisplayNamePolicy.CurrentVersion,
+                },
+                provenance: new
+                {
+                    source = "jira",
+                    contentRevision = 42,
+                    isStable = true,
+                    projectLastSuccessfulRefreshAt =
+                        new Dictionary<string, DateTimeOffset?>
+                        {
+                            ["FHIR"] = refreshAt,
+                        },
+                }));
+
+        PreparedTicketHydrator hydrator = CreateHydrator(database, handler);
+        HydrationAttemptSuccess success =
+            Assert.IsType<HydrationAttemptSuccess>(
+                await hydrator.HydrateWithResultAsync(
+                    "FHIR-109",
+                    CancellationToken.None));
+
+        PreparedTicketHydrationReadModel read = Assert.IsType<PreparedTicketHydrationReadModel>(
+            await database.Database.GetHydrationAsync("FHIR-109"));
+        Assert.Equal("private-reporter-id", success.Batch.Parent.Reporter);
+        Assert.Equal(
+            "Ada Lovelace",
+            success.Batch.Parent.StructuredReporter);
+        Assert.Equal("Ada Lovelace", read.Parent!.Reporter);
+        Assert.Equal("Grace Hopper", read.Parent.Assignee);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            read.Parent.PublicDisplayNamePolicyVersion);
+        Assert.Equal("FHIR", read.Parent.SourceProject);
+        Assert.Equal(refreshAt, read.Parent.SourceLastSuccessfulRefreshAt);
+        Assert.Equal(42, read.Parent.SourceContentRevision);
+        Assert.Equal(
+            ["Alan Example", "Zoë Example"],
+            read.InPersonRequesters.Select(row => row.DisplayName).ToArray());
+        PreparedJiraHydrationRow self = Assert.Single(read.JiraRows);
+        Assert.Equal("Ada Lovelace", self.Reporter);
+        Assert.Equal("Grace Hopper", self.Assignee);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            self.PublicDisplayNamePolicyVersion);
+        Assert.DoesNotContain(
+            read.InPersonRequesters,
+            row => row.DisplayName.Contains("private", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Hydrate_CurrentPolicyRejectsEmailValuedPeopleForParentAndRelatedJira()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(
+            database,
+            "FHIR-111",
+            jiraKey: "FHIR-211");
+
+        FakeHandler handler = new();
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-111",
+            JsonMetadata(
+                [],
+                title: "parent",
+                url: "https://jira/browse/FHIR-111",
+                people: new
+                {
+                    reporter = "Ada <ada@example.org>",
+                    assignee = "grace@example.org",
+                    inPersonRequesters = new[]
+                    {
+                        "Safe Requester",
+                        "Unsafe <unsafe@example.org>",
+                    },
+                    publicDisplayNamePolicyVersion =
+                        PublicDisplayNamePolicy.CurrentVersion,
+                }));
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-211",
+            JsonMetadata(
+                [],
+                title: "related",
+                url: "https://jira/browse/FHIR-211",
+                people: new
+                {
+                    reporter = "related@example.org",
+                    assignee = "Related Assignee",
+                    inPersonRequesters = Array.Empty<string>(),
+                    publicDisplayNamePolicyVersion =
+                        PublicDisplayNamePolicy.CurrentVersion,
+                }));
+
+        PreparedTicketHydrator hydrator = CreateHydrator(database, handler);
+        HydrationAttemptSuccess success =
+            Assert.IsType<HydrationAttemptSuccess>(
+                await hydrator.HydrateWithResultAsync(
+                    "FHIR-111",
+                    CancellationToken.None));
+
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            success.Batch.Parent.PublicDisplayNamePolicyVersion);
+        Assert.Null(success.Batch.Parent.StructuredReporter);
+        Assert.Null(success.Batch.Parent.Assignee);
+        Assert.Equal(
+            ["Safe Requester"],
+            success.Batch.Parent.InPersonRequesters);
+        HydrationJiraRow relatedNeutral = Assert.Single(
+            success.Batch.JiraRows,
+            row => row.JiraKey == "FHIR-211");
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            relatedNeutral.PublicDisplayNamePolicyVersion);
+        Assert.Null(relatedNeutral.StructuredReporter);
+        Assert.Equal("Related Assignee", relatedNeutral.Assignee);
+
+        PreparedTicketHydrationReadModel read =
+            Assert.IsType<PreparedTicketHydrationReadModel>(
+                await database.Database.GetHydrationAsync("FHIR-111"));
+        Assert.Null(read.Parent!.Reporter);
+        Assert.Null(read.Parent.Assignee);
+        PreparedTicketInPersonRequesterRow requester =
+            Assert.Single(read.InPersonRequesters);
+        Assert.Equal("Safe Requester", requester.DisplayName);
+        Assert.Equal(
+            PublicDisplayNamePolicy.CurrentVersion,
+            requester.PublicDisplayNamePolicyVersion);
+        PreparedJiraHydrationRow related = Assert.Single(
+            read.JiraRows,
+            row => row.JiraKey == "FHIR-211");
+        Assert.Null(related.Reporter);
+        Assert.Equal("Related Assignee", related.Assignee);
+    }
+
+    public static TheoryData<string, int?> NonCurrentPeoplePolicyVersions =>
+        new()
+        {
+            { "missing", null },
+            { "old", PublicDisplayNamePolicy.CurrentVersion - 1 },
+            { "unknown", -17 },
+            { "future", PublicDisplayNamePolicy.CurrentVersion + 1 },
+        };
+
+    [Theory]
+    [MemberData(nameof(NonCurrentPeoplePolicyVersions))]
+    public async Task Hydrate_NonCurrentPolicyRejectsCompletePeoplePayload(
+        string markerKind,
+        int? policyVersion)
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(
+            database,
+            "FHIR-112",
+            jiraKey: "FHIR-212");
+        object people = PeoplePayload(markerKind, policyVersion);
+
+        FakeHandler handler = new();
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-112",
+            JsonMetadata(
+                [],
+                title: "parent",
+                url: "https://jira/browse/FHIR-112",
+                people: people));
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-212",
+            JsonMetadata(
+                [],
+                title: "related",
+                url: "https://jira/browse/FHIR-212",
+                people: people));
+
+        PreparedTicketHydrator hydrator = CreateHydrator(database, handler);
+        HydrationAttemptSuccess success =
+            Assert.IsType<HydrationAttemptSuccess>(
+                await hydrator.HydrateWithResultAsync(
+                    "FHIR-112",
+                    CancellationToken.None));
+
+        Assert.Null(success.Batch.Parent.PublicDisplayNamePolicyVersion);
+        Assert.Null(success.Batch.Parent.StructuredReporter);
+        Assert.Null(success.Batch.Parent.Assignee);
+        Assert.Empty(success.Batch.Parent.InPersonRequesters!);
+        Assert.All(
+            success.Batch.JiraRows,
+            row =>
+            {
+                Assert.Null(row.PublicDisplayNamePolicyVersion);
+                Assert.Null(row.StructuredReporter);
+                Assert.Null(row.Assignee);
+            });
+
+        PreparedTicketHydrationReadModel read =
+            Assert.IsType<PreparedTicketHydrationReadModel>(
+                await database.Database.GetHydrationAsync("FHIR-112"));
+        Assert.Null(read.Parent!.PublicDisplayNamePolicyVersion);
+        Assert.Null(read.Parent.Reporter);
+        Assert.Null(read.Parent.Assignee);
+        Assert.Empty(read.InPersonRequesters);
+        Assert.All(
+            read.JiraRows,
+            row =>
+            {
+                Assert.Null(row.PublicDisplayNamePolicyVersion);
+                Assert.Null(row.Reporter);
+                Assert.Null(row.Assignee);
+            });
+    }
+
+    [Fact]
+    public async Task Hydrate_DoesNotFallbackToLegacyPeopleOrUnstableProvenance()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(database, "FHIR-110");
+
+        FakeHandler handler = new();
+        handler.AddJsonResponse(
+            "/api/v1/jira/items/FHIR-110",
+            JsonMetadata(
+                new Dictionary<string, string>
+                {
+                    ["reporter"] = "legacy-reporter",
+                    ["assignee"] = "legacy-assignee",
+                },
+                title: "legacy only",
+                url: "https://jira/browse/FHIR-110",
+                provenance: new
+                {
+                    source = "jira",
+                    contentRevision = 99,
+                    isStable = false,
+                    projectLastSuccessfulRefreshAt =
+                        new Dictionary<string, DateTimeOffset?>
+                        {
+                            ["FHIR"] = DateTimeOffset.UtcNow,
+                        },
+                }));
+
+        PreparedTicketHydrator hydrator = CreateHydrator(database, handler);
+        HydrationAttemptSuccess success =
+            Assert.IsType<HydrationAttemptSuccess>(
+                await hydrator.HydrateWithResultAsync(
+                    "FHIR-110",
+                    CancellationToken.None));
+
+        PreparedTicketHydrationReadModel read = Assert.IsType<PreparedTicketHydrationReadModel>(
+            await database.Database.GetHydrationAsync("FHIR-110"));
+        Assert.Equal("legacy-reporter", success.Batch.Parent.Reporter);
+        Assert.Null(success.Batch.Parent.StructuredReporter);
+        Assert.Null(read.Parent!.Reporter);
+        Assert.Null(read.Parent.Assignee);
+        Assert.Null(read.Parent.SourceProject);
+        Assert.Null(read.Parent.SourceLastSuccessfulRefreshAt);
+        Assert.Null(read.Parent.SourceContentRevision);
+        Assert.Empty(read.InPersonRequesters);
+        HydrationJiraRow neutralSelf = Assert.Single(success.Batch.JiraRows);
+        Assert.Equal("legacy-reporter", neutralSelf.Reporter);
+        Assert.Null(neutralSelf.StructuredReporter);
+        PreparedJiraHydrationRow self = Assert.Single(read.JiraRows);
+        Assert.Null(self.Reporter);
+        Assert.Null(self.Assignee);
     }
 
     [Fact]
@@ -144,6 +801,12 @@ public sealed class PreparedTicketHydratorTests
 
         FakeHandler handler = new();
         handler.AddJsonResponse("/api/v1/jira/items/FHIR-103", JsonMetadata([], title: "p", url: "x"));
+        handler.AddJsonResponse("/api/v1/zulip/references/resolve",
+            JsonSerializer.Serialize(new ZulipReferenceResolutionResponse
+            {
+                Reference = "no-colon-here",
+                Outcome = ZulipReferenceLookupOutcome.UnsupportedReference,
+            }, JsonOptions), HttpStatusCode.BadRequest);
 
         PreparedTicketHydrator hydrator = CreateHydrator(database, handler);
         await hydrator.HydrateAsync("FHIR-103", CancellationToken.None);
@@ -152,7 +815,145 @@ public sealed class PreparedTicketHydratorTests
         Assert.NotNull(read);
         Assert.Single(read!.ZulipRows);
         Assert.Equal("unresolved", read.ZulipRows[0].HydrationStatus);
-        Assert.Equal("malformed thread id", read.ZulipRows[0].HydrationReason);
+        Assert.Equal("no-colon-here", read.ZulipRows[0].ZulipThreadId);
+        Assert.Equal(ZulipReferenceLookupOutcome.UnsupportedReference, ReadZulipOutcome(read.ZulipRows[0]).LatestOutcome);
+        Assert.False(ZulipReferenceHydrationReason.Read(read.ZulipRows[0].HydrationReason).HasSourceBacking);
+        Assert.Contains("/api/v1/zulip/references/resolve?reference=no-colon-here", handler.RequestedPathsAndQueries);
+    }
+
+    [Theory]
+    [InlineData("321987", "fhir/infrastructure-wg", "ballot")]
+    [InlineData("000321987", "fhir/infrastructure-wg", "ballot")]
+    [InlineData(" 321987 ", "fhir/infrastructure-wg", "ballot")]
+    [InlineData("fhir:core:entry/request: réponse %2F 🩺", "fhir:core", "entry/request: réponse %2F 🩺")]
+    public async Task Hydrate_ZulipResolution_PreservesAcceptedReferenceAndAnalysis(string reference, string stream, string topic)
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(database, "FHIR-120", zulipThread: reference);
+        AcceptedZulipState before = ReadAcceptedZulipState(database.Database, "FHIR-120");
+        FakeHandler handler = new();
+        handler.AddJsonResponse("/api/v1/jira/items/FHIR-120", JsonMetadata([], "parent", "https://jira/browse/FHIR-120"));
+        ZulipReferenceResolutionResponse response = ZulipResolution(reference, stream, topic);
+        handler.AddJsonResponse("/api/v1/zulip/references/resolve", JsonSerializer.Serialize(response, JsonOptions));
+
+        await CreateHydrator(database, handler).HydrateAsync("FHIR-120", default);
+
+        PreparedTicketHydrationReadModel read = Assert.IsType<PreparedTicketHydrationReadModel>(
+            await database.Database.GetHydrationAsync("FHIR-120"));
+        PreparedZulipHydrationRow row = Assert.Single(read.ZulipRows);
+        Assert.Equal(reference, row.ZulipThreadId);
+        Assert.Equal(stream, row.StreamName);
+        Assert.Equal(topic, row.Topic);
+        Assert.Equal(response.Url, row.Url);
+        Assert.Equal("resolved", row.HydrationStatus);
+        Assert.Equal(42, row.StreamId);
+        Assert.Equal(response.FirstMessageAt, row.FirstMessageAt);
+        Assert.Equal(response.LastMessageAt, row.LastMessageAt);
+        Assert.Equal(ZulipReferenceBacking.TypedResolver, ReadZulipOutcome(row).Backing);
+        Assert.Equal(before, ReadAcceptedZulipState(database.Database, "FHIR-120"));
+        Assert.Equal(reference, before.Reference);
+        Assert.Equal(
+            $"/api/v1/zulip/references/resolve?reference={Uri.EscapeDataString(reference)}",
+            Assert.Single(handler.RequestedPathsAndQueries, path => path.StartsWith("/api/v1/zulip/", StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData("not-found", ZulipReferenceLookupOutcome.NotFound)]
+    [InlineData("auth", ZulipReferenceLookupOutcome.AuthenticationFailed)]
+    [InlineData("transient", ZulipReferenceLookupOutcome.TransientFailure)]
+    [InlineData("timeout", ZulipReferenceLookupOutcome.Timeout)]
+    [InlineData("invalid-json", ZulipReferenceLookupOutcome.InvalidJson)]
+    [InlineData("empty", ZulipReferenceLookupOutcome.InvalidEnvelope)]
+    [InlineData("mismatched", ZulipReferenceLookupOutcome.InvalidEnvelope)]
+    [InlineData("zero-messages", ZulipReferenceLookupOutcome.InvalidEnvelope)]
+    public async Task Hydrate_ZulipFailure_PersistsSpecificUnresolvedAssociation(string fixture, ZulipReferenceLookupOutcome expected)
+    {
+        const string path = "/api/v1/zulip/references/resolve";
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(database, "FHIR-121", zulipThread: "321987");
+        AcceptedZulipState before = ReadAcceptedZulipState(database.Database, "FHIR-121");
+        FakeHandler handler = new();
+        handler.AddJsonResponse("/api/v1/jira/items/FHIR-121", JsonMetadata([], "parent", "https://jira/browse/FHIR-121"));
+        switch (fixture)
+        {
+            case "not-found": handler.AddStatusResponse(path, HttpStatusCode.NotFound); break;
+            case "auth": handler.AddStatusResponse(path, HttpStatusCode.Forbidden); break;
+            case "transient": handler.AddStatusResponse(path, HttpStatusCode.ServiceUnavailable, TimeSpan.Zero); break;
+            case "timeout": handler.AddExceptionResponse(path, new OperationCanceledException("scripted timeout")); break;
+            case "invalid-json": handler.AddJsonResponse(path, "{"); break;
+            case "empty": handler.AddJsonResponse(path, "{}"); break;
+            case "mismatched": handler.AddJsonResponse(path, JsonSerializer.Serialize(ZulipResolution("321988"), JsonOptions)); break;
+            case "zero-messages": handler.AddJsonResponse(path,
+                JsonSerializer.Serialize(ZulipResolution("321987") with { MessageCount = 0 }, JsonOptions)); break;
+            default: throw new InvalidOperationException(fixture);
+        }
+
+        await CreateHydrator(database, handler).HydrateAsync("FHIR-121", default);
+
+        PreparedTicketHydrationReadModel read = Assert.IsType<PreparedTicketHydrationReadModel>(
+            await database.Database.GetHydrationAsync("FHIR-121"));
+        PreparedZulipHydrationRow row = Assert.Single(read.ZulipRows);
+        Assert.Equal("321987", row.ZulipThreadId);
+        Assert.Equal("unresolved", row.HydrationStatus);
+        Assert.Equal(expected, ReadZulipOutcome(row).LatestOutcome);
+        Assert.Equal(ZulipReferenceBacking.None, ReadZulipOutcome(row).Backing);
+        Assert.Null(row.Url);
+        Assert.Equal("resolved", read.Parent!.HydrationStatus);
+        Assert.Equal(before, ReadAcceptedZulipState(database.Database, "FHIR-121"));
+    }
+
+    [Fact]
+    public async Task Hydrate_ZulipTransient503_RetriesThenPersistsResolution()
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(database, "FHIR-122", zulipThread: "321987");
+        FakeHandler handler = new();
+        handler.AddJsonResponse("/api/v1/jira/items/FHIR-122", JsonMetadata([], "parent", "https://jira/browse/FHIR-122"));
+        handler.AddStatusResponse("/api/v1/zulip/references/resolve", HttpStatusCode.ServiceUnavailable, TimeSpan.Zero);
+        handler.AddJsonResponse("/api/v1/zulip/references/resolve",
+            JsonSerializer.Serialize(ZulipResolution("321987"), JsonOptions));
+
+        await CreateHydrator(database, handler).HydrateAsync("FHIR-122", default);
+
+        PreparedTicketHydrationReadModel read = Assert.IsType<PreparedTicketHydrationReadModel>(
+            await database.Database.GetHydrationAsync("FHIR-122"));
+        PreparedZulipHydrationRow row = Assert.Single(read.ZulipRows);
+        Assert.Equal("resolved", row.HydrationStatus);
+        Assert.Equal(ZulipReferenceLookupOutcome.Resolved, ReadZulipOutcome(row).LatestOutcome);
+        Assert.Equal(2, handler.RequestedPaths.Count(path => path == "/api/v1/zulip/references/resolve"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Hydrate_ZulipBackingDoesNotDependOnOptionalDetails(bool invalidTimestamp)
+    {
+        using TestDatabase database = CreateDatabase();
+        await SeedAgentRowsAsync(database, "FHIR-123", zulipThread: "321987");
+        FakeHandler handler = new();
+        handler.AddJsonResponse("/api/v1/jira/items/FHIR-123", JsonMetadata([], "parent", "https://jira/browse/FHIR-123"));
+        handler.AddJsonResponse("/api/v1/zulip/references/resolve",
+            JsonSerializer.Serialize(ZulipResolution("321987") with
+            {
+                MessageCount = null,
+                FirstMessageAt = null,
+                LastMessageAt = null,
+                FirstMessageExcerpt = null,
+                Diagnostics = invalidTimestamp ? [ZulipReferenceDiagnosticCode.InvalidTimestamp] : [],
+            }, JsonOptions));
+
+        await CreateHydrator(database, handler).HydrateAsync("FHIR-123", default);
+
+        PreparedTicketHydrationReadModel read = Assert.IsType<PreparedTicketHydrationReadModel>(
+            await database.Database.GetHydrationAsync("FHIR-123"));
+        PreparedZulipHydrationRow row = Assert.Single(read.ZulipRows);
+        Assert.Equal("resolved", row.HydrationStatus);
+        Assert.Null(row.MessageCount);
+        Assert.Null(row.FirstMessageAt);
+        Assert.Null(row.LastMessageAt);
+        Assert.EndsWith("/near/321987", row.Url);
+        Assert.True(ZulipReferenceHydrationReason.Read(row.HydrationReason).HasSourceBacking);
+        Assert.Equal(invalidTimestamp ? [ZulipReferenceDiagnosticCode.InvalidTimestamp] : [], ReadZulipOutcome(row).Diagnostics);
     }
 
     [Fact]
@@ -325,6 +1126,49 @@ public sealed class PreparedTicketHydratorTests
         return new PreparedTicketHydrator(client, database.Database, NullLogger<PreparedTicketHydrator>.Instance);
     }
 
+    private static ZulipReferenceResolutionResponse ZulipResolution(
+        string reference, string stream = "fhir/infrastructure-wg", string topic = "ballot")
+    {
+        bool isMessage = ZulipReferenceContract.TryGetMessageId(reference, out int messageId);
+        string url = $"https://chat.example.com/#narrow/stream/{Uri.EscapeDataString(stream)}/topic/{Uri.EscapeDataString(topic)}";
+        return new ZulipReferenceResolutionResponse
+        {
+            Reference = reference,
+            Outcome = ZulipReferenceLookupOutcome.Resolved,
+            Kind = isMessage ? ZulipReferenceKind.Message : ZulipReferenceKind.Thread,
+            MessageId = isMessage ? messageId : null,
+            StreamId = 42,
+            StreamName = stream,
+            Topic = topic,
+            Url = isMessage ? $"{url}/near/{messageId}" : url,
+            MessageCount = 3,
+            FirstMessageAt = new DateTimeOffset(2026, 5, 1, 0, 0, 0, TimeSpan.Zero),
+            LastMessageAt = new DateTimeOffset(2026, 5, 2, 0, 0, 0, TimeSpan.Zero),
+            FirstMessageExcerpt = "hello",
+        };
+    }
+
+    private static ZulipReferenceHydrationOutcome ReadZulipOutcome(PreparedZulipHydrationRow row) =>
+        Assert.IsType<ZulipReferenceHydrationOutcome>(ZulipReferenceHydrationReason.Read(row.HydrationReason).Metadata);
+
+    private static AcceptedZulipState ReadAcceptedZulipState(PreparerDatabase database, string ticketKey)
+    {
+        using SqliteConnection connection = database.OpenConnection();
+        using SqliteCommand command = new("""
+            SELECT r.Id, r.ZulipThreadId, r.Justification, t.RelatedZulipSummary, t.ProposalA
+            FROM prepared_ticket_related_zulip r JOIN prepared_tickets t ON t.Key = r.TicketKey
+            WHERE r.TicketKey = @key
+            """, connection);
+        command.Parameters.AddWithValue("@key", ticketKey);
+        using SqliteDataReader reader = command.ExecuteReader();
+        Assert.True(reader.Read());
+        AcceptedZulipState state = new(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4));
+        Assert.False(reader.Read());
+        return state;
+    }
+
+    private sealed record AcceptedZulipState(string Id, string Reference, string Justification, string Summary, string Proposal);
+
     private static async Task SeedAgentRowsAsync(TestDatabase database, string ticketKey, string? jiraKey = null, string? zulipThread = null, string? githubItem = null, string? repo = null)
     {
         PreparedTicketPayload payload = new()
@@ -356,16 +1200,46 @@ public sealed class PreparedTicketHydratorTests
         await database.Database.SavePreparedTicketAsync(payload);
     }
 
-    private static string JsonMetadata(Dictionary<string, string> metadata, string title, string url)
+    private static string JsonMetadata(
+        Dictionary<string, string> metadata,
+        string title,
+        string url,
+        string? content = null,
+        object? people = null,
+        object? provenance = null,
+        DateTimeOffset? updatedAt = null,
+        string id = "x")
     {
         var payload = new
         {
-            id = "x",
+            id,
             title,
+            content,
             url,
+            createdAt = "2026-04-01T00:00:00Z",
+            updatedAt,
             metadata,
+            people,
+            provenance,
         };
         return JsonSerializer.Serialize(payload);
+    }
+
+    private static object PeoplePayload(
+        string markerKind,
+        int? policyVersion)
+    {
+        Dictionary<string, object?> people = new()
+        {
+            ["reporter"] = "Reporter Person",
+            ["assignee"] = "Assignee Person",
+            ["inPersonRequesters"] = new[] { "Requester Person" },
+        };
+        if (!string.Equals(markerKind, "missing", StringComparison.Ordinal))
+        {
+            people["publicDisplayNamePolicyVersion"] = policyVersion;
+        }
+        return people;
     }
 
     private static TestDatabase CreateDatabase()
@@ -391,19 +1265,30 @@ public sealed class PreparedTicketHydratorTests
 
     private sealed class FakeHandler : HttpMessageHandler
     {
-        private readonly Dictionary<string, ScriptedResponse> _byPath = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, Queue<ScriptedResponse>> _byPath = new(StringComparer.Ordinal);
 
         public List<string> RequestedPaths { get; } = [];
         public List<string> RequestedPathsAndQueries { get; } = [];
 
-        public void AddJsonResponse(string path, string json)
-            => _byPath[path] = new ScriptedResponse(HttpStatusCode.OK, json, null);
+        public void AddJsonResponse(string path, string json, HttpStatusCode statusCode = HttpStatusCode.OK)
+            => AddResponse(path, new ScriptedResponse(statusCode, json, null, null));
 
-        public void AddStatusResponse(string path, HttpStatusCode statusCode)
-            => _byPath[path] = new ScriptedResponse(statusCode, null, null);
+        public void AddStatusResponse(string path, HttpStatusCode statusCode, TimeSpan? retryAfter = null)
+            => AddResponse(path, new ScriptedResponse(statusCode, null, null, retryAfter));
 
         public void AddExceptionResponse(string path, Exception exception)
-            => _byPath[path] = new ScriptedResponse(HttpStatusCode.OK, null, exception);
+            => AddResponse(path, new ScriptedResponse(HttpStatusCode.OK, null, exception, null));
+
+        private void AddResponse(string path, ScriptedResponse response)
+        {
+            if (!_byPath.TryGetValue(path, out Queue<ScriptedResponse>? responses))
+            {
+                responses = new Queue<ScriptedResponse>();
+                _byPath[path] = responses;
+            }
+
+            responses.Enqueue(response);
+        }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -411,7 +1296,7 @@ public sealed class PreparedTicketHydratorTests
             RequestedPaths.Add(path);
             RequestedPathsAndQueries.Add(request.RequestUri?.PathAndQuery ?? path);
 
-            if (!_byPath.TryGetValue(path, out ScriptedResponse? scripted))
+            if (!_byPath.TryGetValue(path, out Queue<ScriptedResponse>? responses) || responses.Count == 0)
             {
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)
                 {
@@ -419,6 +1304,7 @@ public sealed class PreparedTicketHydratorTests
                 });
             }
 
+            ScriptedResponse scripted = responses.Count > 1 ? responses.Dequeue() : responses.Peek();
             if (scripted.Exception is not null)
             {
                 throw scripted.Exception;
@@ -429,10 +1315,18 @@ public sealed class PreparedTicketHydratorTests
             {
                 response.Content = new StringContent(scripted.Json, Encoding.UTF8, "application/json");
             }
+            if (scripted.RetryAfter is { } retryAfter)
+            {
+                response.Headers.RetryAfter = new RetryConditionHeaderValue(retryAfter);
+            }
 
             return Task.FromResult(response);
         }
 
-        private sealed record ScriptedResponse(HttpStatusCode StatusCode, string? Json, Exception? Exception);
+        private sealed record ScriptedResponse(
+            HttpStatusCode StatusCode,
+            string? Json,
+            Exception? Exception,
+            TimeSpan? RetryAfter);
     }
 }

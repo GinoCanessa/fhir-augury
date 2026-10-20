@@ -18,16 +18,23 @@
     <Project Path="src/FhirAugury.Parsing.Fhir/FhirAugury.Parsing.Fhir.csproj" />
     <Project Path="src/FhirAugury.Parsing.Fsh/FhirAugury.Parsing.Fsh.csproj" />
     <Project Path="src/FhirAugury.Parsing.Xml/FhirAugury.Parsing.Xml.csproj" />
+    <Project Path="src/FhirAugury.Processing.Contracts/FhirAugury.Processing.Contracts.csproj" />
+    <Project Path="src/FhirAugury.Processing.Client/FhirAugury.Processing.Client.csproj" />
+    <Project Path="src/FhirAugury.Publishing.Tickets/FhirAugury.Publishing.Tickets.csproj" />
     <Project Path="src/FhirAugury.Processing.Common/FhirAugury.Processing.Common.csproj" />
     <Project Path="src/FhirAugury.Processing.Jira.Common/FhirAugury.Processing.Jira.Common.csproj" />
+    <Project Path="src/FhirAugury.Processor.Jira.Fhir.Preparer.Contracts/FhirAugury.Processor.Jira.Fhir.Preparer.Contracts.csproj" />
     <Project Path="src/FhirAugury.Processor.Jira.Fhir.Preparer.Persistence/FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.csproj" />
     <Project Path="src/FhirAugury.Processor.Jira.Fhir.Hydration.Common/FhirAugury.Processor.Jira.Fhir.Hydration.Common.csproj" />
     <Project Path="src/FhirAugury.Processor.Jira.Fhir.Preparer.Hydration/FhirAugury.Processor.Jira.Fhir.Preparer.Hydration.csproj" />
     <Project Path="src/FhirAugury.Processor.Jira.Fhir.Preparer/FhirAugury.Processor.Jira.Fhir.Preparer.csproj" />
+    <Project Path="src/FhirAugury.Processor.Jira.Fhir.Planner.Contracts/FhirAugury.Processor.Jira.Fhir.Planner.Contracts.csproj" />
     <Project Path="src/FhirAugury.Processor.Jira.Fhir.Planner.Persistence/FhirAugury.Processor.Jira.Fhir.Planner.Persistence.csproj" />
     <Project Path="src/FhirAugury.Processor.Jira.Fhir.Planner.Hydration/FhirAugury.Processor.Jira.Fhir.Planner.Hydration.csproj" />
     <Project Path="src/FhirAugury.Processor.Jira.Fhir.Planner/FhirAugury.Processor.Jira.Fhir.Planner.csproj" />
     <Project Path="src/FhirAugury.Processor.Jira.Fhir.Applier/FhirAugury.Processor.Jira.Fhir.Applier.csproj" />
+    <Project Path="src/FhirAugury.Server.Terminology/FhirAugury.Server.Terminology.csproj" />
+    <Project Path="src/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Contracts.csproj" />
     <Project Path="src/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Persistence.csproj" />
     <Project Path="src/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Hydration.csproj" />
     <Project Path="src/FhirAugury.Processor.GitHub.Fhir.BallotNotes/FhirAugury.Processor.GitHub.Fhir.BallotNotes.csproj" />
@@ -47,16 +54,20 @@
     <Project Path="tests/FhirAugury.Parsing.Fsh.Tests/FhirAugury.Parsing.Fsh.Tests.csproj" />
     <Project Path="tests/FhirAugury.Parsing.Xml.Tests/FhirAugury.Parsing.Xml.Tests.csproj" />
     <Project Path="tests/FhirAugury.DevUi.Tests/FhirAugury.DevUi.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Processing.Client.Tests/FhirAugury.Processing.Client.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Publishing.Tickets.Tests/FhirAugury.Publishing.Tickets.Tests.csproj" />
     <Project Path="tests/FhirAugury.Processing.Common.Tests/FhirAugury.Processing.Common.Tests.csproj" />
     <Project Path="tests/FhirAugury.Processing.Jira.Common.Tests/FhirAugury.Processing.Jira.Common.Tests.csproj" />
     <Project Path="tests/FhirAugury.Processor.Jira.Fhir.Preparer.Tests/FhirAugury.Processor.Jira.Fhir.Preparer.Tests.csproj" />
     <Project Path="tests/FhirAugury.Processor.Jira.Fhir.Planner.Tests/FhirAugury.Processor.Jira.Fhir.Planner.Tests.csproj" />
     <Project Path="tests/FhirAugury.Processor.Jira.Fhir.Applier.Tests/FhirAugury.Processor.Jira.Fhir.Applier.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Server.Terminology.Tests/FhirAugury.Server.Terminology.Tests.csproj" />
     <Project Path="tests/FhirAugury.Testing.Sqlite/FhirAugury.Testing.Sqlite.csproj" />
     <Project Path="tests/FhirAugury.Tools.TicketSite.Tests/FhirAugury.Tools.TicketSite.Tests.csproj" />
     <Project Path="tests/FhirAugury.Tools.FhirSpecReview.Tests/FhirAugury.Tools.FhirSpecReview.Tests.csproj" />
     <Project Path="tests/FhirAugury.Tools.NotesSite.Tests/FhirAugury.Tools.NotesSite.Tests.csproj" />
     <Project Path="tests/FhirAugury.Tools.BallotNotesReallocateWg.Tests/FhirAugury.Tools.BallotNotesReallocateWg.Tests.csproj" />
+    <Project Path="tests/FhirAugury.Tools.IngestionToggle.Tests/FhirAugury.Tools.IngestionToggle.Tests.csproj" />
     <Project Path="tests/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Tests/FhirAugury.Processor.GitHub.Fhir.BallotNotes.Tests.csproj" />
   </Folder>
   <Folder Name="/tools/">
@@ -65,6 +76,7 @@
     <Project Path="tools/ticket-site/ticket-site.csproj" />
     <Project Path="tools/fhir-spec-review/fhir-spec-review.csproj" />
     <Project Path="tools/dictionary-build/dictionary-build.csproj" />
+    <Project Path="tools/ingestion-toggle/ingestion-toggle.csproj" />
   </Folder>
   <Folder Name="/Solution Items/">
     <File Path=".gitignore" />
@@ -73,5 +85,3 @@
     <File Path="src/common.props" />
   </Folder>
 </Solution>
-
-

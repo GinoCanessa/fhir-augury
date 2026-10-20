@@ -129,7 +129,26 @@ family are identical to Jira (same shapes, same routes).
 ## Confluence (`src/FhirAugury.Source.Confluence/Controllers/`, port :5180)
 
 The cross-source `content/...` family and the lifecycle / ingestion
-family are identical to Jira.
+family are identical to Jira, with two Confluence-only additions below.
+
+### Ingestion block (Confluence-only)
+
+HL7's Confluence sits behind an AWS WAF that can answer with `405` plus an
+`x-amzn-waf-action` header — an edge captcha challenge. The source stops on the
+first such response and parks until a human clears it. See
+[Confluence API notes](confluence-api-notes.md#the-same-gate-can-close-again-mid-run--the-ingestion-block).
+
+| Method | Route |
+|--------|-------|
+| GET  | `api/v1/ingestion-block` (always 200; `blocked` is false when ingestion is free to run) |
+| POST | `api/v1/ingestion-block/clear` (accepts `?clearedBy=`; `wasBlocked` reports whether anything was standing) |
+
+While the block stands, `POST api/v1/ingest` and `POST api/v1/ingest/trigger`
+return **`412 Precondition Failed`**, `api/v1/status` reports
+`blocked_by_human_challenge`, and `api/v1/health` reports `degraded`.
+`api/v1/rebuild`, `api/v1/rebuild-index`, `api/v1/notify-peer` and every read
+endpoint stay available — the block is about outgoing HTTP, not about the
+service being unwell.
 
 ### Items
 

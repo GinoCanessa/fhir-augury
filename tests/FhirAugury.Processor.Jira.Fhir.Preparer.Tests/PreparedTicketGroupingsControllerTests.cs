@@ -3,6 +3,7 @@ using FhirAugury.Processor.Jira.Fhir.Preparer.Api;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Controllers;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Database;
+using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -27,23 +28,19 @@ public sealed class PreparedTicketGroupingsControllerTests
     }
 
     [Fact]
-    public async Task PutPartition_ReturnsOkAndRoundTrips()
+    public async Task GetPartition_RoundTripsPersistedGrouping()
     {
         using TestDatabase test = CreateDatabase();
         await SeedPreparedTicketAsync(test.Database, "FHIR-1");
         await SeedPreparedTicketAsync(test.Database, "FHIR-2");
-        PreparedTicketGroupingsController controller = new(test.Database);
-
         PreparedTicketGroupingPutRequest request = MinimalRequest();
-
-        ActionResult<PreparedTicketGroupingSaveResultDto> putResult = await controller.PutPartition(WorkGroupClean, Specification, Type, request, CancellationToken.None);
-
-        OkObjectResult ok = Assert.IsType<OkObjectResult>(putResult.Result);
-        PreparedTicketGroupingSaveResultDto save = Assert.IsType<PreparedTicketGroupingSaveResultDto>(ok.Value);
+        PreparedTicketGroupingSaveResult save =
+            await SaveAsync(test.Database, request);
         Assert.Equal(1, save.TopicRows);
         Assert.Equal(1, save.TopicGroupRows);
         Assert.Equal(2, save.MemberRows);
 
+        PreparedTicketGroupingsController controller = new(test.Database);
         ActionResult<PreparedTicketGroupingPartitionDto> getResult = await controller.GetPartition(WorkGroupClean, Specification, Type, CancellationToken.None);
         OkObjectResult getOk = Assert.IsType<OkObjectResult>(getResult.Result);
         PreparedTicketGroupingPartitionDto partition = Assert.IsType<PreparedTicketGroupingPartitionDto>(getOk.Value);
@@ -56,12 +53,10 @@ public sealed class PreparedTicketGroupingsControllerTests
     }
 
     [Fact]
-    public async Task PutPartition_ReturnsBadRequestForUnknownTicketKey()
+    public async Task PersistenceRejectsUnknownTicketKey()
     {
         using TestDatabase test = CreateDatabase();
         await SeedPreparedTicketAsync(test.Database, "FHIR-1");
-        PreparedTicketGroupingsController controller = new(test.Database);
-
         PreparedTicketGroupingPutRequest request = new(
             WorkGroupDisplay,
             [
@@ -81,11 +76,9 @@ public sealed class PreparedTicketGroupingsControllerTests
                     []),
             ]);
 
-        ActionResult<PreparedTicketGroupingSaveResultDto> result = await controller.PutPartition(WorkGroupClean, Specification, Type, request, CancellationToken.None);
-
-        BadRequestObjectResult bad = Assert.IsType<BadRequestObjectResult>(result.Result);
-        ProblemDetails problem = Assert.IsType<ProblemDetails>(bad.Value);
-        Assert.Contains("FHIR-999", problem.Detail);
+        ArgumentException error = await Assert.ThrowsAsync<ArgumentException>(
+            () => SaveAsync(test.Database, request));
+        Assert.Contains("FHIR-999", error.Message);
     }
 
     [Fact]
@@ -96,9 +89,7 @@ public sealed class PreparedTicketGroupingsControllerTests
         await SeedPreparedTicketAsync(test.Database, "FHIR-2");
         await SeedPreparedTicketAsync(test.Database, "FHIR-3");
         await SeedPreparedTicketAsync(test.Database, "FHIR-4");
-        PreparedTicketGroupingsController controller = new(test.Database);
-
-        await controller.PutPartition(WorkGroupClean, Specification, Type, MinimalRequest(), CancellationToken.None);
+        await SaveAsync(test.Database, MinimalRequest());
 
         PreparedTicketGroupingPutRequest replacement = new(
             WorkGroupDisplay,
@@ -119,8 +110,9 @@ public sealed class PreparedTicketGroupingsControllerTests
                     []),
             ]);
 
-        await controller.PutPartition(WorkGroupClean, Specification, Type, replacement, CancellationToken.None);
+        await SaveAsync(test.Database, replacement);
 
+        PreparedTicketGroupingsController controller = new(test.Database);
         ActionResult<PreparedTicketGroupingPartitionDto> getResult = await controller.GetPartition(WorkGroupClean, Specification, Type, CancellationToken.None);
         PreparedTicketGroupingPartitionDto partition = Assert.IsType<PreparedTicketGroupingPartitionDto>(Assert.IsType<OkObjectResult>(getResult.Result).Value);
         Assert.Single(partition.Topics);
@@ -129,13 +121,11 @@ public sealed class PreparedTicketGroupingsControllerTests
     }
 
     [Fact]
-    public async Task PutPartition_RejectsBlockMarkdownInRationale()
+    public async Task PersistenceRejectsBlockMarkdownInRationale()
     {
         using TestDatabase test = CreateDatabase();
         await SeedPreparedTicketAsync(test.Database, "FHIR-1");
         await SeedPreparedTicketAsync(test.Database, "FHIR-2");
-        PreparedTicketGroupingsController controller = new(test.Database);
-
         PreparedTicketGroupingPutRequest request = new(
             WorkGroupDisplay,
             [
@@ -155,8 +145,8 @@ public sealed class PreparedTicketGroupingsControllerTests
                     []),
             ]);
 
-        ActionResult<PreparedTicketGroupingSaveResultDto> result = await controller.PutPartition(WorkGroupClean, Specification, Type, request, CancellationToken.None);
-        Assert.IsType<BadRequestObjectResult>(result.Result);
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => SaveAsync(test.Database, request));
     }
 
     [Fact]
@@ -169,7 +159,7 @@ public sealed class PreparedTicketGroupingsControllerTests
         await SeedHydrationSelfAsync(test.Database, "FHIR-77", WorkGroupDisplay, "Comment", Specification);
 
         PreparedTicketGroupingsController controller = new(test.Database);
-        await controller.PutPartition(WorkGroupClean, Specification, Type, MinimalRequest(), CancellationToken.None);
+        await SaveAsync(test.Database, MinimalRequest());
 
         ActionResult<PreparedTicketGroupingWorkGroupDto> result = await controller.GetWorkGroup(WorkGroupClean, CancellationToken.None);
         OkObjectResult ok = Assert.IsType<OkObjectResult>(result.Result);
@@ -180,19 +170,20 @@ public sealed class PreparedTicketGroupingsControllerTests
     }
 
     [Fact]
-    public async Task DeletePartition_Returns204AndIsIdempotent()
+    public async Task PutPartition_RequiresAuthoringStage()
     {
         using TestDatabase test = CreateDatabase();
-        await SeedPreparedTicketAsync(test.Database, "FHIR-1");
-        await SeedPreparedTicketAsync(test.Database, "FHIR-2");
         PreparedTicketGroupingsController controller = new(test.Database);
-        await controller.PutPartition(WorkGroupClean, Specification, Type, MinimalRequest(), CancellationToken.None);
 
-        IActionResult first = await controller.DeletePartition(WorkGroupClean, Specification, Type, CancellationToken.None);
-        IActionResult second = await controller.DeletePartition(WorkGroupClean, Specification, Type, CancellationToken.None);
+        ActionResult<PreparedTicketGroupingSaveResultDto> result =
+            await controller.PutPartition(
+                WorkGroupClean,
+                Specification,
+                Type,
+                MinimalRequest(),
+                CancellationToken.None);
 
-        Assert.IsType<NoContentResult>(first);
-        Assert.IsType<NoContentResult>(second);
+        Assert.IsType<ConflictObjectResult>(result.Result);
     }
 
     [Fact]
@@ -218,7 +209,7 @@ public sealed class PreparedTicketGroupingsControllerTests
         Assert.Equal(Specification, Uri.UnescapeDataString(encodedSpec));
         Assert.Equal(Type, Uri.UnescapeDataString(encodedType));
 
-        await controller.PutPartition(WorkGroupClean, Specification, Type, deserialized!, CancellationToken.None);
+        await SaveAsync(test.Database, deserialized!);
 
         ActionResult<PreparedTicketGroupingPartitionDto> getResult = await controller.GetPartition(WorkGroupClean, Specification, Type, CancellationToken.None);
         PreparedTicketGroupingPartitionDto partition = Assert.IsType<PreparedTicketGroupingPartitionDto>(Assert.IsType<OkObjectResult>(getResult.Result).Value);
@@ -246,6 +237,16 @@ public sealed class PreparedTicketGroupingsControllerTests
                 ],
                 []),
         ]);
+
+    private static Task<PreparedTicketGroupingSaveResult> SaveAsync(
+        PreparerDatabase database,
+        PreparedTicketGroupingPutRequest request) =>
+        database.SaveGroupingAsync(
+            PreparedTicketGroupingDtoMapper.ToPayload(
+                WorkGroupClean,
+                Specification,
+                Type,
+                request));
 
     private static async Task SeedPreparedTicketAsync(PreparerDatabase database, string key)
     {

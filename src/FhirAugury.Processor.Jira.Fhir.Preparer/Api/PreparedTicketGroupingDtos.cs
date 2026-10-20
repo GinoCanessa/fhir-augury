@@ -1,4 +1,5 @@
 using FhirAugury.Common.WorkGroups;
+using FhirAugury.Processing.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Contracts;
 using FhirAugury.Processor.Jira.Fhir.Preparer.Persistence.Models;
 
@@ -20,7 +21,8 @@ public sealed record PreparedTicketGroupingMemberRequest(string TicketKey, int O
 
 public sealed record PreparedTicketGroupingPutRequest(
     string WorkGroupDisplay,
-    IReadOnlyList<PreparedTicketGroupingTopicRequest> Topics);
+    IReadOnlyList<PreparedTicketGroupingTopicRequest> Topics,
+    PreparedTicketGroupingStageContext? Authoring = null);
 
 public sealed record PreparedTicketGroupingMemberDto(string TicketKey, int Order);
 
@@ -62,7 +64,8 @@ public sealed record PreparedTicketGroupingSaveResultDto(
     string Type,
     int TopicRows,
     int TopicGroupRows,
-    int MemberRows);
+    int MemberRows,
+    AuthoringRunStageReceipt? AuthoringReceipt = null);
 
 public static class PreparedTicketGroupingDtoMapper
 {

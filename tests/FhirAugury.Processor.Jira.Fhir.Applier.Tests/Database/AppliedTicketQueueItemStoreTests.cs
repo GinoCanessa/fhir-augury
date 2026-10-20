@@ -41,6 +41,8 @@ public class AppliedTicketQueueItemStoreTests : IDisposable
         AppliedTicketQueueItemUpsertResult result = await _store.UpsertFromPlannerAsync(
             "FHIR-1", "fhir", "cid-a", now, now.AddMinutes(5), default);
         Assert.Equal(AppliedTicketQueueItemUpsertResult.Unchanged, result);
+        var row = (await _store.GetByKeyAsync("FHIR-1", "fhir", default))!;
+        Assert.Equal(now, row.PlannerCompletedAt);
     }
 
     [Fact]

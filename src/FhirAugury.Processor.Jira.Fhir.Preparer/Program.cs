@@ -1,9 +1,11 @@
 using FhirAugury.Common.OpenApi;
+using FhirAugury.Processing.Common.Authoring;
 using FhirAugury.Processing.Common.Configuration;
 using FhirAugury.Processing.Common.Database;
 using FhirAugury.Processing.Common.Hosting;
 using FhirAugury.Processing.Common.Queue;
 using FhirAugury.Processing.Jira.Common.Api;
+using FhirAugury.Processing.Jira.Common.Authoring;
 using FhirAugury.Processing.Jira.Common.Configuration;
 using FhirAugury.Processing.Jira.Common.Database.Records;
 using FhirAugury.Processing.Jira.Common.Filtering;
@@ -59,7 +61,11 @@ builder.Services.AddOptions<JiraProcessingOptions>()
     .Validate(options => !PreparerJiraProcessingDefaults.Validate(options).Any(), "Processing:Jira configuration is invalid for the preparer.")
     .ValidateOnStart();
 
-builder.Services.AddSingleton<IProcessingWorkItemHandler<JiraProcessingSourceTicketRecord>, FhirTicketPrepHandler>();
+builder.Services.AddSingleton<FhirTicketPrepHandler>();
+builder.Services.AddSingleton<IProcessingWorkItemHandler<JiraProcessingSourceTicketRecord>>(sp =>
+    sp.GetRequiredService<FhirTicketPrepHandler>());
+builder.Services.AddSingleton<IAuthoringWorkItemHandler<JiraAuthoringWorkItem>>(sp =>
+    sp.GetRequiredService<FhirTicketPrepHandler>());
 
 builder.Services.AddHttpClient<PreparedTicketHydrator>((sp, client) =>
 {
@@ -79,6 +85,40 @@ builder.Services.AddHttpClient<PreparedTicketHydrator>((sp, client) =>
 
     client.BaseAddress = new Uri(address.EndsWith('/') ? address : address + "/");
 });
+builder.Services.AddHttpClient<OrchestratorWorkGroupCatalogFetcher>((sp, client) =>
+{
+    ProcessingServiceOptions processingOptions =
+        sp.GetRequiredService<IOptions<PreparerServiceOptions>>().Value;
+    string address = string.IsNullOrWhiteSpace(processingOptions.OrchestratorAddress)
+        ? "http://localhost:5150"
+        : processingOptions.OrchestratorAddress;
+    client.BaseAddress = new Uri(address.EndsWith('/') ? address : address + "/");
+});
+builder.Services.AddHttpClient(
+    PreparedTicketPublicationRefreshService.HttpClientName,
+    (sp, client) =>
+    {
+        ProcessingServiceOptions processingOptions =
+            sp.GetRequiredService<IOptions<PreparerServiceOptions>>().Value;
+        JiraProcessingOptions jiraOptions =
+            sp.GetRequiredService<IOptions<JiraProcessingOptions>>().Value;
+        string address =
+            !string.IsNullOrWhiteSpace(
+                processingOptions.OrchestratorAddress)
+                ? processingOptions.OrchestratorAddress
+                : !string.IsNullOrWhiteSpace(
+                    jiraOptions.OrchestratorAddress)
+                    ? jiraOptions.OrchestratorAddress
+                    : "http://localhost:5150";
+        client.BaseAddress = new Uri(
+            address.EndsWith('/') ? address : address + "/");
+    });
+builder.Services.AddSingleton(sp =>
+    new OrchestratorHydrationFetcher(
+        sp.GetRequiredService<IHttpClientFactory>().CreateClient(
+            PreparedTicketPublicationRefreshService.HttpClientName),
+        sp.GetRequiredService<
+            ILogger<OrchestratorHydrationFetcher>>()));
 
 builder.Services.AddHttpClient<SpecificationBackfillService>((sp, client) =>
 {
@@ -104,12 +144,99 @@ builder.Services.AddSingleton(sp =>
     string dbPath = Path.GetFullPath(options.DatabasePath);
     Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
     PreparerDatabase database = new(dbPath, sp.GetRequiredService<ILogger<PreparerDatabase>>());
-    database.Initialize();
-    return database;
+    database.AcquireStartupOwnership();
+    try
+    {
+        database.Initialize();
+        return database;
+    }
+    catch
+    {
+        database.Dispose();
+        throw;
+    }
 });
 builder.Services.AddSingleton<ProcessingDatabase>(sp => sp.GetRequiredService<PreparerDatabase>());
+builder.Services.AddSingleton<IAuthoringSnapshotWorkflowGuard>(sp =>
+    sp.GetRequiredService<PreparerDatabase>());
+builder.Services.AddSingleton<SqliteReviewSnapshotReconciler>();
+builder.Services.AddSingleton<IPreparedTicketGroupingDispatcher, PreviewPreparedTicketGroupingDispatcher>();
+builder.Services.AddSingleton<AuthoringRunSchedulerWakeSignal>();
+builder.Services.AddSingleton<
+    IPreparedTicketPublicationRefreshInterruptionHook,
+    NoOpPreparedTicketPublicationRefreshInterruptionHook>();
+builder.Services.AddSingleton<PreparedTicketPublicationBaselineReader>();
+builder.Services.AddSingleton<PreparedTicketPublicationEnricher>();
+builder.Services.AddSingleton<PreparedTicketPublicationRefreshService>();
+builder.Services.AddSingleton<PreparedTicketPublicationReconciliationPlanner>();
+builder.Services.AddSingleton<PreparedTicketCorpusView>();
+builder.Services.AddSingleton<PreparedTicketGroupingDeltaDispatcher>();
+builder.Services.AddSingleton<
+    PreparedTicketReconciliationGroupingStageAdapter>();
+builder.Services.AddSingleton<PreparedTicketRunWorkflowRegistry>();
+builder.Services.AddSingleton<PreparedTicketSnapshotMaterializer>();
+builder.Services.AddSingleton<PreparedTicketPublicationRecoveryService>();
+builder.Services.AddSingleton<
+    PreparedTicketCanonicalEpochRecoveryService>();
+builder.Services.AddSingleton<PreparedTicketRunPostProcessor>();
+builder.Services.AddSingleton<PreparedTicketGroupingMaintenanceService>();
+builder.Services.AddSingleton<IAuthoringRunFinalizationStrategy>(sp =>
+    sp.GetRequiredService<PreparedTicketRunPostProcessor>());
+builder.Services.AddSingleton<AuthoringRunScheduler<JiraAuthoringWorkItem>>();
+builder.Services.AddHostedService(sp =>
+    sp.GetRequiredService<AuthoringRunScheduler<JiraAuthoringWorkItem>>());
 
 WebApplication app = builder.Build();
+
+string? configuredSnapshotSchemaVersion =
+    app.Configuration[
+        $"{PreparerServiceOptions.SectionName}:SnapshotSchemaVersion"];
+object effectiveSnapshotSchemaVersion =
+    int.TryParse(
+        configuredSnapshotSchemaVersion,
+        out int parsedSnapshotSchemaVersion)
+        ? parsedSnapshotSchemaVersion
+        : (object?)configuredSnapshotSchemaVersion ??
+          new PreparerServiceOptions().SnapshotSchemaVersion;
+app.Logger.LogInformation(
+    "Effective Preparer snapshot schema version is {SnapshotSchemaVersion}",
+    effectiveSnapshotSchemaVersion);
+
+PreparerDatabase preparerDatabase =
+    app.Services.GetRequiredService<PreparerDatabase>();
+PreparerServiceOptions preparerOptions =
+    app.Services.GetRequiredService<IOptions<PreparerServiceOptions>>().Value;
+AuthoringRunStore preparerAuthoringStore =
+    app.Services.GetRequiredService<AuthoringRunStore>();
+JiraAuthoringRunCoordinator preparerRunCoordinator =
+    app.Services.GetRequiredService<JiraAuthoringRunCoordinator>();
+preparerDatabase.AcquireStartupOwnership();
+await preparerDatabase.RecoverInterruptedMaintenanceLeasesAsync();
+await app.Services
+    .GetRequiredService<PreparedTicketPublicationRecoveryService>()
+    .RecoverPendingAsync();
+await app.Services
+    .GetRequiredService<PreparedTicketCanonicalEpochRecoveryService>()
+    .RecoverPendingAsync();
+if (preparerOptions.ActivateRunBackedAuthoring)
+{
+    AuthoringCutoverCoordinator cutover =
+        new(
+            preparerDatabase.OpenConnection,
+            app.Services.GetRequiredService<
+                IAuthoringSnapshotWorkflowGuard>());
+    await cutover.ActivateAsync(
+        new AuthoringCutoverRequest(
+            preparerRunCoordinator.ProcessorKind,
+            Path.GetFullPath(preparerOptions.DatabasePath),
+            Path.GetFullPath(preparerOptions.PreCutoverBackupPath!)),
+        preparerDatabase);
+}
+else
+{
+    await preparerAuthoringStore.EnsureProcessorModeAsync(
+        preparerRunCoordinator.ProcessorKind);
+}
 
 app.MapDefaultEndpoints();
 app.MapProcessingEndpoints<JiraProcessingSourceTicketRecord>();
@@ -120,4 +247,3 @@ app.MapAuguryOpenApi();
 app.Run();
 
 public partial class Program;
-

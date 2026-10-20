@@ -21,6 +21,50 @@ public class ConfluenceProxyController(SourceHttpClient httpClient) : Controller
 {
     private const string Source = "confluence";
 
+    // ── Source-specific content queries ──────────────────────────────────
+
+    [HttpGet("content/refers-to")]
+    public Task<IActionResult> ContentRefersTo(
+        [FromQuery] string? value,
+        [FromQuery] string? sourceType,
+        [FromQuery] int? limit,
+        [FromQuery] string? sort,
+        CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "content/refers-to", Request, ct);
+
+    [HttpGet("content/referred-by")]
+    public Task<IActionResult> ContentReferredBy(
+        [FromQuery] string? value,
+        [FromQuery] string? sourceType,
+        [FromQuery] int? limit,
+        [FromQuery] string? sort,
+        CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "content/referred-by", Request, ct);
+
+    [HttpGet("content/cross-referenced")]
+    public Task<IActionResult> ContentCrossReferenced(
+        [FromQuery] string? value,
+        [FromQuery] string? sourceType,
+        [FromQuery] int? limit,
+        [FromQuery] string? sort,
+        CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "content/cross-referenced", Request, ct);
+
+    [HttpGet("content/related-by-keyword/{source}/{**id}")]
+    public Task<IActionResult> ContentRelatedByKeyword(
+        string source,
+        string id,
+        [FromQuery] double? minScore,
+        [FromQuery] string? keywordType,
+        [FromQuery] int? limit,
+        CancellationToken ct)
+        => httpClient.ProxyAsync(
+            Source,
+            HttpMethod.Get,
+            $"content/related-by-keyword/{Uri.EscapeDataString(source)}/{EncodeCatchAll(id)}",
+            Request,
+            ct);
+
     // ── Items ────────────────────────────────────────────────────────────
 
     /// <summary>List Confluence items (paged).</summary>
@@ -152,6 +196,16 @@ public class ConfluenceProxyController(SourceHttpClient httpClient) : Controller
     public Task<IActionResult> ListSpaces(CancellationToken ct)
         => httpClient.ProxyAsync(Source, HttpMethod.Get, "spaces", Request, ct);
 
+    /// <summary>
+    /// Get the Confluence cache reconciliation report — per-space completeness
+    /// verdict, computed from local disk with no network.
+    /// </summary>
+    /// <param name="missingSample">How many missing ids to name per space.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpGet("cache/reconcile-report")]
+    public Task<IActionResult> GetCacheReconcileReport([FromQuery] int? missingSample, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "cache/reconcile-report", Request, ct);
+
     // ── Ingestion ────────────────────────────────────────────────────────
 
     /// <summary>Trigger a synchronous ingestion run on the Confluence source.</summary>
@@ -159,9 +213,17 @@ public class ConfluenceProxyController(SourceHttpClient httpClient) : Controller
     /// <param name="ct">Cancellation token.</param>
     /// <response code="200">Ingestion completed synchronously.</response>
     /// <response code="202">Ingestion queued.</response>
+    /// <response code="412">Ingestion is blocked by an edge challenge; clear it first.</response>
     [HttpPost("ingest")]
     public Task<IActionResult> Ingest([FromQuery] string? type, CancellationToken ct)
         => httpClient.ProxyAsync(Source, HttpMethod.Post, "ingest", Request, ct);
+
+    /// <summary>Queue an asynchronous ingestion run on the Confluence source.</summary>
+    /// <param name="type">Sync type.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpPost("ingest/trigger")]
+    public Task<IActionResult> IngestTrigger([FromQuery] string? type, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Post, "ingest/trigger", Request, ct);
 
     /// <summary>
     /// Rebuild the Confluence source database from the file-system cache.
@@ -174,6 +236,13 @@ public class ConfluenceProxyController(SourceHttpClient httpClient) : Controller
     public Task<IActionResult> Rebuild(CancellationToken ct)
         => httpClient.ProxyAsync(Source, HttpMethod.Post, "rebuild", Request, ct);
 
+    /// <summary>Queue a Confluence index rebuild of the requested type.</summary>
+    /// <param name="type">Index family to rebuild.</param>
+    /// <param name="ct">Cancellation token.</param>
+    [HttpPost("rebuild-index")]
+    public Task<IActionResult> RebuildIndex([FromQuery] string? type, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Post, "rebuild-index", Request, ct);
+
     /// <summary>
     /// Receive a peer-ingestion notification from the orchestrator's
     /// <c>POST /api/v1/notify-ingestion</c> fan-out. Tagged
@@ -183,4 +252,28 @@ public class ConfluenceProxyController(SourceHttpClient httpClient) : Controller
     [HttpPost("notify-peer")]
     public Task<IActionResult> NotifyPeer(CancellationToken ct)
         => httpClient.ProxyAsync(Source, HttpMethod.Post, "notify-peer", Request, ct);
+
+    /// <summary>
+    /// Get the Confluence ingestion block state. Ingestion parks here when the
+    /// site's edge appliance serves a captcha challenge and a human has to solve
+    /// it before downloads can resume.
+    /// </summary>
+    /// <param name="ct">Cancellation token.</param>
+    /// <response code="200">The current block state; <c>blocked</c> is false when ingestion is free to run.</response>
+    [HttpGet("ingestion-block")]
+    public Task<IActionResult> GetIngestionBlock(CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Get, "ingestion-block", Request, ct);
+
+    /// <summary>
+    /// Clear the Confluence ingestion block once the challenge has been solved.
+    /// </summary>
+    /// <param name="clearedBy">Optional operator name, recorded on the block row.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <response code="200">The gate is open. <c>wasBlocked</c> reports whether it had been closed.</response>
+    [HttpPost("ingestion-block/clear")]
+    public Task<IActionResult> ClearIngestionBlock([FromQuery] string? clearedBy, CancellationToken ct)
+        => httpClient.ProxyAsync(Source, HttpMethod.Post, "ingestion-block/clear", Request, ct);
+
+    private static string EncodeCatchAll(string value) =>
+        string.Join('/', value.Split('/').Select(Uri.EscapeDataString));
 }

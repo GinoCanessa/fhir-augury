@@ -1,4 +1,6 @@
-using System.Reflection;
+using System.Text.Json;
+using FhirAugury.Common.Api;
+using FhirAugury.Source.Zulip.Api;
 using FhirAugury.Source.Zulip.Configuration;
 using FhirAugury.Source.Zulip.Controllers;
 using FhirAugury.Source.Zulip.Database;
@@ -12,7 +14,7 @@ namespace FhirAugury.Source.Zulip.Tests;
 
 /// <summary>
 /// Pins the response-shape additions introduced by the preparer-hydration
-/// feature (slot 0517-02, Phase 2): GET /threads/{streamName}/{topic} now
+/// feature (slot 0517-02, Phase 2): GET /threads?streamName=...&amp;topic=... now
 /// returns streamId, messageCount, firstMessageAt, lastMessageAt, and
 /// firstMessageExcerpt alongside the existing fields.
 /// </summary>
@@ -64,13 +66,18 @@ public class ThreadsControllerTests : IDisposable
         }
 
         OkObjectResult ok = Assert.IsType<OkObjectResult>(_controller.GetThread("implementers", "ballot", limit: null));
-        object payload = ok.Value!;
+        ZulipThreadResponse payload = Assert.IsType<ZulipThreadResponse>(ok.Value);
 
-        Assert.Equal(42, GetValue<int?>(payload, "streamId"));
-        Assert.Equal(3, GetValue<int?>(payload, "messageCount"));
-        Assert.Equal("2026-05-01 10:00:00+00:00", GetValue<string?>(payload, "firstMessageAt"));
-        Assert.Equal("2026-05-02 09:00:00+00:00", GetValue<string?>(payload, "lastMessageAt"));
-        Assert.Equal("first content body that should appear in the excerpt", GetValue<string?>(payload, "firstMessageExcerpt"));
+        Assert.Equal(42, payload.StreamId);
+        Assert.Equal(3, payload.MessageCount);
+        Assert.Equal(new DateTimeOffset(2026, 5, 1, 10, 0, 0, TimeSpan.Zero), payload.FirstMessageAt);
+        Assert.Equal(new DateTimeOffset(2026, 5, 2, 9, 0, 0, TimeSpan.Zero), payload.LastMessageAt);
+        Assert.Equal("first content body that should appear in the excerpt", payload.FirstMessageExcerpt);
+        Assert.Empty(payload.Diagnostics);
+        using JsonDocument json = JsonDocument.Parse(JsonSerializer.Serialize(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        Assert.Equal("2026-05-01T10:00:00+00:00", json.RootElement.GetProperty("firstMessageAt").GetString());
+        Assert.Equal("2026-05-02T09:00:00+00:00", json.RootElement.GetProperty("lastMessageAt").GetString());
+        Assert.All(payload.Messages, message => Assert.Equal(TimeSpan.Zero, message.Timestamp!.Value.Offset));
     }
 
     [Fact]
@@ -96,7 +103,7 @@ public class ThreadsControllerTests : IDisposable
         }
 
         OkObjectResult ok = Assert.IsType<OkObjectResult>(_controller.GetThread("general", "long", limit: null));
-        string? excerpt = GetValue<string?>(ok.Value!, "firstMessageExcerpt");
+        string? excerpt = Assert.IsType<ZulipThreadResponse>(ok.Value).FirstMessageExcerpt;
 
         Assert.NotNull(excerpt);
         Assert.True(excerpt!.Length <= 241, $"excerpt length {excerpt.Length} exceeds 241");
@@ -107,13 +114,17 @@ public class ThreadsControllerTests : IDisposable
     public void GetThread_EmptyTopicReturnsZeroCountAndNullAggregates()
     {
         OkObjectResult ok = Assert.IsType<OkObjectResult>(_controller.GetThread("unknown", "topic", limit: null));
-        object payload = ok.Value!;
+        ZulipThreadResponse payload = Assert.IsType<ZulipThreadResponse>(ok.Value);
 
-        Assert.Null(GetValue<int?>(payload, "streamId"));
-        Assert.Equal(0, GetValue<int?>(payload, "messageCount"));
-        Assert.Null(GetValue<string?>(payload, "firstMessageAt"));
-        Assert.Null(GetValue<string?>(payload, "lastMessageAt"));
-        Assert.Null(GetValue<string?>(payload, "firstMessageExcerpt"));
+        Assert.Null(payload.StreamId);
+        Assert.Equal(0, payload.MessageCount);
+        Assert.Null(payload.FirstMessageAt);
+        Assert.Null(payload.LastMessageAt);
+        Assert.Null(payload.FirstMessageExcerpt);
+        Assert.Equal(0, payload.Total);
+        Assert.Empty(payload.Messages);
+        Assert.Empty(payload.Diagnostics);
+        Assert.Equal("https://chat.example.com/#narrow/stream/unknown/topic/topic", payload.Url);
     }
 
     [Fact]
@@ -139,9 +150,93 @@ public class ThreadsControllerTests : IDisposable
         }
 
         OkObjectResult ok = Assert.IsType<OkObjectResult>(_controller.GetThread("fhir/infrastructure-wg", "ballot", limit: null));
-        Assert.Equal("fhir/infrastructure-wg", GetValue<string?>(ok.Value!, "stream"));
-        Assert.Equal(4242, GetValue<int?>(ok.Value!, "streamId"));
-        Assert.Equal(1, GetValue<int?>(ok.Value!, "total"));
+        ZulipThreadResponse payload = Assert.IsType<ZulipThreadResponse>(ok.Value);
+        Assert.Equal("fhir/infrastructure-wg", payload.Stream);
+        Assert.Equal(4242, payload.StreamId);
+        Assert.Equal(1, payload.Total);
+    }
+
+    [Theory]
+    [InlineData(0, 0)]
+    [InlineData(1, 1)]
+    [InlineData(-1, 3)]
+    [InlineData(10000, 3)]
+    public void GetThread_LimitPreservesTotalsContentAndExcerptSemantics(int limit, int expectedTotal)
+    {
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            for (int index = 1; index <= 3; index++)
+            {
+                ZulipMessageRecord.Insert(connection, CreateMessage(1, 100 + index, "implementers", "topic", "Alice",
+                    $"content {index}", new DateTimeOffset(2026, 5, index, 10, 0, 0, TimeSpan.Zero)));
+            }
+        }
+
+        OkObjectResult ok = Assert.IsType<OkObjectResult>(_controller.GetThread("implementers", "topic", limit));
+        ZulipThreadResponse payload = Assert.IsType<ZulipThreadResponse>(ok.Value);
+
+        Assert.Equal(expectedTotal, payload.Total);
+        Assert.Equal(expectedTotal, payload.Messages.Count);
+        Assert.Equal(3, payload.MessageCount);
+        Assert.Equal(new DateTimeOffset(2026, 5, 1, 10, 0, 0, TimeSpan.Zero), payload.FirstMessageAt);
+        Assert.Equal(new DateTimeOffset(2026, 5, 3, 10, 0, 0, TimeSpan.Zero), payload.LastMessageAt);
+        Assert.Equal(limit == 0 ? null : "content 1", payload.FirstMessageExcerpt);
+        for (int index = 0; index < expectedTotal; index++)
+        {
+            Assert.Equal($"content {index + 1}", payload.Messages[index].Content);
+            Assert.Equal($"<p>content {index + 1}</p>", payload.Messages[index].ContentHtml);
+            Assert.Equal("Alice", payload.Messages[index].Sender);
+        }
+    }
+
+    [Fact]
+    public void GetThread_MixedOffsetAggregatesUseInstantsWithoutChangingContentOrder()
+    {
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            ZulipMessageRecord.Insert(connection, CreateMessage(1, 101, "implementers", "topic", "Alice", "lexically first",
+                DateTimeOffset.UnixEpoch));
+            ZulipMessageRecord.Insert(connection, CreateMessage(1, 102, "implementers", "topic", "Bob", "earliest instant",
+                DateTimeOffset.UnixEpoch));
+            using SqliteCommand update = new("""
+                UPDATE zulip_messages SET Timestamp = '2026-04-30 23:00:00-02:00' WHERE ZulipMessageId = 101;
+                UPDATE zulip_messages SET Timestamp = '2026-05-01T00:30:00+02:00' WHERE ZulipMessageId = 102;
+                """, connection);
+            update.ExecuteNonQuery();
+        }
+
+        ZulipThreadResponse payload = Assert.IsType<ZulipThreadResponse>(
+            Assert.IsType<OkObjectResult>(_controller.GetThread("implementers", "topic", 1)).Value);
+
+        Assert.Equal(1, payload.Total);
+        Assert.Equal(2, payload.MessageCount);
+        Assert.Equal("lexically first", payload.FirstMessageExcerpt);
+        Assert.Equal(101, Assert.Single(payload.Messages).Id);
+        Assert.Equal(new DateTimeOffset(2026, 4, 30, 22, 30, 0, TimeSpan.Zero), payload.FirstMessageAt);
+        Assert.Equal(new DateTimeOffset(2026, 5, 1, 1, 0, 0, TimeSpan.Zero), payload.LastMessageAt);
+    }
+
+    [Fact]
+    public void GetThread_InvalidTimestampIsNullWithDiagnosticsNotRawText()
+    {
+        using (SqliteConnection connection = _db.OpenConnection())
+        {
+            ZulipMessageRecord.Insert(connection, CreateMessage(1, 101, "implementers", "topic", "Alice", "content unchanged",
+                DateTimeOffset.UnixEpoch));
+            using SqliteCommand update = new("UPDATE zulip_messages SET Timestamp = 'invalid time'", connection);
+            update.ExecuteNonQuery();
+        }
+
+        ZulipThreadResponse payload = Assert.IsType<ZulipThreadResponse>(
+            Assert.IsType<OkObjectResult>(_controller.GetThread("implementers", "topic", null)).Value);
+
+        Assert.Equal(1, payload.MessageCount);
+        Assert.Equal("content unchanged", payload.FirstMessageExcerpt);
+        Assert.Null(payload.FirstMessageAt);
+        Assert.Null(payload.LastMessageAt);
+        Assert.Null(Assert.Single(payload.Messages).Timestamp);
+        Assert.Equal([ZulipReferenceDiagnosticCode.InvalidTimestamp], payload.Diagnostics);
+        Assert.DoesNotContain("invalid time", JsonSerializer.Serialize(payload));
     }
 
     [Fact]
@@ -177,11 +272,4 @@ public class ThreadsControllerTests : IDisposable
         Reactions = null,
     };
 
-    private static T? GetValue<T>(object source, string propertyName)
-    {
-        PropertyInfo prop = source.GetType().GetProperty(propertyName)
-            ?? throw new InvalidOperationException($"Property '{propertyName}' not found on {source.GetType().Name}");
-        object? value = prop.GetValue(source);
-        return (T?)value;
-    }
 }

@@ -70,6 +70,30 @@ public class OpenApiMergeServiceTests
                 "operationId": "query",
                 "responses": { "200": { "description": "OK" } }
               }
+            },
+            "/api/v1/content/refers-to": {
+              "get": {
+                "operationId": "content-refers-to",
+                "responses": { "200": { "description": "OK" } }
+              }
+            },
+            "/api/v1/content/related-by-keyword/{source}/{id}": {
+              "get": {
+                "operationId": "content-related-by-keyword",
+                "responses": { "200": { "description": "OK" } }
+              }
+            },
+            "/api/v1/ingest/trigger": {
+              "post": {
+                "operationId": "ingest-trigger",
+                "responses": { "202": { "description": "Accepted" } }
+              }
+            },
+            "/api/v1/rebuild-index": {
+              "post": {
+                "operationId": "rebuild-index",
+                "responses": { "200": { "description": "OK" } }
+              }
             }
           }
         }
@@ -120,6 +144,10 @@ public class OpenApiMergeServiceTests
 
         Assert.True(paths.ContainsKey("/api/v1/health"));
         Assert.True(paths.ContainsKey("/api/v1/jira/query"));
+        Assert.True(paths.ContainsKey("/api/v1/jira/content/refers-to"));
+        Assert.True(paths.ContainsKey("/api/v1/jira/content/related-by-keyword/{source}/{id}"));
+        Assert.True(paths.ContainsKey("/api/v1/jira/ingest/trigger"));
+        Assert.True(paths.ContainsKey("/api/v1/jira/rebuild-index"));
     }
 
     [Fact]

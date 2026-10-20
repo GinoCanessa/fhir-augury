@@ -4,7 +4,10 @@ namespace FhirAugury.Processor.Jira.Fhir.Preparer.Configuration;
 
 public static class PreparerJiraProcessingDefaults
 {
-    public const string AgentCliCommand = "copilot run ticket-prep --ticket {ticketKey} --db {dbPath}";
+    public const string AgentCliCommand =
+        "copilot -p '/ticket-prep {ticketKey}' --allow-all";
+    public const string AuthoringAgentCliCommand =
+        "copilot -p '/ticket-prep {ticketKey}' --allow-all";
     public const string JiraSourceAddress = "http://localhost:5160";
     public const string OrchestratorAddress = "http://localhost:5150";
 
@@ -20,6 +23,10 @@ public static class PreparerJiraProcessingDefaults
         if (string.IsNullOrWhiteSpace(options.AgentCliCommand))
         {
             options.AgentCliCommand = AgentCliCommand;
+        }
+        if (string.IsNullOrWhiteSpace(options.AuthoringAgentCliCommand))
+        {
+            options.AuthoringAgentCliCommand = AuthoringAgentCliCommand;
         }
 
         if (string.IsNullOrWhiteSpace(options.JiraSourceAddress))
@@ -37,9 +44,39 @@ public static class PreparerJiraProcessingDefaults
             yield return error;
         }
 
-        if (!options.AgentCliCommand.Contains("{dbPath}", StringComparison.Ordinal))
+        if (options.AgentCliCommand.Contains(
+                "{dbPath}",
+                StringComparison.OrdinalIgnoreCase) ||
+            options.AgentCliCommand.Contains(
+                "{operationToken}",
+                StringComparison.OrdinalIgnoreCase))
         {
-            yield return "Processing:Jira:AgentCliCommand must include the {dbPath} token.";
+            yield return "Processing:Jira:AgentCliCommand must use callback context from the worker environment.";
+        }
+        foreach (string error in ValidateAuthoringCommand(
+                     options.AuthoringAgentCliCommand))
+        {
+            yield return error;
+        }
+    }
+
+    public static IEnumerable<string> ValidateAuthoringCommand(string command)
+    {
+        if (string.IsNullOrWhiteSpace(command) ||
+            !command.Contains(
+                "{ticketKey}",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            yield return "The staged authoring command must include the {ticketKey} token.";
+        }
+        if (command.Contains(
+                "{dbPath}",
+                StringComparison.OrdinalIgnoreCase) ||
+            command.Contains(
+                "{operationToken}",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            yield return "The staged authoring command must use callback context from the worker environment.";
         }
     }
 }

@@ -41,28 +41,6 @@ public sealed record NoteQueryFilter
     public int Offset { get; init; }
 }
 
-/// <summary>A single row in a notes listing.</summary>
-public sealed record NoteListRow
-{
-    public required string NoteId { get; init; }
-    public required string Type { get; init; }
-    public required string Name { get; init; }
-    public required string RepoOwner { get; init; }
-    public required string RepoName { get; init; }
-    public required string WorkGroup { get; init; }
-    public required string WorkGroupCode { get; init; }
-    public required string NeedsNote { get; init; }
-    public int CommitsInWindow { get; init; }
-    public int TicketsAttributed { get; init; }
-
-    /// <summary><c>authored</c> when prose has been written, else <c>awaiting-note</c>.</summary>
-    public required string Status { get; init; }
-
-    public DateTimeOffset? HydratedAt { get; init; }
-    public DateTimeOffset? AuthoredAt { get; init; }
-    public DateTimeOffset GeneratedAt { get; init; }
-}
-
 /// <summary>A note with its full hydrated evidence and any authored prose.</summary>
 public sealed record NoteDetail
 {
@@ -77,6 +55,44 @@ public sealed record NoteDetail
     /// <summary>Referenced extensions the CI build maps to a replacing core element; empty when none.</summary>
     public IReadOnlyList<NoteExtensionRefRecord> ExtensionRefs { get; init; } = [];
 
-    /// <summary><c>authored</c> when <see cref="NoteRecord.AuthoredAt"/> is set, else <c>awaiting-note</c>.</summary>
-    public string Status => Note.AuthoredAt is not null ? "authored" : "awaiting-note";
+    public bool IsCurrentProseReceiptBacked { get; init; }
+
+    public string Status => BallotNoteStatus.Get(
+        Note,
+        IsCurrentProseReceiptBacked);
+}
+
+public static class BallotNoteStatus
+{
+    public static string Get(NoteRecord note, bool isCurrentProseReceiptBacked)
+    {
+        if (isCurrentProseReceiptBacked &&
+            string.Equals(
+                note.ProseHydrationExecutionId,
+                note.CurrentHydrationExecutionId,
+                StringComparison.Ordinal) &&
+            string.Equals(
+                note.ProseEvidenceRevision,
+                note.CurrentEvidenceRevision,
+                StringComparison.Ordinal))
+        {
+            return "authored";
+        }
+
+        bool hasProse = note.AuthoredAt is not null ||
+            !string.IsNullOrWhiteSpace(note.ProposedBallotNoteHtml) ||
+            !string.IsNullOrWhiteSpace(note.RollupSummaryMarkdown) ||
+            !string.IsNullOrWhiteSpace(note.NotesForReviewerMarkdown);
+        if (!hasProse)
+        {
+            return "awaiting-note";
+        }
+
+        return string.Equals(
+            note.ProseVerificationStatus,
+            "legacy-unverified",
+            StringComparison.Ordinal)
+            ? "legacy-unverified"
+            : "stale";
+    }
 }

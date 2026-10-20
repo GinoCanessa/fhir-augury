@@ -1,4 +1,6 @@
 using System.Collections.Generic;
+using System.Text.Json;
+using FhirAugury.DevUi.Services;
 using FhirAugury.DevUi.Services.ApiCatalog;
 using FhirAugury.DevUi.Services.ApiCatalog.Catalogs;
 
@@ -105,6 +107,203 @@ public class OrchestratorCatalogParityTests
         Assert.Equal($"{Base}/api/v1/status", r.Url);
     }
 
+    [Fact]
+    public void Source_search_fixes_selected_source_on_native_gateway_route()
+    {
+        ApiEndpointDescriptor d = FindSource("jira", "content.search");
+        ApiBuiltRequest r = ApiUrlBuilder.Build(Base, d, new Dictionary<string, string?>
+        {
+            ["values"] = "FHIR-55001",
+            ["limit"] = "20",
+        });
+
+        Assert.DoesNotContain(d.Parameters, parameter => parameter.Name == "sources");
+        Assert.Equal(
+            $"{Base}/api/v1/content/search?sources=jira&values=FHIR-55001&limit=20",
+            r.Url);
+    }
+
+    [Fact]
+    public void Source_item_fixes_selected_source_on_native_gateway_route()
+    {
+        ApiEndpointDescriptor d = FindSource("github", "content.get-item");
+        ApiBuiltRequest r = ApiUrlBuilder.Build(Base, d, new Dictionary<string, string?>
+        {
+            ["id"] = "HL7/fhir#4006",
+            ["includeContent"] = "true",
+            ["includeComments"] = "false",
+            ["includeSnapshot"] = "false",
+        });
+
+        Assert.DoesNotContain(d.Parameters, parameter => parameter.Name == "source");
+        Assert.Equal(
+            $"{Base}/api/v1/content/item/github/HL7/fhir%234006?includeContent=true&includeComments=false&includeSnapshot=false",
+            r.Url);
+    }
+
+    [Fact]
+    public void Source_reference_query_uses_typed_proxy_without_overwriting_source_type()
+    {
+        ApiEndpointDescriptor d = FindSource("jira", "content.refers-to");
+        ApiBuiltRequest r = ApiUrlBuilder.Build(Base, d, new Dictionary<string, string?>
+        {
+            ["value"] = "FHIR-55001",
+            ["sourceType"] = "github",
+            ["limit"] = "20",
+        });
+
+        Assert.Equal(
+            $"{Base}/api/v1/jira/content/refers-to?value=FHIR-55001&sourceType=github&limit=20",
+            r.Url);
+    }
+
+    [Fact]
+    public void Source_related_by_keyword_uses_typed_proxy_with_fixed_source()
+    {
+        ApiEndpointDescriptor d = FindSource("github", "content.related-by-keyword");
+        ApiBuiltRequest r = ApiUrlBuilder.Build(Base, d, new Dictionary<string, string?>
+        {
+            ["id"] = "HL7/fhir#4006",
+            ["minScore"] = "0.1",
+            ["limit"] = "20",
+        });
+
+        Assert.DoesNotContain(d.Parameters, parameter => parameter.Name == "source");
+        Assert.Equal(
+            $"{Base}/api/v1/github/content/related-by-keyword/github/HL7/fhir%234006?minScore=0.1&limit=20",
+            r.Url);
+    }
+
+    [Theory]
+    [InlineData("lifecycle.health", "api/v1/services")]
+    [InlineData("lifecycle.status", "api/v1/services")]
+    [InlineData("lifecycle.stats", "api/v1/stats")]
+    public void Source_lifecycle_uses_typed_gateway_replacement(string id, string expectedPath)
+    {
+        ApiEndpointDescriptor d = FindSource("zulip", id);
+        ApiBuiltRequest r = ApiUrlBuilder.Build(Base, d, new Dictionary<string, string?>());
+
+        Assert.Equal($"{Base}/{expectedPath}", r.Url);
+    }
+
+    [Fact]
+    public void Service_refresh_and_authoring_list_routes_are_catalogued()
+    {
+        ApiBuiltRequest refresh = ApiUrlBuilder.Build(
+            Base,
+            Find("services.refresh"),
+            new Dictionary<string, string?>());
+        ApiBuiltRequest runs = ApiUrlBuilder.Build(
+            Base,
+            Find("processing.authoring.list"),
+            new Dictionary<string, string?>
+            {
+                ["name"] = "Preparer",
+                ["limit"] = "20",
+            });
+
+        Assert.Equal(HttpMethod.Post, refresh.Method);
+        Assert.Equal($"{Base}/api/v1/services/refresh", refresh.Url);
+        Assert.Equal(HttpMethod.Get, runs.Method);
+        Assert.Equal(
+            $"{Base}/api/v1/processing-services/Preparer/authoring/runs?limit=20",
+            runs.Url);
+    }
+
+    [Fact]
+    public void OpenApi_lookup_ignores_fixed_query_on_gateway_descriptor()
+    {
+        using JsonDocument document = JsonDocument.Parse("""
+            {
+              "paths": {
+                "/api/v1/content/search": {
+                  "get": {
+                    "operationId": "content-search"
+                  }
+                },
+                "/api/v1/content/item/{source}/{id}": {
+                  "get": {
+                    "operationId": "content-item"
+                  }
+                }
+              }
+            }
+            """);
+
+        OpenApiOperationInfo? operation = OpenApiCatalogClient.FindOperation(
+            document,
+            FindSource("jira", "content.search").PathTemplate,
+            HttpMethod.Get);
+
+        Assert.NotNull(operation);
+        Assert.Equal("content-search", operation!.OperationId);
+
+        OpenApiOperationInfo? itemOperation = OpenApiCatalogClient.FindOperation(
+            document,
+            FindSource("jira", "content.get-item").PathTemplate,
+            HttpMethod.Get);
+
+        Assert.NotNull(itemOperation);
+        Assert.Equal("content-item", itemOperation!.OperationId);
+    }
+
+    [Theory]
+    [InlineData("preview")]
+    [InlineData("apply")]
+    public void Jira_public_people_maintenance_uses_gateway_and_documents_deliberate_prerequisites(string operation)
+    {
+        ApiEndpointDescriptor descriptor = FindSource("jira", $"public-people.{operation}");
+        string body = operation == "preview"
+            ? """{"keys":["FHIR-1"],"evidenceMode":"cache-only"}"""
+            : """{"previewToken":"opaque-token","acknowledgeSharedUserImpact":true}""";
+        ApiBuiltRequest request = ApiUrlBuilder.Build(Base, descriptor, new Dictionary<string, string?> { ["body"] = body });
+        Assert.Equal(HttpMethod.Post, request.Method);
+        Assert.Equal($"{Base}/api/v1/jira/public-people/{operation}", request.Url);
+        Assert.Equal(operation == "apply", descriptor.Destructive);
+        Assert.Contains(operation == "preview" ? "authentication" : "fresh preview", descriptor.Description!);
+        Assert.Single(descriptor.Parameters);
+        Assert.Equal(ApiParameterKind.Body, descriptor.Parameters[0].Kind);
+        if (operation == "preview")
+        {
+            Assert.Contains("cache-only", descriptor.Parameters[0].DefaultValue);
+            Assert.Contains("never fetches", descriptor.Parameters[0].HelpText);
+        }
+    }
+
+    [Theory]
+    [InlineData("321987")]
+    [InlineData("fhir/infrastructure-wg:entry/request: réponse 100% & 漢字")]
+    [InlineData("fhir:core:literal %2F / 🩺")]
+    public void Zulip_reference_resolution_uses_encoded_gateway_query(string reference)
+    {
+        ApiEndpointDescriptor descriptor = FindSource("zulip", "references.resolve");
+        ApiBuiltRequest request = ApiUrlBuilder.Build(Base, descriptor, new Dictionary<string, string?>
+        {
+            ["reference"] = reference,
+        });
+
+        Assert.Equal(HttpMethod.Get, request.Method);
+        Assert.Equal($"{Base}/api/v1/zulip/references/resolve?reference={Uri.EscapeDataString(reference)}", request.Url);
+        Assert.Contains("unindexed or ambiguous", descriptor.Description);
+        Assert.False(descriptor.Destructive);
+    }
+
+    [Fact]
+    public void Zulip_item_guidance_uses_public_numeric_message_id_not_thread_shape()
+    {
+        ApiEndpointDescriptor descriptor = FindSource("zulip", "items.get");
+        ApiParameter id = Assert.Single(descriptor.Parameters, parameter => parameter.Name == "id");
+
+        Assert.Equal(ApiParameterValueType.Int, id.ValueType);
+        Assert.Equal("123456789", id.Placeholder);
+        Assert.Contains("numeric Zulip message ID", id.HelpText);
+        ApiBuiltRequest request = ApiUrlBuilder.Build(Base, descriptor, new Dictionary<string, string?> { ["id"] = "321987" });
+        Assert.Equal($"{Base}/api/v1/zulip/items/321987", request.Url);
+    }
+
     private static ApiEndpointDescriptor Find(string id) =>
         OrchestratorCatalog.Build().Single(e => e.Id == id);
+
+    private static ApiEndpointDescriptor FindSource(string source, string id) =>
+        SourceApiCatalog.GetCatalog(source).Single(endpoint => endpoint.Id == id);
 }
